@@ -3,23 +3,63 @@ echo ========================================
 echo   Push Rundle Kiosk to GitHub
 echo ========================================
 echo.
-echo Step 1: Create a repository on GitHub named "rundlekiosk"
-echo         Go to: https://github.com/new
+echo Step 1: Create repository on GitHub
+echo   1. Go to: https://github.com/new
+echo   2. Repository name: rundlekiosk
+echo   3. Choose Private or Public
+echo   4. DO NOT initialize with README
+echo   5. Click Create repository
 echo.
-echo Step 2: After creating the repo, run these commands:
+echo Step 2: Enter your GitHub username below
 echo.
-echo    git remote add origin https://github.com/YOUR_USERNAME/rundlekiosk.git
-echo    git push -u origin main
+set /p GITHUB_USER="Enter your GitHub username: "
+
+if "%GITHUB_USER%"=="" (
+    echo Error: Username is required
+    pause
+    exit /b 1
+)
+
 echo.
-echo Replace YOUR_USERNAME with your GitHub username!
+echo Adding remote: https://github.com/%GITHUB_USER%/rundlekiosk.git
+git remote add origin https://github.com/%GITHUB_USER%/rundlekiosk.git
+
+if errorlevel 1 (
+    echo.
+    echo Remote might already exist. Removing and re-adding...
+    git remote remove origin
+    git remote add origin https://github.com/%GITHUB_USER%/rundlekiosk.git
+)
+
 echo.
-echo Current git status:
-git status
-echo.
-echo Ready to push? Make sure you've:
-echo   1. Created the GitHub repository
-echo   2. Replaced YOUR_USERNAME in the commands above
-echo.
+echo Pushing to GitHub...
+git push -u origin main
+
+if errorlevel 1 (
+    echo.
+    echo ========================================
+    echo   Push failed!
+    echo ========================================
+    echo.
+    echo Possible reasons:
+    echo   1. Repository doesn't exist on GitHub yet
+    echo   2. Authentication failed
+    echo   3. Network issue
+    echo.
+    echo Make sure you:
+    echo   1. Created the repository on GitHub first
+    echo   2. Have proper authentication set up
+    echo   3. Are using a Personal Access Token (not password)
+    echo.
+) else (
+    echo.
+    echo ========================================
+    echo   SUCCESS! Pushed to GitHub!
+    echo ========================================
+    echo.
+    echo View your repository at:
+    echo https://github.com/%GITHUB_USER%/rundlekiosk
+    echo.
+)
+
 pause
-
-
