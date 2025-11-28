@@ -8,6 +8,7 @@ Your Git repository is ready! Now let's push it to GitHub.
 - ✅ All files committed (80 files, 22,313+ lines)
 - ✅ Branch set to `main`
 - ✅ Ready to push!
+
 ## 📋 Step-by-Step Instructions
 
 ### Step 1: Create Repository on GitHub
