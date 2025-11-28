@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rundle Kiosk - Dual Check-In System</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 450px;
+            width: 100%;
+            padding: 40px;
+        }
+        
+        .logo {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .logo-icon {
+            font-size: 60px;
+            margin-bottom: 10px;
+        }
+        
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 500;
+            font-size: 14px;
+        }
+        
+        input {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+        
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        button {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        
+        button:active {
+            transform: translateY(0);
+        }
+        
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .error {
+            background: #fee;
+            color: #c33;
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 14px;
+            display: none;
+        }
+        
+        .error.show {
+            display: block;
+        }
+        
+        .success {
+            background: #efe;
+            color: #3c3;
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 14px;
+            display: none;
+        }
+        
+        .success.show {
+            display: block;
+        }
+        
+        .dashboard {
+            display: none;
+        }
+        
+        .dashboard.show {
+            display: block;
+        }
+        
+        .user-info {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        
+        .user-info strong {
+            color: #667eea;
+        }
+        
+        .api-status {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f5f5f5;
+            border-radius: 8px;
+        }
+        
+        .status-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+        
+        .status-badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        
+        .status-badge.success {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .status-badge.error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        
+        .loading {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 8px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Login View -->
+        <div id="loginView">
+            <div class="logo">
+                <div class="logo-icon">🏨</div>
+                <h1>Rundle Kiosk</h1>
+                <p class="subtitle">Dual Check-In System</p>
+            </div>
+            
+            <div id="errorMessage" class="error"></div>
+            
+            <form id="loginForm">
+                <div class="form-group">
+                    <label for="email">Email</label>
+                    <input type="email" id="email" placeholder="staff@rundlesuites.com" required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input type="password" id="password" placeholder="Enter your password" required>
+                </div>
+                
+                <button type="submit" id="loginBtn">
+                    Sign In
+                </button>
+            </form>
+        </div>
+        
+        <!-- Dashboard View -->
+        <div id="dashboardView" class="dashboard">
+            <div class="logo">
+                <div class="logo-icon">✅</div>
+                <h1>Welcome Back!</h1>
+            </div>
+            
+            <div class="user-info">
+                <p><strong>Email:</strong> <span id="userEmail"></span></p>
+                <p><strong>User ID:</strong> <span id="userId"></span></p>
+            </div>
+            
+            <div class="api-status">
+                <h3 style="margin-bottom: 15px; color: #333;">API Status</h3>
+                <div class="status-item">
+                    <span>Backend API:</span>
+                    <span id="apiStatus" class="status-badge">Checking...</span>
+                </div>
+                <div class="status-item">
+                    <span>Firebase:</span>
+                    <span id="firebaseStatus" class="status-badge success">Connected</span>
+                </div>
+            </div>
+            
+            <button onclick="logout()" style="margin-top: 20px; background: #dc3545;">
+                Sign Out
+            </button>
+        </div>
+    </div>
+
+    <!-- Firebase SDK -->
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
+        import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js';
+
+        // Firebase configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyBcIyLp-a9YK_XLFgZv2KkldQuHNx6redI",
+            authDomain: "kiosk-rundle.firebaseapp.com",
+            projectId: "kiosk-rundle",
+            storageBucket: "kiosk-rundle.firebasestorage.app",
+            messagingSenderId: "960821255140",
+            appId: "1:960821255140:web:42c45d0846fb78481445f1"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+
+        // API base URL
+        const API_BASE = 'http://localhost:3000/api';
+
+        // DOM elements
+        const loginView = document.getElementById('loginView');
+        const dashboardView = document.getElementById('dashboardView');
+        const loginForm = document.getElementById('loginForm');
+        const errorMessage = document.getElementById('errorMessage');
+        const loginBtn = document.getElementById('loginBtn');
+
+        // Check authentication state
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                showDashboard(user);
+            } else {
+                showLogin();
+            }
+        });
+
+        // Login form handler
+        loginForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            
+            try {
+                loginBtn.disabled = true;
+                loginBtn.innerHTML = 'Signing in<span class="loading"></span>';
+                errorMessage.classList.remove('show');
+                
+                const userCredential = await signInWithEmailAndPassword(auth, email, password);
+                console.log('Login successful:', userCredential.user);
+                
+            } catch (error) {
+                console.error('Login error:', error);
+                errorMessage.textContent = error.message;
+                errorMessage.classList.add('show');
+                loginBtn.disabled = false;
+                loginBtn.textContent = 'Sign In';
+            }
+        });
+
+        // Show login view
+        function showLogin() {
+            loginView.style.display = 'block';
+            dashboardView.classList.remove('show');
+        }
+
+        // Show dashboard
+        async function showDashboard(user) {
+            loginView.style.display = 'none';
+            dashboardView.classList.add('show');
+            
+            document.getElementById('userEmail').textContent = user.email;
+            document.getElementById('userId').textContent = user.uid.substring(0, 20) + '...';
+            
+            // Check API health
+            await checkAPIHealth(user);
+        }
+
+        // Check API health
+        async function checkAPIHealth(user) {
+            const apiStatus = document.getElementById('apiStatus');
+            
+            try {
+                const token = await user.getIdToken();
+                const response = await fetch(`${API_BASE}/health`, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+                
+                if (response.ok) {
+                    apiStatus.textContent = 'Connected';
+                    apiStatus.classList.add('success');
+                    apiStatus.classList.remove('error');
+                } else {
+                    apiStatus.textContent = 'Error';
+                    apiStatus.classList.add('error');
+                    apiStatus.classList.remove('success');
+                }
+            } catch (error) {
+                apiStatus.textContent = 'Offline';
+                apiStatus.classList.add('error');
+                apiStatus.classList.remove('success');
+                console.error('API check failed:', error);
+            }
+        }
+
+        // Logout function
+        window.logout = async function() {
+            try {
+                await signOut(auth);
+                console.log('Logged out successfully');
+            } catch (error) {
+                console.error('Logout error:', error);
+            }
+        };
+
+        console.log('Firebase initialized successfully');
+        console.log('Project ID:', firebaseConfig.projectId);
+    </script>
+</body>
+</html>
+
+

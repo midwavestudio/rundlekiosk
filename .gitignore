@@ -1,0 +1,94 @@
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment variables
+.env
+.env.local
+.env.production
+.env.development
+.env*.local
+
+# Next.js
+.next/
+out/
+build/
+dist/
+
+# Vercel
+.vercel
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode
+ios/RundleKiosk/xcuserdata/
+ios/RundleKiosk/*.xcodeproj/xcuserdata/
+ios/RundleKiosk/*.xcworkspace/xcuserdata/
+ios/RundleKiosk/DerivedData/
+ios/RundleKiosk/build/
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.xccheckout
+*.moved-aside
+*.hmap
+*.ipa
+*.xcuserstate
+*.xcscmblueprint
+*.xcscheme
+
+# Firebase
+GoogleService-Info.plist
+firebase-debug.log
+.firebase/
+
+# iOS build artifacts
+*.dSYM.zip
+*.dSYM
+*.framework
+*.app
+*.ipa
+
+# Swift Package Manager
+ios/RundleKiosk/.swiftpm/
+ios/RundleKiosk/Packages/
+ios/RundleKiosk/*.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
+
+# CocoaPods
+ios/Pods/
+ios/Podfile.lock
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
+.#*
+extract_docx.py
+spec_temp.txt
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Logs
+logs/
+*.log
+
+# Testing
+coverage/
+.nyc_output/
+test-results/
+
+# Misc
+.cache/
+.temp/
+dist/
+

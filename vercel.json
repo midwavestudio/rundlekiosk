@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/**/*.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "/api/$1"
+    }
+  ],
+  "env": {
+    "CLOUDBEDS_CLIENT_ID": "@cloudbeds-client-id",
+    "CLOUDBEDS_CLIENT_SECRET": "@cloudbeds-client-secret",
+    "CLOUDBEDS_PROPERTY_ID": "@cloudbeds-property-id",
+    "CLOUDBEDS_API_KEY": "@cloudbeds-api-key",
+    "CLC_API_KEY": "@clc-api-key",
+    "CLC_API_URL": "@clc-api-url",
+    "FIREBASE_PROJECT_ID": "@firebase-project-id",
+    "FIREBASE_PRIVATE_KEY": "@firebase-private-key",
+    "FIREBASE_CLIENT_EMAIL": "@firebase-client-email"
+  }
+}
+
