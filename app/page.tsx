@@ -20,7 +20,6 @@ export default function Home() {
   return (
     <div className="kiosk-container">
       <div className="kiosk-header">
-        <div className="logo-icon">🏨</div>
         <h1>Welcome to Rundle Suites</h1>
         <p className="subtitle">Please select an option to continue</p>
       </div>
@@ -30,7 +29,6 @@ export default function Home() {
           className="kiosk-button checkin-button"
           onClick={() => setCurrentScreen('checkin')}
         >
-          <div className="button-icon">✓</div>
           <div className="button-text">Check In</div>
           <div className="button-description">Start your stay</div>
         </button>
@@ -39,7 +37,6 @@ export default function Home() {
           className="kiosk-button checkout-button"
           onClick={() => setCurrentScreen('checkout')}
         >
-          <div className="button-icon">→</div>
           <div className="button-text">Check Out</div>
           <div className="button-description">Complete your stay</div>
         </button>

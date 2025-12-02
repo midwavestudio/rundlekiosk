@@ -30,8 +30,8 @@ export default function GuestCheckOut({ onBack }: GuestCheckOutProps) {
   }, []);
 
   useEffect(() => {
-    // Filter guests based on search query
-    if (searchQuery.trim() === '') {
+    // Filter guests based on search query - show results after 4 characters
+    if (searchQuery.trim().length < 4) {
       setFilteredGuests([]);
       return;
     }
@@ -78,14 +78,10 @@ export default function GuestCheckOut({ onBack }: GuestCheckOutProps) {
 
       setSuccess(true);
 
-      // Reset after 3 seconds
+      // Return to home after 2 seconds
       setTimeout(() => {
-        setSuccess(false);
-        setSearchQuery('');
-        setSelectedGuest(null);
-        setFilteredGuests([]);
-        setCheckedInGuests(updatedGuests);
-      }, 3000);
+        onBack();
+      }, 2000);
     } catch (err: any) {
       console.error('Check-out error:', err);
       alert('Check-out failed. Please try again or contact the front desk.');
@@ -98,17 +94,7 @@ export default function GuestCheckOut({ onBack }: GuestCheckOutProps) {
     return (
       <div className="kiosk-container">
         <div className="success-screen">
-          <div className="success-icon">✓</div>
-          <h1>Check-Out Complete!</h1>
-          <p className="success-message">
-            Thank you for staying with us, {selectedGuest.firstName} {selectedGuest.lastName}
-          </p>
-          <p className="success-details">
-            We hope to see you again soon!
-          </p>
-          <button className="back-button" onClick={onBack}>
-            Return to Home
-          </button>
+          <h1 className="animated-message">Thank you for staying with us!</h1>
         </div>
       </div>
     );
@@ -120,9 +106,8 @@ export default function GuestCheckOut({ onBack }: GuestCheckOutProps) {
         <button className="back-link" onClick={onBack}>
           ← Back
         </button>
-        <div className="logo-icon">→</div>
         <h1>Guest Check-Out</h1>
-        <p className="subtitle">Search for your name to check out</p>
+        <p className="subtitle">Type at least 4 letters of your first name</p>
       </div>
 
       <div className="checkout-search">
@@ -133,13 +118,16 @@ export default function GuestCheckOut({ onBack }: GuestCheckOutProps) {
             id="search"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Start typing your first or last name..."
+            placeholder="Type at least 4 letters of your first name..."
             autoFocus
             autoComplete="off"
           />
+          {searchQuery.length > 0 && searchQuery.length < 4 && (
+            <p className="input-hint">Keep typing... ({searchQuery.length}/4 characters)</p>
+          )}
         </div>
 
-        {searchQuery && filteredGuests.length === 0 && (
+        {searchQuery.length >= 4 && filteredGuests.length === 0 && (
           <div className="no-results">
             <p>No guests found matching "{searchQuery}"</p>
             <p className="no-results-help">
@@ -169,7 +157,7 @@ export default function GuestCheckOut({ onBack }: GuestCheckOutProps) {
                   </div>
                 </div>
                 {selectedGuest === guest && (
-                  <div className="selected-check">✓</div>
+                  <div className="selected-check">Selected</div>
                 )}
               </button>
             ))}

@@ -11,6 +11,7 @@ interface GuestData {
   lastName: string;
   clcNumber: string;
   phoneNumber: string;
+  roomNumber: string;
   class: 'TYE' | 'MOW' | '';
   checkInTime: string;
 }
@@ -21,6 +22,7 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
     lastName: '',
     clcNumber: '',
     phoneNumber: '',
+    roomNumber: '',
     class: '',
     checkInTime: '',
   });
@@ -53,7 +55,7 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
     
     // Validation
     if (!formData.firstName || !formData.lastName || !formData.clcNumber || 
-        !formData.phoneNumber || !formData.class) {
+        !formData.phoneNumber || !formData.roomNumber || !formData.class) {
       setError('Please fill in all fields');
       return;
     }
@@ -78,18 +80,10 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
 
       setSuccess(true);
       
-      // Reset form after 3 seconds
+      // Return to home after 2 seconds
       setTimeout(() => {
-        setSuccess(false);
-        setFormData({
-          firstName: '',
-          lastName: '',
-          clcNumber: '',
-          phoneNumber: '',
-          class: '',
-          checkInTime: '',
-        });
-      }, 3000);
+        onBack();
+      }, 2000);
     } catch (err: any) {
       setError('Check-in failed. Please try again or contact the front desk.');
       console.error('Check-in error:', err);
@@ -102,17 +96,7 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
     return (
       <div className="kiosk-container">
         <div className="success-screen">
-          <div className="success-icon">✓</div>
-          <h1>Check-In Complete!</h1>
-          <p className="success-message">
-            Welcome, {formData.firstName} {formData.lastName}
-          </p>
-          <p className="success-details">
-            Please proceed to the front desk to receive your room key
-          </p>
-          <button className="back-button" onClick={onBack}>
-            Return to Home
-          </button>
+          <h1 className="animated-message">Enjoy your stay!</h1>
         </div>
       </div>
     );
@@ -124,7 +108,6 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
         <button className="back-link" onClick={onBack}>
           ← Back
         </button>
-        <div className="logo-icon">✓</div>
         <h1>Guest Check-In</h1>
         <p className="subtitle">Please fill in your information</p>
       </div>
@@ -182,6 +165,18 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
             placeholder="(555) 123-4567"
             required
             autoComplete="tel"
+          />
+        </div>
+
+        <div className="form-group">
+          <label htmlFor="roomNumber">Room Number *</label>
+          <input
+            type="text"
+            id="roomNumber"
+            value={formData.roomNumber}
+            onChange={(e) => handleChange('roomNumber', e.target.value)}
+            placeholder="101"
+            required
           />
         </div>
 
