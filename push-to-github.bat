@@ -21,14 +21,19 @@ if "%GITHUB_USER%"=="" (
 )
 
 echo.
+echo.
+echo Checking for existing remote...
+git remote remove origin 2>nul
+
+echo.
 echo Adding remote: https://github.com/%GITHUB_USER%/rundlekiosk.git
 git remote add origin https://github.com/%GITHUB_USER%/rundlekiosk.git
 
 if errorlevel 1 (
     echo.
-    echo Remote might already exist. Removing and re-adding...
-    git remote remove origin
-    git remote add origin https://github.com/%GITHUB_USER%/rundlekiosk.git
+    echo Error adding remote. Please check your username and try again.
+    pause
+    exit /b 1
 )
 
 echo.
