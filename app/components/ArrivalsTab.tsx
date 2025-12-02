@@ -1,58 +1,60 @@
 'use client';
 
-import { useState } from 'react';
-
-// Mock data for arrivals
-const mockArrivals = [
-  {
-    id: '1',
-    guestName: 'John Smith',
-    reservationId: 'RES001',
-    checkInDate: new Date().toLocaleDateString(),
-    checkOutDate: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toLocaleDateString(),
-    roomNumber: '101',
-    adults: 2,
-    children: 0,
-    isBNSFCrew: true,
-    status: 'confirmed'
-  },
-  {
-    id: '2',
-    guestName: 'Sarah Johnson',
-    reservationId: 'RES002',
-    checkInDate: new Date().toLocaleDateString(),
-    checkOutDate: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toLocaleDateString(),
-    roomNumber: '205',
-    adults: 1,
-    children: 1,
-    isBNSFCrew: false,
-    status: 'confirmed'
-  },
-  {
-    id: '3',
-    guestName: 'Michael Chen',
-    reservationId: 'RES003',
-    checkInDate: new Date().toLocaleDateString(),
-    checkOutDate: new Date(Date.now() + 1 * 24 * 60 * 60 * 1000).toLocaleDateString(),
-    roomNumber: null,
-    adults: 2,
-    children: 0,
-    isBNSFCrew: true,
-    status: 'confirmed'
-  },
-];
+import { useState, useEffect } from 'react';
 
 interface ArrivalsTabProps {
   onCheckIn: (reservation: any) => void;
 }
 
+interface CheckedInGuest {
+  firstName: string;
+  lastName: string;
+  clcNumber: string;
+  phoneNumber: string;
+  class: 'TYE' | 'MOW';
+  checkInTime: string;
+}
+
 export default function ArrivalsTab({ onCheckIn }: ArrivalsTabProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterBNSF, setFilterBNSF] = useState(false);
+  const [checkedInGuests, setCheckedInGuests] = useState<CheckedInGuest[]>([]);
 
-  const filteredArrivals = mockArrivals.filter(arrival => {
+  // Load checked-in guests from localStorage
+  useEffect(() => {
+    const loadGuests = () => {
+      const guests = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
+      setCheckedInGuests(guests);
+    };
+
+    loadGuests();
+    // Refresh every 2 seconds to catch new check-ins
+    const interval = setInterval(loadGuests, 2000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Convert checked-in guests to arrival format
+  const arrivals = checkedInGuests.map((guest, index) => ({
+    id: `guest-${index}`,
+    guestName: `${guest.firstName} ${guest.lastName}`,
+    reservationId: guest.clcNumber || `GUEST-${index + 1}`,
+    checkInDate: new Date(guest.checkInTime).toLocaleDateString(),
+    checkInTime: new Date(guest.checkInTime).toLocaleTimeString(),
+    checkOutDate: 'N/A',
+    roomNumber: null,
+    adults: 1,
+    children: 0,
+    isBNSFCrew: true, // All guests from kiosk are BNSF crew
+    class: guest.class,
+    phoneNumber: guest.phoneNumber,
+    status: 'checked_in',
+    rawData: guest
+  }));
+
+  const filteredArrivals = arrivals.filter(arrival => {
     const matchesSearch = arrival.guestName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         arrival.reservationId.toLowerCase().includes(searchTerm.toLowerCase());
+                         arrival.reservationId.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                         arrival.phoneNumber?.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesFilter = !filterBNSF || arrival.isBNSFCrew;
     return matchesSearch && matchesFilter;
   });
@@ -153,11 +155,10 @@ export default function ArrivalsTab({ onCheckIn }: ArrivalsTabProps) {
                   )}
                 </div>
                 <div style={{ color: '#666', fontSize: 'clamp(13px, 1.5vw, 16px)', marginBottom: '8px' }}>
-                  <strong>Reservation:</strong> {arrival.reservationId}
+                  <strong>CLC Number:</strong> {arrival.reservationId} | <strong>Class:</strong> {arrival.class || 'N/A'} | <strong>Phone:</strong> {arrival.phoneNumber || 'N/A'}
                 </div>
                 <div style={{ display: 'flex', gap: 'clamp(12px, 2vw, 20px)', fontSize: 'clamp(13px, 1.5vw, 16px)', color: '#666', flexWrap: 'wrap' }}>
-                  <span>📅 {arrival.checkInDate} - {arrival.checkOutDate}</span>
-                  <span>👥 {arrival.adults} adults, {arrival.children} children</span>
+                  <span>📅 Checked In: {arrival.checkInDate} at {arrival.checkInTime}</span>
                   {arrival.roomNumber ? (
                     <span style={{ color: '#10b981', fontWeight: '600' }}>
                       🛏️ Room {arrival.roomNumber}
@@ -169,23 +170,34 @@ export default function ArrivalsTab({ onCheckIn }: ArrivalsTabProps) {
                   )}
                 </div>
               </div>
-              <button
-                onClick={() => onCheckIn(arrival)}
-                style={{
-                  background: '#10b981',
-                  color: 'white',
-                  border: 'none',
-                  padding: 'clamp(12px, 1.5vw, 16px) clamp(20px, 2.5vw, 32px)',
-                  borderRadius: '8px',
-                  fontSize: 'clamp(14px, 1.5vw, 18px)',
-                  fontWeight: '600',
-                  cursor: 'pointer',
-                  whiteSpace: 'nowrap',
-                  alignSelf: 'flex-start'
-                }}
-              >
-                Check In
-              </button>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'flex-end' }}>
+                <span style={{
+                  padding: '6px 12px',
+                  background: '#d1fae5',
+                  color: '#065f46',
+                  borderRadius: '6px',
+                  fontSize: '12px',
+                  fontWeight: '600'
+                }}>
+                  ✓ Already Checked In
+                </span>
+                <button
+                  onClick={() => onCheckIn(arrival)}
+                  style={{
+                    background: '#667eea',
+                    color: 'white',
+                    border: 'none',
+                    padding: 'clamp(12px, 1.5vw, 16px) clamp(20px, 2.5vw, 32px)',
+                    borderRadius: '8px',
+                    fontSize: 'clamp(14px, 1.5vw, 18px)',
+                    fontWeight: '600',
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap'
+                  }}
+                >
+                  View Details
+                </button>
+              </div>
             </div>
           </div>
         ))}

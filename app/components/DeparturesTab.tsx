@@ -1,56 +1,80 @@
 'use client';
 
-import { useState } from 'react';
-
-// Mock data for departures
-const mockDepartures = [
-  {
-    id: '4',
-    guestName: 'Emily Davis',
-    reservationId: 'RES004',
-    checkInDate: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toLocaleDateString(),
-    checkOutDate: new Date().toLocaleDateString(),
-    roomNumber: '302',
-    balance: 0,
-    isBNSFCrew: false,
-    status: 'checked_in'
-  },
-  {
-    id: '5',
-    guestName: 'Robert Wilson',
-    reservationId: 'RES005',
-    checkInDate: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toLocaleDateString(),
-    checkOutDate: new Date().toLocaleDateString(),
-    roomNumber: '405',
-    balance: 0,
-    isBNSFCrew: true,
-    status: 'checked_in'
-  },
-  {
-    id: '6',
-    guestName: 'Lisa Anderson',
-    reservationId: 'RES006',
-    checkInDate: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toLocaleDateString(),
-    checkOutDate: new Date().toLocaleDateString(),
-    roomNumber: '108',
-    balance: 150.00,
-    isBNSFCrew: false,
-    status: 'checked_in'
-  },
-];
+import { useState, useEffect } from 'react';
 
 interface DeparturesTabProps {
   onCheckOut: (reservation: any) => void;
 }
 
+interface CheckedInGuest {
+  firstName: string;
+  lastName: string;
+  clcNumber: string;
+  phoneNumber: string;
+  class: 'TYE' | 'MOW';
+  checkInTime: string;
+  checkOutTime?: string;
+}
+
 export default function DeparturesTab({ onCheckOut }: DeparturesTabProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterBNSF, setFilterBNSF] = useState(false);
+  const [checkedInGuests, setCheckedInGuests] = useState<CheckedInGuest[]>([]);
+  const [checkOutHistory, setCheckOutHistory] = useState<CheckedInGuest[]>([]);
 
-  const filteredDepartures = mockDepartures.filter(departure => {
+  // Load guests from localStorage
+  useEffect(() => {
+    const loadGuests = () => {
+      const checkedIn = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
+      const checkedOut = JSON.parse(localStorage.getItem('checkOutHistory') || '[]');
+      setCheckedInGuests(checkedIn);
+      setCheckOutHistory(checkedOut);
+    };
+
+    loadGuests();
+    // Refresh every 2 seconds
+    const interval = setInterval(loadGuests, 2000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Combine checked-in guests (for today's departures) with recent check-outs
+  const departures = [
+    ...checkedInGuests.map((guest, index) => ({
+      id: `checked-in-${index}`,
+      guestName: `${guest.firstName} ${guest.lastName}`,
+      reservationId: guest.clcNumber || `GUEST-${index + 1}`,
+      checkInDate: new Date(guest.checkInTime).toLocaleDateString(),
+      checkInTime: new Date(guest.checkInTime).toLocaleTimeString(),
+      checkOutDate: new Date().toLocaleDateString(),
+      roomNumber: null,
+      balance: 0, // Assume BNSF crew has no balance
+      isBNSFCrew: true,
+      class: guest.class,
+      phoneNumber: guest.phoneNumber,
+      status: 'checked_in',
+      rawData: guest
+    })),
+    ...checkOutHistory.slice(-10).map((guest, index) => ({
+      id: `checked-out-${index}`,
+      guestName: `${guest.firstName} ${guest.lastName}`,
+      reservationId: guest.clcNumber || `GUEST-OUT-${index + 1}`,
+      checkInDate: new Date(guest.checkInTime).toLocaleDateString(),
+      checkOutDate: guest.checkOutTime ? new Date(guest.checkOutTime).toLocaleDateString() : 'N/A',
+      checkOutTime: guest.checkOutTime ? new Date(guest.checkOutTime).toLocaleTimeString() : 'N/A',
+      roomNumber: null,
+      balance: 0,
+      isBNSFCrew: true,
+      class: guest.class,
+      phoneNumber: guest.phoneNumber,
+      status: 'checked_out',
+      rawData: guest
+    }))
+  ];
+
+  const filteredDepartures = departures.filter(departure => {
     const matchesSearch = departure.guestName.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          departure.reservationId.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         departure.roomNumber?.toLowerCase().includes(searchTerm.toLowerCase());
+                         departure.phoneNumber?.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesFilter = !filterBNSF || departure.isBNSFCrew;
     return matchesSearch && matchesFilter;
   });
@@ -163,40 +187,51 @@ export default function DeparturesTab({ onCheckOut }: DeparturesTabProps) {
                   )}
                 </div>
                 <div style={{ color: '#666', fontSize: 'clamp(13px, 1.5vw, 16px)', marginBottom: '8px' }}>
-                  <strong>Reservation:</strong> {departure.reservationId} | <strong>Room:</strong> {departure.roomNumber}
+                  <strong>CLC Number:</strong> {departure.reservationId} | <strong>Class:</strong> {departure.class || 'N/A'} | <strong>Phone:</strong> {departure.phoneNumber || 'N/A'}
                 </div>
                 <div style={{ display: 'flex', gap: 'clamp(12px, 2vw, 20px)', fontSize: 'clamp(13px, 1.5vw, 16px)', color: '#666', flexWrap: 'wrap' }}>
-                  <span>📅 {departure.checkInDate} - {departure.checkOutDate}</span>
-                  {departure.balance === 0 ? (
+                  <span>📅 Check In: {departure.checkInDate} {departure.checkInTime ? `at ${departure.checkInTime}` : ''}</span>
+                  {departure.status === 'checked_out' && departure.checkOutTime && (
+                    <span>📅 Check Out: {departure.checkOutDate} at {departure.checkOutTime}</span>
+                  )}
+                  {departure.balance === 0 && (
                     <span style={{ color: '#10b981', fontWeight: '600' }}>
                       ✓ Fully Paid
-                    </span>
-                  ) : (
-                    <span style={{ color: '#ef4444', fontWeight: '600' }}>
-                      ⚠️ Outstanding Balance
                     </span>
                   )}
                 </div>
               </div>
-              <button
-                onClick={() => onCheckOut(departure)}
-                disabled={departure.balance > 0}
-                style={{
-                  background: departure.balance > 0 ? '#d1d5db' : '#8b5cf6',
-                  color: 'white',
-                  border: 'none',
-                  padding: 'clamp(12px, 1.5vw, 16px) clamp(20px, 2.5vw, 32px)',
-                  borderRadius: '8px',
-                  fontSize: 'clamp(14px, 1.5vw, 18px)',
-                  fontWeight: '600',
-                  cursor: departure.balance > 0 ? 'not-allowed' : 'pointer',
-                  whiteSpace: 'nowrap',
-                  opacity: departure.balance > 0 ? 0.6 : 1,
-                  alignSelf: 'flex-start'
-                }}
-              >
-                Check Out
-              </button>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'flex-end' }}>
+                {departure.status === 'checked_out' ? (
+                  <span style={{
+                    padding: '6px 12px',
+                    background: '#dbeafe',
+                    color: '#1e40af',
+                    borderRadius: '6px',
+                    fontSize: '12px',
+                    fontWeight: '600'
+                  }}>
+                    ✓ Checked Out
+                  </span>
+                ) : (
+                  <button
+                    onClick={() => onCheckOut(departure)}
+                    style={{
+                      background: '#8b5cf6',
+                      color: 'white',
+                      border: 'none',
+                      padding: 'clamp(12px, 1.5vw, 16px) clamp(20px, 2.5vw, 32px)',
+                      borderRadius: '8px',
+                      fontSize: 'clamp(14px, 1.5vw, 18px)',
+                      fontWeight: '600',
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    Check Out
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         ))}

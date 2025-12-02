@@ -149,11 +149,33 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
 }
 
 function DashboardTab() {
+  // Get real stats from localStorage
+  const checkedInGuests = typeof window !== 'undefined' 
+    ? JSON.parse(localStorage.getItem('checkedInGuests') || '[]')
+    : [];
+  const checkOutHistory = typeof window !== 'undefined'
+    ? JSON.parse(localStorage.getItem('checkOutHistory') || '[]')
+    : [];
+  
+  // Today's check-ins
+  const today = new Date().toDateString();
+  const todayCheckIns = checkedInGuests.filter((guest: any) => {
+    const checkInDate = new Date(guest.checkInTime).toDateString();
+    return checkInDate === today;
+  });
+  
+  // Today's check-outs
+  const todayCheckOuts = checkOutHistory.filter((guest: any) => {
+    if (!guest.checkOutTime) return false;
+    const checkOutDate = new Date(guest.checkOutTime).toDateString();
+    return checkOutDate === today;
+  });
+
   const stats = {
-    occupied: 42,
-    available: 18,
-    arrivals: 12,
-    departures: 8
+    occupied: checkedInGuests.length,
+    available: 60 - checkedInGuests.length, // Assuming 60 total rooms
+    arrivals: todayCheckIns.length,
+    departures: todayCheckOuts.length
   };
 
   return (
