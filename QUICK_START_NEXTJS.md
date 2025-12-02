@@ -97,3 +97,5 @@ That's it! Your Next.js app is ready.
 **Enjoy your modern Next.js app!** 🎉
 
 
+
+
