@@ -59,6 +59,7 @@ export default function DeparturesTab({ onCheckOut }: DeparturesTabProps) {
       guestName: `${guest.firstName} ${guest.lastName}`,
       reservationId: guest.clcNumber || `GUEST-OUT-${index + 1}`,
       checkInDate: new Date(guest.checkInTime).toLocaleDateString(),
+      checkInTime: new Date(guest.checkInTime).toLocaleTimeString(),
       checkOutDate: guest.checkOutTime ? new Date(guest.checkOutTime).toLocaleDateString() : 'N/A',
       checkOutTime: guest.checkOutTime ? new Date(guest.checkOutTime).toLocaleTimeString() : 'N/A',
       roomNumber: null,
