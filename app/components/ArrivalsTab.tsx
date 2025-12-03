@@ -14,6 +14,9 @@ interface CheckedInGuest {
   phoneNumber: string;
   class: 'TYE' | 'MOW';
   checkInTime: string;
+  cloudbedsGuestID?: string;
+  cloudbedsReservationID?: string;
+  roomNumber?: string;
 }
 
 export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
