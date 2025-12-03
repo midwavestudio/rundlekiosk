@@ -9,6 +9,7 @@ import {
   signOut,
   onAuthStateChanged,
   User,
+  Auth,
   setPersistence,
   browserLocalPersistence,
 } from 'firebase/auth';
@@ -25,15 +26,15 @@ const firebaseConfig = {
 };
 
 // Initialize Firebase
-let app;
-let auth;
+let app: ReturnType<typeof initializeApp> | undefined;
+let auth: Auth | null = null;
 
 try {
   app = initializeApp(firebaseConfig);
   auth = getAuth(app);
 } catch (error) {
   console.error('Firebase initialization error:', error);
-  auth = null as any;
+  auth = null;
 }
 
 export default function AdminPage() {
@@ -53,8 +54,9 @@ export default function AdminPage() {
     }
 
     // Set persistence to LOCAL (stays logged in)
-    setPersistence(auth, browserLocalPersistence).then(() => {
-      const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const currentAuth = auth; // Capture for TypeScript
+    setPersistence(currentAuth, browserLocalPersistence).then(() => {
+      const unsubscribe = onAuthStateChanged(currentAuth, (user) => {
         setUser(user);
         setInitializing(false);
       });
