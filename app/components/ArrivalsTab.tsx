@@ -66,7 +66,7 @@ export default function ArrivalsTab({ onCheckIn }: ArrivalsTabProps) {
           margin: 0, 
           color: '#333',
           fontSize: 'clamp(22px, 3vw, 30px)'
-        }}>Today's Arrivals ({filteredArrivals.length})</h2>
+        }}>Today&apos;s Arrivals ({filteredArrivals.length})</h2>
       </div>
 
       {/* Search and Filter */}

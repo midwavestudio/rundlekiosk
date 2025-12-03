@@ -86,7 +86,7 @@ export default function DeparturesTab({ onCheckOut }: DeparturesTabProps) {
           margin: 0, 
           color: '#333',
           fontSize: 'clamp(22px, 3vw, 30px)'
-        }}>Today's Departures ({filteredDepartures.length})</h2>
+        }}>Today&apos;s Departures ({filteredDepartures.length})</h2>
       </div>
 
       {/* Search and Filter */}

@@ -126,7 +126,7 @@ export default function GuestCheckOut({ onBack }: GuestCheckOutProps) {
 
         {searchQuery.length >= 3 && filteredGuests.length === 0 && (
           <div className="no-results">
-            <p>No guests found matching "{searchQuery}"</p>
+            <p>No guests found matching &quot;{searchQuery}&quot;</p>
             <p className="no-results-help">
               Please check your spelling or contact the front desk for assistance.
             </p>
