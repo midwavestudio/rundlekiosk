@@ -90,3 +90,5 @@ npm run dev
 
 **The kiosk is ready for guests!** 🎉
 
+
+

@@ -268,3 +268,5 @@ To enable full API integration:
 
 **The kiosk is now ready for guest use!** 🎉
 
+
+

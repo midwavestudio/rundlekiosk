@@ -318,3 +318,5 @@ localStorage.clear()
 
 🏨 **The Rundle Kiosk is ready for guests!** 🎉
 
+
+

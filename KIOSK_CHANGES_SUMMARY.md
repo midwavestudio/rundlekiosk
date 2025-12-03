@@ -267,3 +267,5 @@ Access at: http://localhost:3000
 
 All features work without external APIs. When Cloudbeds and CLC APIs are configured, data will automatically sync to those systems.
 
+
+
