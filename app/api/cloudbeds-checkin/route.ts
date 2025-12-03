@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { firstName, lastName, phoneNumber, roomNumber, clcNumber, email, reservationID } = body;
+    const { firstName, lastName, phoneNumber, roomNumber, clcNumber, email, reservationID: existingReservationID } = body;
 
     // Validate required fields
     if (!firstName || !lastName || !roomNumber) {
@@ -14,7 +14,7 @@ export async function POST(request: NextRequest) {
     }
 
     // If reservationID is provided, update existing reservation
-    if (reservationID) {
+    if (existingReservationID) {
       const CLOUDBEDS_API_KEY = process.env.CLOUDBEDS_API_KEY;
       const CLOUDBEDS_PROPERTY_ID = process.env.CLOUDBEDS_PROPERTY_ID;
       const CLOUDBEDS_API_URL = process.env.CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.2';
@@ -39,7 +39,7 @@ export async function POST(request: NextRequest) {
         },
         body: JSON.stringify({
           propertyID: CLOUDBEDS_PROPERTY_ID,
-          reservationID: reservationID,
+          reservationID: existingReservationID,
           roomName: roomNumber,
         }),
       });
@@ -57,7 +57,7 @@ export async function POST(request: NextRequest) {
         },
         body: JSON.stringify({
           propertyID: CLOUDBEDS_PROPERTY_ID,
-          reservationID: reservationID,
+          reservationID: existingReservationID,
           status: 'checked_in',
         }),
       });
@@ -70,7 +70,7 @@ export async function POST(request: NextRequest) {
 
       return NextResponse.json({
         success: true,
-        reservationID,
+        reservationID: existingReservationID,
         roomNumber,
         message: 'Guest successfully checked in to Cloudbeds',
       });
