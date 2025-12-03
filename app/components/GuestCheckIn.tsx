@@ -14,6 +14,8 @@ interface GuestData {
   roomNumber: string;
   class: 'TYE' | 'MOW' | '';
   checkInTime: string;
+  cloudbedsGuestID?: string;
+  cloudbedsReservationID?: string;
 }
 
 export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
@@ -70,13 +72,41 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
         checkInTime: new Date().toISOString(),
       };
 
+      // Call Cloudbeds API to create reservation and check in
+      try {
+        const cloudbedsResponse = await fetch('/api/cloudbeds-checkin', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            firstName: formData.firstName,
+            lastName: formData.lastName,
+            phoneNumber: formData.phoneNumber,
+            roomNumber: formData.roomNumber,
+            clcNumber: formData.clcNumber,
+            email: `${formData.firstName.toLowerCase()}.${formData.lastName.toLowerCase()}@guest.com`,
+          }),
+        });
+
+        const cloudbedsResult = await cloudbedsResponse.json();
+        
+        if (cloudbedsResult.success) {
+          console.log('Cloudbeds check-in successful:', cloudbedsResult);
+          // Add Cloudbeds IDs to the check-in data
+          checkInData.cloudbedsGuestID = cloudbedsResult.guestID;
+          checkInData.cloudbedsReservationID = cloudbedsResult.reservationID;
+        } else {
+          console.warn('Cloudbeds check-in failed, continuing with local storage only:', cloudbedsResult.error);
+        }
+      } catch (cloudbedsError: any) {
+        console.warn('Cloudbeds API error, continuing with local storage only:', cloudbedsError.message);
+      }
+
       // Save to localStorage (temporary storage)
       const existingGuests = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
       existingGuests.push(checkInData);
       localStorage.setItem('checkedInGuests', JSON.stringify(existingGuests));
-
-      // TODO: Also save to Firebase Firestore when available
-      // await saveToFirestore(checkInData);
 
       setSuccess(true);
       

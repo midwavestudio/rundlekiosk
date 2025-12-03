@@ -30,8 +30,8 @@ export default function GuestCheckOut({ onBack }: GuestCheckOutProps) {
   }, []);
 
   useEffect(() => {
-    // Filter guests based on search query - show results after 4 characters
-    if (searchQuery.trim().length < 4) {
+    // Filter guests based on search query - show results after 3 characters
+    if (searchQuery.trim().length < 3) {
       setFilteredGuests([]);
       return;
     }
@@ -107,27 +107,24 @@ export default function GuestCheckOut({ onBack }: GuestCheckOutProps) {
           ← Back
         </button>
         <h1>Guest Check-Out</h1>
-        <p className="subtitle">Type at least 4 letters of your first name</p>
+        <p className="subtitle">Search for your reservation</p>
       </div>
 
       <div className="checkout-search">
         <div className="form-group">
-          <label htmlFor="search">Enter Your Name</label>
+          <label htmlFor="search">Type Your First Name</label>
           <input
             type="text"
             id="search"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Type at least 4 letters of your first name..."
+            placeholder="Type your first name..."
             autoFocus
             autoComplete="off"
           />
-          {searchQuery.length > 0 && searchQuery.length < 4 && (
-            <p className="input-hint">Keep typing... ({searchQuery.length}/4 characters)</p>
-          )}
         </div>
 
-        {searchQuery.length >= 4 && filteredGuests.length === 0 && (
+        {searchQuery.length >= 3 && filteredGuests.length === 0 && (
           <div className="no-results">
             <p>No guests found matching "{searchQuery}"</p>
             <p className="no-results-help">
