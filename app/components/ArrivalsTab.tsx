@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 
 interface ArrivalsTabProps {
   onCheckIn: (reservation: any) => void;
+  onDelete?: (reservation: any) => void;
 }
 
 interface CheckedInGuest {
@@ -15,7 +16,7 @@ interface CheckedInGuest {
   checkInTime: string;
 }
 
-export default function ArrivalsTab({ onCheckIn }: ArrivalsTabProps) {
+export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterBNSF, setFilterBNSF] = useState(false);
   const [checkedInGuests, setCheckedInGuests] = useState<CheckedInGuest[]>([]);
@@ -181,22 +182,68 @@ export default function ArrivalsTab({ onCheckIn }: ArrivalsTabProps) {
                 }}>
                   ✓ Already Checked In
                 </span>
-                <button
-                  onClick={() => onCheckIn(arrival)}
-                  style={{
-                    background: '#667eea',
-                    color: 'white',
-                    border: 'none',
-                    padding: 'clamp(12px, 1.5vw, 16px) clamp(20px, 2.5vw, 32px)',
-                    borderRadius: '8px',
-                    fontSize: 'clamp(14px, 1.5vw, 18px)',
-                    fontWeight: '600',
-                    cursor: 'pointer',
-                    whiteSpace: 'nowrap'
-                  }}
-                >
-                  View Details
-                </button>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    onClick={() => onCheckIn(arrival)}
+                    style={{
+                      background: '#667eea',
+                      color: 'white',
+                      border: 'none',
+                      padding: 'clamp(12px, 1.5vw, 16px) clamp(20px, 2.5vw, 32px)',
+                      borderRadius: '8px',
+                      fontSize: 'clamp(14px, 1.5vw, 18px)',
+                      fontWeight: '600',
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    View Details
+                  </button>
+                  {onDelete && (
+                    <button
+                      onClick={async () => {
+                        if (confirm(`Are you sure you want to delete the reservation for ${arrival.guestName}? This will also delete it from Cloudbeds.`)) {
+                          try {
+                            if (arrival.rawData?.cloudbedsReservationID) {
+                              const response = await fetch(`/api/cloudbeds-delete?reservationID=${arrival.rawData.cloudbedsReservationID}`, {
+                                method: 'DELETE',
+                              });
+                              const result = await response.json();
+                              if (!result.success && !result.mockMode) {
+                                throw new Error(result.error || 'Failed to delete from Cloudbeds');
+                              }
+                            }
+                            
+                            // Remove from localStorage
+                            const checkedInGuests = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
+                            const updated = checkedInGuests.filter(
+                              (g: any) => !(g.firstName === arrival.rawData?.firstName && 
+                                          g.lastName === arrival.rawData?.lastName &&
+                                          g.checkInTime === arrival.rawData?.checkInTime)
+                            );
+                            localStorage.setItem('checkedInGuests', JSON.stringify(updated));
+                            onDelete(arrival);
+                          } catch (error: any) {
+                            alert(`Delete failed: ${error.message}`);
+                          }
+                        }
+                      }}
+                      style={{
+                        background: '#ef4444',
+                        color: 'white',
+                        border: 'none',
+                        padding: 'clamp(12px, 1.5vw, 16px) clamp(20px, 2.5vw, 32px)',
+                        borderRadius: '8px',
+                        fontSize: 'clamp(14px, 1.5vw, 18px)',
+                        fontWeight: '600',
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap'
+                      }}
+                    >
+                      Delete
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           </div>

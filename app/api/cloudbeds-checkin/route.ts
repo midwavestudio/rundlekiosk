@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { firstName, lastName, phoneNumber, roomNumber, clcNumber, email } = body;
+    const { firstName, lastName, phoneNumber, roomNumber, clcNumber, email, reservationID } = body;
 
     // Validate required fields
     if (!firstName || !lastName || !roomNumber) {
@@ -11,6 +11,69 @@ export async function POST(request: NextRequest) {
         { success: false, error: 'Missing required fields' },
         { status: 400 }
       );
+    }
+
+    // If reservationID is provided, update existing reservation
+    if (reservationID) {
+      const CLOUDBEDS_API_KEY = process.env.CLOUDBEDS_API_KEY;
+      const CLOUDBEDS_PROPERTY_ID = process.env.CLOUDBEDS_PROPERTY_ID;
+      const CLOUDBEDS_API_URL = process.env.CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.2';
+
+      if (!CLOUDBEDS_API_KEY || !CLOUDBEDS_PROPERTY_ID) {
+        return NextResponse.json(
+          { 
+            success: true, 
+            message: 'Check-in updated (Cloudbeds not configured)',
+            mockMode: true 
+          },
+          { status: 200 }
+        );
+      }
+
+      // Assign room
+      const roomAssignResponse = await fetch(`${CLOUDBEDS_API_URL}/postRoomAssign`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          propertyID: CLOUDBEDS_PROPERTY_ID,
+          reservationID: reservationID,
+          roomName: roomNumber,
+        }),
+      });
+
+      if (!roomAssignResponse.ok) {
+        console.warn('Room assignment failed, but continuing with check-in');
+      }
+
+      // Check in the reservation
+      const checkInResponse = await fetch(`${CLOUDBEDS_API_URL}/putReservation`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          propertyID: CLOUDBEDS_PROPERTY_ID,
+          reservationID: reservationID,
+          status: 'checked_in',
+        }),
+      });
+
+      if (!checkInResponse.ok) {
+        const errorData = await checkInResponse.json().catch(() => ({}));
+        console.error('Cloudbeds check-in failed:', errorData);
+        throw new Error('Failed to check in guest in Cloudbeds');
+      }
+
+      return NextResponse.json({
+        success: true,
+        reservationID,
+        roomNumber,
+        message: 'Guest successfully checked in to Cloudbeds',
+      });
     }
 
     // Get Cloudbeds API credentials from environment

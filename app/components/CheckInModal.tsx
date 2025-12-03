@@ -22,24 +22,55 @@ export default function CheckInModal({ reservation, onClose }: CheckInModalProps
   const [isBNSFCrew, setIsBNSFCrew] = useState(reservation.isBNSFCrew);
   const [employeeId, setEmployeeId] = useState('');
 
-  const handleCheckIn = () => {
+  const handleCheckIn = async () => {
     setStep('processing');
     
-    // Simulate API call
-    setTimeout(() => {
-      // Save to localStorage for demo
-      const checkedIn = JSON.parse(localStorage.getItem('checkedIn') || '[]');
-      checkedIn.push({
-        ...reservation,
-        roomNumber: selectedRoom,
-        isBNSFCrew,
-        employeeId: isBNSFCrew ? employeeId : null,
-        checkedInAt: new Date().toISOString()
-      });
-      localStorage.setItem('checkedIn', JSON.stringify(checkedIn));
+    try {
+      // If reservation has Cloudbeds reservation ID, update it
+      if (reservation.rawData?.cloudbedsReservationID) {
+        const cloudbedsResponse = await fetch('/api/cloudbeds-checkin', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            firstName: reservation.rawData.firstName,
+            lastName: reservation.rawData.lastName,
+            phoneNumber: reservation.rawData.phoneNumber,
+            roomNumber: selectedRoom,
+            clcNumber: reservation.rawData.clcNumber,
+            reservationID: reservation.rawData.cloudbedsReservationID,
+          }),
+        });
+
+        const cloudbedsResult = await cloudbedsResponse.json();
+        if (!cloudbedsResult.success && !cloudbedsResult.mockMode) {
+          throw new Error(cloudbedsResult.error || 'Cloudbeds check-in failed');
+        }
+      }
+
+      // Update localStorage
+      const checkedInGuests = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
+      const guestIndex = checkedInGuests.findIndex(
+        (g: any) => g.firstName === reservation.rawData?.firstName && 
+                   g.lastName === reservation.rawData?.lastName &&
+                   g.checkInTime === reservation.rawData?.checkInTime
+      );
+
+      if (guestIndex >= 0) {
+        checkedInGuests[guestIndex] = {
+          ...checkedInGuests[guestIndex],
+          roomNumber: selectedRoom,
+        };
+        localStorage.setItem('checkedInGuests', JSON.stringify(checkedInGuests));
+      }
       
       setStep('success');
-    }, 2000);
+    } catch (error: any) {
+      console.error('Check-in error:', error);
+      alert(`Check-in failed: ${error.message}. Please try again.`);
+      setStep('confirm');
+    }
   };
 
   return (

@@ -114,12 +114,24 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
             {activeTab === 'dashboard' && (
               <DashboardTab />
             )}
-            {activeTab === 'arrivals' && (
-              <ArrivalsTab onCheckIn={handleCheckIn} />
-            )}
-            {activeTab === 'departures' && (
-              <DeparturesTab onCheckOut={handleCheckOut} />
-            )}
+          {activeTab === 'arrivals' && (
+            <ArrivalsTab 
+              onCheckIn={handleCheckIn} 
+              onDelete={() => {
+                // Refresh data after delete
+                window.location.reload();
+              }}
+            />
+          )}
+          {activeTab === 'departures' && (
+            <DeparturesTab 
+              onCheckOut={handleCheckOut}
+              onDelete={() => {
+                // Refresh data after delete
+                window.location.reload();
+              }}
+            />
+          )}
           </div>
         </div>
       </div>

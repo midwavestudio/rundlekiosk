@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 
 interface DeparturesTabProps {
   onCheckOut: (reservation: any) => void;
+  onDelete?: (reservation: any) => void;
 }
 
 interface CheckedInGuest {
@@ -16,7 +17,7 @@ interface CheckedInGuest {
   checkOutTime?: string;
 }
 
-export default function DeparturesTab({ onCheckOut }: DeparturesTabProps) {
+export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterBNSF, setFilterBNSF] = useState(false);
   const [checkedInGuests, setCheckedInGuests] = useState<CheckedInGuest[]>([]);
@@ -46,6 +47,7 @@ export default function DeparturesTab({ onCheckOut }: DeparturesTabProps) {
       checkInDate: new Date(guest.checkInTime).toLocaleDateString(),
       checkInTime: new Date(guest.checkInTime).toLocaleTimeString(),
       checkOutDate: new Date().toLocaleDateString(),
+      checkOutTime: undefined,
       roomNumber: null,
       balance: 0, // Assume BNSF crew has no balance
       isBNSFCrew: true,
@@ -203,35 +205,91 @@ export default function DeparturesTab({ onCheckOut }: DeparturesTabProps) {
                 </div>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'flex-end' }}>
-                {departure.status === 'checked_out' ? (
-                  <span style={{
-                    padding: '6px 12px',
-                    background: '#dbeafe',
-                    color: '#1e40af',
-                    borderRadius: '6px',
-                    fontSize: '12px',
-                    fontWeight: '600'
-                  }}>
-                    ✓ Checked Out
-                  </span>
-                ) : (
-                  <button
-                    onClick={() => onCheckOut(departure)}
-                    style={{
-                      background: '#8b5cf6',
-                      color: 'white',
-                      border: 'none',
-                      padding: 'clamp(12px, 1.5vw, 16px) clamp(20px, 2.5vw, 32px)',
-                      borderRadius: '8px',
-                      fontSize: 'clamp(14px, 1.5vw, 18px)',
-                      fontWeight: '600',
-                      cursor: 'pointer',
-                      whiteSpace: 'nowrap'
-                    }}
-                  >
-                    Check Out
-                  </button>
-                )}
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  {departure.status === 'checked_out' ? (
+                    <span style={{
+                      padding: '6px 12px',
+                      background: '#dbeafe',
+                      color: '#1e40af',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      fontWeight: '600'
+                    }}>
+                      ✓ Checked Out
+                    </span>
+                  ) : (
+                    <button
+                      onClick={() => onCheckOut(departure)}
+                      style={{
+                        background: '#8b5cf6',
+                        color: 'white',
+                        border: 'none',
+                        padding: 'clamp(12px, 1.5vw, 16px) clamp(20px, 2.5vw, 32px)',
+                        borderRadius: '8px',
+                        fontSize: 'clamp(14px, 1.5vw, 18px)',
+                        fontWeight: '600',
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap'
+                      }}
+                    >
+                      Check Out
+                    </button>
+                  )}
+                  {onDelete && (
+                    <button
+                      onClick={async () => {
+                        if (confirm(`Are you sure you want to delete the reservation for ${departure.guestName}? This will also delete it from Cloudbeds.`)) {
+                          try {
+                            if (departure.rawData?.cloudbedsReservationID) {
+                              const response = await fetch(`/api/cloudbeds-delete?reservationID=${departure.rawData.cloudbedsReservationID}`, {
+                                method: 'DELETE',
+                              });
+                              const result = await response.json();
+                              if (!result.success && !result.mockMode) {
+                                throw new Error(result.error || 'Failed to delete from Cloudbeds');
+                              }
+                            }
+                            
+                            // Remove from localStorage
+                            if (departure.status === 'checked_in') {
+                              const checkedInGuests = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
+                              const updated = checkedInGuests.filter(
+                                (g: any) => !(g.firstName === departure.rawData?.firstName && 
+                                            g.lastName === departure.rawData?.lastName &&
+                                            g.checkInTime === departure.rawData?.checkInTime)
+                              );
+                              localStorage.setItem('checkedInGuests', JSON.stringify(updated));
+                            } else {
+                              const checkOutHistory = JSON.parse(localStorage.getItem('checkOutHistory') || '[]');
+                              const updated = checkOutHistory.filter(
+                                (g: any) => !(g.firstName === departure.rawData?.firstName && 
+                                            g.lastName === departure.rawData?.lastName &&
+                                            g.checkInTime === departure.rawData?.checkInTime)
+                              );
+                              localStorage.setItem('checkOutHistory', JSON.stringify(updated));
+                            }
+                            onDelete(departure);
+                          } catch (error: any) {
+                            alert(`Delete failed: ${error.message}`);
+                          }
+                        }
+                      }}
+                      style={{
+                        background: '#ef4444',
+                        color: 'white',
+                        border: 'none',
+                        padding: 'clamp(12px, 1.5vw, 16px) clamp(20px, 2.5vw, 32px)',
+                        borderRadius: '8px',
+                        fontSize: 'clamp(14px, 1.5vw, 18px)',
+                        fontWeight: '600',
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap'
+                      }}
+                    >
+                      Delete
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           </div>

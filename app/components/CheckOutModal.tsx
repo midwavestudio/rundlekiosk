@@ -10,21 +10,56 @@ interface CheckOutModalProps {
 export default function CheckOutModal({ reservation, onClose }: CheckOutModalProps) {
   const [step, setStep] = useState<'confirm' | 'processing' | 'success'>('confirm');
 
-  const handleCheckOut = () => {
+  const handleCheckOut = async () => {
     setStep('processing');
     
-    // Simulate API call
-    setTimeout(() => {
-      // Save to localStorage for demo
-      const checkedOut = JSON.parse(localStorage.getItem('checkedOut') || '[]');
-      checkedOut.push({
-        ...reservation,
-        checkedOutAt: new Date().toISOString()
-      });
-      localStorage.setItem('checkedOut', JSON.stringify(checkedOut));
+    try {
+      // If reservation has Cloudbeds reservation ID, check out in Cloudbeds
+      if (reservation.rawData?.cloudbedsReservationID) {
+        const cloudbedsResponse = await fetch('/api/cloudbeds-checkout', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            reservationID: reservation.rawData.cloudbedsReservationID,
+          }),
+        });
+
+        const cloudbedsResult = await cloudbedsResponse.json();
+        if (!cloudbedsResult.success && !cloudbedsResult.mockMode) {
+          throw new Error(cloudbedsResult.error || 'Cloudbeds check-out failed');
+        }
+      }
+
+      // Update localStorage - move from checkedInGuests to checkOutHistory
+      const checkedInGuests = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
+      const checkOutHistory = JSON.parse(localStorage.getItem('checkOutHistory') || '[]');
+      
+      const guestIndex = checkedInGuests.findIndex(
+        (g: any) => g.firstName === reservation.rawData?.firstName && 
+                   g.lastName === reservation.rawData?.lastName &&
+                   g.checkInTime === reservation.rawData?.checkInTime
+      );
+
+      if (guestIndex >= 0) {
+        const checkedOutGuest = {
+          ...checkedInGuests[guestIndex],
+          checkOutTime: new Date().toISOString(),
+        };
+        checkOutHistory.push(checkedOutGuest);
+        checkedInGuests.splice(guestIndex, 1);
+        
+        localStorage.setItem('checkedInGuests', JSON.stringify(checkedInGuests));
+        localStorage.setItem('checkOutHistory', JSON.stringify(checkOutHistory));
+      }
       
       setStep('success');
-    }, 2000);
+    } catch (error: any) {
+      console.error('Check-out error:', error);
+      alert(`Check-out failed: ${error.message}. Please try again.`);
+      setStep('confirm');
+    }
   };
 
   return (
