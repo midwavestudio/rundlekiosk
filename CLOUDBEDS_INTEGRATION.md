@@ -246,3 +246,5 @@ Return to home page
 - CLC number is stored in guest notes field
 - Room type is set to "Standard Room" by default
 
+
+

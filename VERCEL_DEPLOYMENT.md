@@ -128,3 +128,5 @@ curl -X POST https://your-app.vercel.app/api/checkin \
 - Never commit `.env.local` to Git (it's in `.gitignore`)
 - The `vercel.json` file no longer references environment variables - they're managed in the dashboard
 
+
+
