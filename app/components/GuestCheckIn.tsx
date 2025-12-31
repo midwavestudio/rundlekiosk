@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 interface GuestCheckInProps {
   onBack: () => void;
@@ -18,6 +18,12 @@ interface GuestData {
   cloudbedsReservationID?: string;
 }
 
+interface Room {
+  roomID: string;
+  roomName: string;
+  roomTypeName: string;
+}
+
 export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
   const [formData, setFormData] = useState<GuestData>({
     firstName: '',
@@ -31,6 +37,32 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [availableRooms, setAvailableRooms] = useState<Room[]>([]);
+  const [loadingRooms, setLoadingRooms] = useState(true);
+
+  // Fetch available rooms on component mount
+  useEffect(() => {
+    const fetchAvailableRooms = async () => {
+      try {
+        const response = await fetch('/api/available-rooms');
+        const data = await response.json();
+        
+        if (data.success) {
+          setAvailableRooms(data.rooms);
+        } else {
+          console.error('Failed to fetch rooms:', data.error);
+          setError('Unable to load available rooms. Please contact the front desk.');
+        }
+      } catch (error) {
+        console.error('Error fetching rooms:', error);
+        setError('Unable to load available rooms. Please contact the front desk.');
+      } finally {
+        setLoadingRooms(false);
+      }
+    };
+
+    fetchAvailableRooms();
+  }, []);
 
   const handleChange = (field: keyof GuestData, value: string) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
@@ -199,15 +231,39 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
         </div>
 
         <div className="form-group">
-          <label htmlFor="roomNumber">Room Number *</label>
-          <input
-            type="text"
-            id="roomNumber"
-            value={formData.roomNumber}
-            onChange={(e) => handleChange('roomNumber', e.target.value)}
-            placeholder="101"
-            required
-          />
+          <label htmlFor="roomNumber">Select Room *</label>
+          {loadingRooms ? (
+            <div style={{ padding: '12px', textAlign: 'center', color: '#666' }}>
+              Loading available rooms...
+            </div>
+          ) : availableRooms.length === 0 ? (
+            <div style={{ padding: '12px', textAlign: 'center', color: '#ef4444' }}>
+              No rooms available. Please contact the front desk.
+            </div>
+          ) : (
+            <select
+              id="roomNumber"
+              value={formData.roomNumber}
+              onChange={(e) => handleChange('roomNumber', e.target.value)}
+              required
+              style={{
+                width: '100%',
+                padding: 'clamp(12px, 2vw, 16px)',
+                border: '2px solid #e0e0e0',
+                borderRadius: '10px',
+                fontSize: 'clamp(16px, 2.5vw, 18px)',
+                backgroundColor: 'white',
+                cursor: 'pointer',
+              }}
+            >
+              <option value="">-- Select a room --</option>
+              {availableRooms.map((room) => (
+                <option key={room.roomID} value={room.roomName}>
+                  Room {room.roomName} ({room.roomTypeName})
+                </option>
+              ))}
+            </select>
+          )}
         </div>
 
         <div className="form-group">
@@ -230,7 +286,7 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
           </div>
         </div>
 
-        <button type="submit" className="submit-button" disabled={loading}>
+        <button type="submit" className="submit-button" disabled={loading || loadingRooms || availableRooms.length === 0}>
           {loading ? (
             <>
               Processing...
