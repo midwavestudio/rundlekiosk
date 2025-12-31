@@ -32,25 +32,7 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      // Assign room
-      const roomAssignResponse = await fetch(`${CLOUDBEDS_API_URL}/postRoomAssign`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          propertyID: CLOUDBEDS_PROPERTY_ID,
-          reservationID: existingReservationID,
-          roomName: roomNumber,
-        }),
-      });
-
-      if (!roomAssignResponse.ok) {
-        console.warn('Room assignment failed, but continuing with check-in');
-      }
-
-      // Check in the reservation
+      // Check in the reservation (just update status)
       const checkInResponse = await fetch(`${CLOUDBEDS_API_URL}/putReservation`, {
         method: 'PUT',
         headers: {
@@ -73,7 +55,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         success: true,
         reservationID: existingReservationID,
-        roomNumber,
+        roomTypeName: roomTypeName,
         message: 'Guest successfully checked in to Cloudbeds',
       });
     }
