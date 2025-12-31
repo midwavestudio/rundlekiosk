@@ -19,11 +19,9 @@ interface GuestData {
 }
 
 interface Room {
-  roomTypeID: string;
-  roomTypeName: string;
+  roomID: string;
   roomName: string;
-  maxGuests?: number;
-  propertyRoomTypeID?: string;
+  roomTypeName: string;
 }
 
 export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
@@ -117,7 +115,7 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
             firstName: formData.firstName,
             lastName: formData.lastName,
             phoneNumber: formData.phoneNumber,
-            roomTypeName: formData.roomNumber, // This is actually the room type name
+            roomName: formData.roomNumber, // Specific room number
             clcNumber: formData.clcNumber,
             classType: formData.class,
             email: `${formData.firstName.toLowerCase()}.${formData.lastName.toLowerCase()}@guest.com`,
@@ -234,14 +232,14 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
         </div>
 
         <div className="form-group">
-          <label htmlFor="roomNumber">Select Accommodation Type *</label>
+          <label htmlFor="roomNumber">Select Room Number *</label>
           {loadingRooms ? (
             <div style={{ padding: '12px', textAlign: 'center', color: '#666' }}>
               Loading available rooms...
             </div>
           ) : availableRooms.length === 0 ? (
             <div style={{ padding: '12px', textAlign: 'center', color: '#ef4444' }}>
-              No accommodation types available. Please contact the front desk.
+              No rooms available. Please contact the front desk.
             </div>
           ) : (
             <select
@@ -259,10 +257,10 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
                 cursor: 'pointer',
               }}
             >
-              <option value="">-- Select a room type --</option>
+              <option value="">-- Select a room --</option>
               {availableRooms.map((room) => (
-                <option key={room.roomTypeID} value={room.roomTypeName}>
-                  {room.roomTypeName}
+                <option key={room.roomID} value={room.roomName}>
+                  Room {room.roomName} ({room.roomTypeName})
                 </option>
               ))}
             </select>
