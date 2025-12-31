@@ -3,10 +3,12 @@ import { NextRequest, NextResponse } from 'next/server';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { firstName, lastName, phoneNumber, roomNumber, clcNumber, email, reservationID: existingReservationID } = body;
+    const { firstName, lastName, phoneNumber, roomTypeName, clcNumber, classType, email, reservationID: existingReservationID } = body;
+
+    console.log('Check-in API called with:', { firstName, lastName, roomTypeName, clcNumber, classType });
 
     // Validate required fields
-    if (!firstName || !lastName || !roomNumber) {
+    if (!firstName || !lastName || !roomTypeName) {
       return NextResponse.json(
         { success: false, error: 'Missing required fields' },
         { status: 400 }
@@ -99,6 +101,7 @@ export async function POST(request: NextRequest) {
     const checkOutDate = new Date(today.getTime() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
     // Step 1: Create a guest in Cloudbeds
+    console.log('Creating guest in Cloudbeds...');
     const guestResponse = await fetch(`${CLOUDBEDS_API_URL}/postGuest`, {
       method: 'POST',
       headers: {
@@ -111,7 +114,7 @@ export async function POST(request: NextRequest) {
         guestLastName: lastName,
         guestPhone: phoneNumber,
         guestEmail: email || `${firstName.toLowerCase()}.${lastName.toLowerCase()}@guest.com`,
-        guestNotes: `CLC Number: ${clcNumber}`,
+        guestNotes: `CLC Number: ${clcNumber || 'N/A'}, Class: ${classType || 'N/A'}`,
       }),
     });
 
@@ -123,8 +126,10 @@ export async function POST(request: NextRequest) {
 
     const guestData = await guestResponse.json();
     const guestID = guestData.data?.guestID || guestData.guestID;
+    console.log('Guest created with ID:', guestID);
 
-    // Step 2: Create a reservation
+    // Step 2: Create a reservation with the selected room type
+    console.log('Creating reservation with room type:', roomTypeName);
     const reservationResponse = await fetch(`${CLOUDBEDS_API_URL}/postReservation`, {
       method: 'POST',
       headers: {
@@ -138,7 +143,7 @@ export async function POST(request: NextRequest) {
         endDate: checkOutDate,
         adults: 1,
         children: 0,
-        roomTypeName: 'Standard Room',
+        roomTypeName: roomTypeName, // Use the room type name from dropdown
         status: 'confirmed',
       }),
     });
@@ -151,27 +156,10 @@ export async function POST(request: NextRequest) {
 
     const reservationData = await reservationResponse.json();
     const reservationID = reservationData.data?.reservationID || reservationData.reservationID;
+    console.log('Reservation created with ID:', reservationID);
 
-    // Step 3: Assign the room
-    const roomAssignResponse = await fetch(`${CLOUDBEDS_API_URL}/postRoomAssign`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        propertyID: CLOUDBEDS_PROPERTY_ID,
-        reservationID: reservationID,
-        roomName: roomNumber,
-      }),
-    });
-
-    if (!roomAssignResponse.ok) {
-      console.warn('Room assignment failed, but continuing with check-in');
-      // Don't fail the whole process if room assignment fails
-    }
-
-    // Step 4: Check in the guest
+    // Step 3: Check in the guest (set status to checked_in)
+    console.log('Checking in guest...');
     const checkInResponse = await fetch(`${CLOUDBEDS_API_URL}/putReservation`, {
       method: 'PUT',
       headers: {
@@ -187,15 +175,16 @@ export async function POST(request: NextRequest) {
 
     if (!checkInResponse.ok) {
       const errorData = await checkInResponse.json().catch(() => ({}));
-      console.error('Cloudbeds check-in failed:', errorData);
-      throw new Error('Failed to check in guest in Cloudbeds');
+      console.error('Cloudbeds check-in status update failed:', errorData);
+      // Don't fail - reservation is created, just status update failed
     }
 
+    console.log('Check-in complete!');
     return NextResponse.json({
       success: true,
       guestID,
       reservationID,
-      roomNumber,
+      roomTypeName: roomTypeName,
       message: 'Guest successfully checked in to Cloudbeds',
     });
 

@@ -2,46 +2,38 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export async function GET(request: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url);
-    const checkInDate = searchParams.get('checkInDate') || new Date().toISOString().split('T')[0];
-    const checkOutDate = searchParams.get('checkOutDate') || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-
     const CLOUDBEDS_API_KEY = process.env.CLOUDBEDS_API_KEY;
     const CLOUDBEDS_PROPERTY_ID = process.env.CLOUDBEDS_PROPERTY_ID;
     const CLOUDBEDS_API_URL = process.env.CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.2';
 
     console.log('Available Rooms API called:', {
-      checkInDate,
-      checkOutDate,
       hasApiKey: !!CLOUDBEDS_API_KEY,
       hasPropertyId: !!CLOUDBEDS_PROPERTY_ID,
+      propertyId: CLOUDBEDS_PROPERTY_ID,
     });
 
     if (!CLOUDBEDS_API_KEY || !CLOUDBEDS_PROPERTY_ID) {
       console.warn('Cloudbeds API credentials not configured');
-      // Return mock rooms for testing
       return NextResponse.json({
         success: true,
         rooms: [
-          { roomID: '101', roomName: '101', roomTypeName: 'Standard Room' },
-          { roomID: '102', roomName: '102', roomTypeName: 'Standard Room' },
-          { roomID: '201', roomName: '201', roomTypeName: 'Deluxe Room' },
-          { roomID: '202', roomName: '202', roomTypeName: 'Deluxe Room' },
+          { roomTypeID: '1', roomTypeName: 'Standard Room', roomName: 'Standard Room' },
+          { roomTypeID: '2', roomTypeName: 'Deluxe Room', roomName: 'Deluxe Room' },
         ],
         mockMode: true,
       });
     }
 
-    // Try to fetch available (unassigned) rooms from Cloudbeds
-    let rooms = [];
+    // Fetch Room Types (Accommodation Types) from Cloudbeds
+    let roomTypes = [];
     let apiError = null;
 
     try {
-      console.log('Calling Cloudbeds getRoomsUnassigned...');
-      const unassignedUrl = `${CLOUDBEDS_API_URL}/getRoomsUnassigned?propertyID=${CLOUDBEDS_PROPERTY_ID}&checkIn=${checkInDate}&checkOut=${checkOutDate}`;
-      console.log('URL:', unassignedUrl);
+      console.log('Calling Cloudbeds getRoomTypes...');
+      const roomTypesUrl = `${CLOUDBEDS_API_URL}/getRoomTypes?propertyID=${CLOUDBEDS_PROPERTY_ID}`;
+      console.log('URL:', roomTypesUrl);
 
-      const response = await fetch(unassignedUrl, {
+      const response = await fetch(roomTypesUrl, {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
@@ -60,60 +52,40 @@ export async function GET(request: NextRequest) {
       const data = JSON.parse(responseText);
       console.log('Parsed data:', JSON.stringify(data, null, 2));
       
-      rooms = data.data || data.rooms || [];
-      console.log('Extracted rooms:', rooms.length);
+      // Cloudbeds returns room types in data.data or data array
+      roomTypes = data.data || data;
+      console.log('Extracted room types:', roomTypes.length);
 
-      // If no unassigned rooms found, try to get ALL rooms
-      if (!rooms || rooms.length === 0) {
-        console.log('No unassigned rooms found, fetching all rooms...');
-        const allRoomsUrl = `${CLOUDBEDS_API_URL}/getRooms?propertyID=${CLOUDBEDS_PROPERTY_ID}`;
-        console.log('All rooms URL:', allRoomsUrl);
-
-        const allRoomsResponse = await fetch(allRoomsUrl, {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
-            'Content-Type': 'application/json',
-          },
-        });
-
-        if (allRoomsResponse.ok) {
-          const allRoomsData = await allRoomsResponse.json();
-          console.log('All rooms data:', JSON.stringify(allRoomsData, null, 2));
-          rooms = allRoomsData.data || allRoomsData.rooms || [];
-          console.log('Total rooms found:', rooms.length);
-        }
-      }
     } catch (error: any) {
-      console.error('Error fetching rooms from Cloudbeds:', error);
+      console.error('Error fetching room types from Cloudbeds:', error);
       apiError = error.message;
     }
 
-    // If still no rooms, return mock data with explanation
-    if (!rooms || rooms.length === 0) {
-      console.warn('No rooms found from Cloudbeds, returning mock data');
+    // If no room types found, return mock data
+    if (!roomTypes || roomTypes.length === 0) {
+      console.warn('No room types found from Cloudbeds, returning mock data');
       return NextResponse.json({
         success: true,
         rooms: [
-          { roomID: '101', roomName: '101', roomTypeName: 'Standard Room' },
-          { roomID: '102', roomName: '102', roomTypeName: 'Standard Room' },
-          { roomID: '103', roomName: '103', roomTypeName: 'Standard Room' },
-          { roomID: '201', roomName: '201', roomTypeName: 'Deluxe Room' },
-          { roomID: '202', roomName: '202', roomTypeName: 'Deluxe Room' },
-          { roomID: '203', roomName: '203', roomTypeName: 'Deluxe Room' },
+          { roomTypeID: '1', roomTypeName: 'Standard Room', roomName: 'Standard Room' },
+          { roomTypeID: '2', roomTypeName: 'Deluxe Room', roomName: 'Deluxe Room' },
+          { roomTypeID: '3', roomTypeName: 'Suite', roomName: 'Suite' },
         ],
         mockMode: true,
-        reason: apiError || 'No rooms returned from Cloudbeds API',
+        reason: apiError || 'No room types returned from Cloudbeds API',
       });
     }
 
-    const formattedRooms = rooms.map((room: any) => ({
-      roomID: room.roomID || room.id || room.roomName,
-      roomName: room.roomName || room.name || room.roomID,
-      roomTypeName: room.roomTypeName || room.roomType || room.type || 'Standard Room',
+    // Format room types for the dropdown
+    const formattedRooms = roomTypes.map((roomType: any) => ({
+      roomTypeID: roomType.roomTypeID || roomType.id,
+      roomTypeName: roomType.roomTypeName || roomType.name || 'Unknown Room Type',
+      roomName: roomType.roomTypeName || roomType.name || 'Unknown Room Type',
+      maxGuests: roomType.maxGuests || 2,
+      propertyRoomTypeID: roomType.propertyRoomTypeID,
     }));
 
-    console.log('Returning formatted rooms:', formattedRooms);
+    console.log('Returning formatted room types:', formattedRooms);
 
     return NextResponse.json({
       success: true,
@@ -129,12 +101,9 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       success: true,
       rooms: [
-        { roomID: '101', roomName: '101', roomTypeName: 'Standard Room' },
-        { roomID: '102', roomName: '102', roomTypeName: 'Standard Room' },
-        { roomID: '103', roomName: '103', roomTypeName: 'Standard Room' },
-        { roomID: '201', roomName: '201', roomTypeName: 'Deluxe Room' },
-        { roomID: '202', roomName: '202', roomTypeName: 'Deluxe Room' },
-        { roomID: '203', roomName: '203', roomTypeName: 'Deluxe Room' },
+        { roomTypeID: '1', roomTypeName: 'Standard Room', roomName: 'Standard Room' },
+        { roomTypeID: '2', roomTypeName: 'Deluxe Room', roomName: 'Deluxe Room' },
+        { roomTypeID: '3', roomTypeName: 'Suite', roomName: 'Suite' },
       ],
       mockMode: true,
       error: error.message,
