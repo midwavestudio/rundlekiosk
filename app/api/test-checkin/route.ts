@@ -72,7 +72,8 @@ export async function POST(request: NextRequest) {
         endDate: checkOutDate,
         adults: '1',
         children: '0',
-        roomTypeName: roomTypeName,
+        rooms: '1', // Number of rooms
+        roomTypeID: roomTypeID || '', // Use roomTypeID instead of roomTypeName
         status: 'confirmed',
         sourceID: 's-945658', // TYE rate plan
       });
