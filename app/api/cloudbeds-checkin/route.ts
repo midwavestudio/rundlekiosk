@@ -110,7 +110,7 @@ export async function POST(request: NextRequest) {
     const guestID = guestData.data?.guestID || guestData.guestID;
     console.log('Guest created with ID:', guestID);
 
-    // Step 2: Get the room details to find the room type
+    // Step 2: Get the room details to find the room type and roomID
     console.log('Fetching room details for room:', roomName);
     const roomsResponse = await fetch(`${CLOUDBEDS_API_URL}/getRooms?propertyID=${CLOUDBEDS_PROPERTY_ID}`, {
       method: 'GET',
@@ -121,16 +121,38 @@ export async function POST(request: NextRequest) {
     });
 
     let roomTypeName = 'Standard Room'; // Default fallback
+    let roomTypeID = null;
+    let actualRoomID = null;
+    
     if (roomsResponse.ok) {
       const roomsData = await roomsResponse.json();
-      const rooms = roomsData.data || [];
-      const selectedRoom = rooms.find((r: any) => 
-        (r.roomName || r.name) === roomName || 
-        (r.roomID || r.id)?.toString() === roomName
-      );
+      console.log('Rooms data structure:', JSON.stringify(roomsData, null, 2));
+      
+      // Handle nested structure: data[0].rooms
+      let rooms = [];
+      if (roomsData.data && Array.isArray(roomsData.data) && roomsData.data.length > 0 && roomsData.data[0].rooms) {
+        rooms = roomsData.data[0].rooms;
+      } else {
+        rooms = roomsData.data || [];
+      }
+      
+      console.log('Searching for room:', roomName, 'in', rooms.length, 'rooms');
+      
+      const selectedRoom = rooms.find((r: any) => {
+        const matches = (r.roomName === roomName || r.name === roomName || r.roomID === roomName || r.id === roomName);
+        if (matches) {
+          console.log('Found matching room:', r);
+        }
+        return matches;
+      });
+      
       if (selectedRoom) {
         roomTypeName = selectedRoom.roomTypeName || selectedRoom.roomType || 'Standard Room';
-        console.log('Found room type:', roomTypeName);
+        roomTypeID = selectedRoom.roomTypeID || selectedRoom.roomType_id;
+        actualRoomID = selectedRoom.roomID || selectedRoom.id;
+        console.log('Found room details:', { roomTypeName, roomTypeID, actualRoomID });
+      } else {
+        console.warn('Room not found:', roomName);
       }
     }
 
@@ -165,26 +187,38 @@ export async function POST(request: NextRequest) {
     console.log('Reservation created with ID:', reservationID);
 
     // Step 4: Assign the specific room to the reservation
-    console.log('Assigning room:', roomName);
+    console.log('Assigning room ID:', actualRoomID, 'roomName:', roomName);
+    
+    const assignPayload: any = {
+      propertyID: CLOUDBEDS_PROPERTY_ID,
+      reservationID: reservationID,
+    };
+    
+    // Use roomID if we have it, otherwise fall back to roomName
+    if (actualRoomID) {
+      assignPayload.roomID = actualRoomID;
+    } else {
+      assignPayload.roomName = roomName;
+    }
+    
+    console.log('Room assign payload:', JSON.stringify(assignPayload));
+    
     const roomAssignResponse = await fetch(`${CLOUDBEDS_API_URL}/postRoomAssign`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        propertyID: CLOUDBEDS_PROPERTY_ID,
-        reservationID: reservationID,
-        roomName: roomName,
-      }),
+      body: JSON.stringify(assignPayload),
     });
 
     if (!roomAssignResponse.ok) {
-      const assignError = await roomAssignResponse.json().catch(() => ({}));
-      console.warn('Room assignment failed:', assignError);
+      const assignErrorText = await roomAssignResponse.text();
+      console.error('Room assignment failed:', roomAssignResponse.status, assignErrorText);
       // Continue anyway - reservation is created
     } else {
-      console.log('Room assigned successfully');
+      const assignResult = await roomAssignResponse.json();
+      console.log('Room assigned successfully:', assignResult);
     }
 
     // Step 5: Check in the guest (set status to checked_in)

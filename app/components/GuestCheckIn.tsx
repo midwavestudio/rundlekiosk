@@ -106,6 +106,12 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
 
       // Call Cloudbeds API to create reservation and check in
       try {
+        // Find the selected room details
+        const selectedRoom = availableRooms.find(r => r.roomID === formData.roomNumber);
+        const roomNameToSend = selectedRoom ? selectedRoom.roomID : formData.roomNumber;
+        
+        console.log('Checking in with room:', { roomID: formData.roomNumber, roomName: selectedRoom?.roomName });
+        
         const cloudbedsResponse = await fetch('/api/cloudbeds-checkin', {
           method: 'POST',
           headers: {
@@ -115,7 +121,7 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
             firstName: formData.firstName,
             lastName: formData.lastName,
             phoneNumber: formData.phoneNumber,
-            roomName: formData.roomNumber, // Specific room number
+            roomName: roomNameToSend, // Send roomID (which Cloudbeds expects)
             clcNumber: formData.clcNumber,
             classType: formData.class,
             email: `${formData.firstName.toLowerCase()}.${formData.lastName.toLowerCase()}@guest.com`,
@@ -259,7 +265,7 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
             >
               <option value="">-- Select a room --</option>
               {availableRooms.map((room) => (
-                <option key={room.roomID} value={room.roomName}>
+                <option key={room.roomID} value={room.roomID}>
                   Room {room.roomName} ({room.roomTypeName})
                 </option>
               ))}
