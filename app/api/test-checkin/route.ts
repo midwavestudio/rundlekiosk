@@ -62,8 +62,10 @@ export async function POST(request: NextRequest) {
 
       // Step 2: Create reservation with guest info (Cloudbeds creates guest automatically)
       // Using TYE source (s-945658) for all kiosk check-ins
-      // Use JSON format because rooms must be an array
-      const reservationPayload = {
+      // Try form-urlencoded with rooms as JSON string
+      const roomsArray = JSON.stringify([{ roomTypeID: roomTypeID || '', quantity: 1 }]);
+      
+      const reservationParams = new URLSearchParams({
         propertyID: CLOUDBEDS_PROPERTY_ID || '',
         guestFirstName: firstName || '',
         guestLastName: lastName || '',
@@ -72,18 +74,18 @@ export async function POST(request: NextRequest) {
         guestCountry: 'US', // United States (BNSF crew)
         startDate: checkInDate,
         endDate: checkOutDate,
-        adults: 1,
-        children: 0,
-        rooms: [{ roomTypeID: roomTypeID || '', quantity: 1 }], // Array format required
+        adults: '1',
+        children: '0',
+        rooms: roomsArray, // JSON string of array
         status: 'confirmed',
         sourceID: 's-945658', // TYE rate plan
         paymentMethod: 'CLC', // CLC payment method for BNSF crew
-      };
+      });
 
       const step2 = {
         step: 2,
         action: 'postReservation (creates guest + reservation)',
-        payload: reservationPayload,
+        payload: Object.fromEntries(reservationParams),
         status: 0,
         response: '',
         parsed: null,
@@ -94,9 +96,9 @@ export async function POST(request: NextRequest) {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
-          'Content-Type': 'application/json',
+          'Content-Type': 'application/x-www-form-urlencoded',
         },
-        body: JSON.stringify(reservationPayload),
+        body: reservationParams.toString(),
       });
 
       const reservationText = await reservationResponse.text();
