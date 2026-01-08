@@ -74,7 +74,7 @@ export async function GET(request: NextRequest) {
               roomName: roomName || roomID || 'Unknown Room',
               roomTypeName: roomType,
             };
-          }).filter(room => room.roomID !== 'unknown'); // Filter out malformed rooms
+          }).filter((room: any) => room.roomID !== 'unknown'); // Filter out malformed rooms
           
           console.log('Returning unassigned rooms:', formattedRooms);
           return NextResponse.json({
@@ -179,7 +179,7 @@ export async function GET(request: NextRequest) {
               roomName: roomName || roomID || 'Unknown Room',
               roomTypeName: roomType,
             };
-          }).filter(room => room.roomID !== 'unknown'); // Filter out malformed rooms
+          }).filter((room: any) => room.roomID !== 'unknown'); // Filter out malformed rooms
           
           console.log('Returning filtered rooms:', formattedRooms);
           return NextResponse.json({
