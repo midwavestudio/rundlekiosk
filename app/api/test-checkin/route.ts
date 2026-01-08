@@ -23,53 +23,8 @@ export async function POST(request: NextRequest) {
       steps: [],
     };
 
-    // Step 1: Create guest
+    // Step 1: Get rooms to find room details (do this first)
     try {
-      // Try form-data format for postGuest
-      const guestParams = new URLSearchParams({
-        propertyID: CLOUDBEDS_PROPERTY_ID || '',
-        guestFirstName: firstName || '',
-        guestLastName: lastName || '',
-        guestPhone: phoneNumber || '',
-        guestEmail: `${firstName.toLowerCase()}.${lastName.toLowerCase()}@guest.com`,
-      });
-
-      results.steps.push({
-        step: 1,
-        action: 'postGuest',
-        payload: Object.fromEntries(guestParams),
-      });
-
-      const guestResponse = await fetch(`${CLOUDBEDS_API_URL}/postGuest`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: guestParams.toString(),
-      });
-
-      const guestText = await guestResponse.text();
-      results.steps[0].status = guestResponse.status;
-      results.steps[0].response = guestText;
-      results.steps[0].parsed = (() => {
-        try {
-          return JSON.parse(guestText);
-        } catch {
-          return null;
-        }
-      })();
-
-      if (!guestResponse.ok) {
-        results.error = 'Failed at step 1: postGuest';
-        return NextResponse.json(results);
-      }
-
-      const guestData = JSON.parse(guestText);
-      const guestID = guestData.data?.guestID || guestData.guestID;
-      results.guestID = guestID;
-
-      // Step 2: Get rooms to find room details
       const roomsResponse = await fetch(`${CLOUDBEDS_API_URL}/getRooms?propertyID=${CLOUDBEDS_PROPERTY_ID}`, {
         method: 'GET',
         headers: {
@@ -89,7 +44,7 @@ export async function POST(request: NextRequest) {
       const selectedRoom = rooms.find((r: any) => r.roomID === roomName || r.roomName === roomName);
       
       results.steps.push({
-        step: 2,
+        step: 1,
         action: 'getRooms (find room details)',
         searchedFor: roomName,
         foundRoom: selectedRoom,
@@ -105,10 +60,13 @@ export async function POST(request: NextRequest) {
       const roomTypeID = selectedRoom.roomTypeID;
       const roomID = selectedRoom.roomID;
 
-      // Step 3: Create reservation
+      // Step 2: Create reservation with guest info (Cloudbeds creates guest automatically)
       const reservationParams = new URLSearchParams({
         propertyID: CLOUDBEDS_PROPERTY_ID || '',
-        guestID: String(guestID),
+        guestFirstName: firstName || '',
+        guestLastName: lastName || '',
+        guestEmail: `${firstName.toLowerCase()}.${lastName.toLowerCase()}@guest.com`,
+        guestPhone: phoneNumber || '',
         startDate: checkInDate,
         endDate: checkOutDate,
         adults: '1',
@@ -118,8 +76,8 @@ export async function POST(request: NextRequest) {
       });
 
       results.steps.push({
-        step: 3,
-        action: 'postReservation',
+        step: 2,
+        action: 'postReservation (creates guest + reservation)',
         payload: Object.fromEntries(reservationParams),
       });
 
@@ -150,9 +108,11 @@ export async function POST(request: NextRequest) {
 
       const reservationData = JSON.parse(reservationText);
       const reservationID = reservationData.data?.reservationID || reservationData.reservationID;
+      const guestID = reservationData.data?.guestID || reservationData.guestID;
       results.reservationID = reservationID;
+      results.guestID = guestID;
 
-      // Step 4: Assign room
+      // Step 3: Assign specific room
       const assignParams = new URLSearchParams({
         propertyID: CLOUDBEDS_PROPERTY_ID || '',
         reservationID: String(reservationID),
@@ -160,7 +120,7 @@ export async function POST(request: NextRequest) {
       });
 
       results.steps.push({
-        step: 4,
+        step: 3,
         action: 'postRoomAssign',
         payload: Object.fromEntries(assignParams),
       });
@@ -175,9 +135,9 @@ export async function POST(request: NextRequest) {
       });
 
       const assignText = await assignResponse.text();
-      results.steps[3].status = assignResponse.status;
-      results.steps[3].response = assignText;
-      results.steps[3].parsed = (() => {
+      results.steps[2].status = assignResponse.status;
+      results.steps[2].response = assignText;
+      results.steps[2].parsed = (() => {
         try {
           return JSON.parse(assignText);
         } catch {
@@ -185,7 +145,7 @@ export async function POST(request: NextRequest) {
         }
       })();
 
-      // Step 5: Check in
+      // Step 4: Check in
       const checkInParams = new URLSearchParams({
         propertyID: CLOUDBEDS_PROPERTY_ID || '',
         reservationID: String(reservationID),
@@ -193,7 +153,7 @@ export async function POST(request: NextRequest) {
       });
 
       results.steps.push({
-        step: 5,
+        step: 4,
         action: 'putReservation (check-in)',
         payload: Object.fromEntries(checkInParams),
       });
@@ -208,9 +168,9 @@ export async function POST(request: NextRequest) {
       });
 
       const checkInText = await checkInResponse.text();
-      results.steps[4].status = checkInResponse.status;
-      results.steps[4].response = checkInText;
-      results.steps[4].parsed = (() => {
+      results.steps[3].status = checkInResponse.status;
+      results.steps[3].response = checkInText;
+      results.steps[3].parsed = (() => {
         try {
           return JSON.parse(checkInText);
         } catch {
