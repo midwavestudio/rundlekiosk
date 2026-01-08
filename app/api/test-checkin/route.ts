@@ -27,10 +27,10 @@ export async function POST(request: NextRequest) {
     try {
       // Try form-data format for postGuest
       const guestParams = new URLSearchParams({
-        propertyID: CLOUDBEDS_PROPERTY_ID,
-        guestFirstName: firstName,
-        guestLastName: lastName,
-        guestPhone: phoneNumber,
+        propertyID: CLOUDBEDS_PROPERTY_ID || '',
+        guestFirstName: firstName || '',
+        guestLastName: lastName || '',
+        guestPhone: phoneNumber || '',
         guestEmail: `${firstName.toLowerCase()}.${lastName.toLowerCase()}@guest.com`,
       });
 
@@ -107,8 +107,8 @@ export async function POST(request: NextRequest) {
 
       // Step 3: Create reservation
       const reservationParams = new URLSearchParams({
-        propertyID: CLOUDBEDS_PROPERTY_ID,
-        guestID: guestID.toString(),
+        propertyID: CLOUDBEDS_PROPERTY_ID || '',
+        guestID: String(guestID),
         startDate: checkInDate,
         endDate: checkOutDate,
         adults: '1',
@@ -154,9 +154,9 @@ export async function POST(request: NextRequest) {
 
       // Step 4: Assign room
       const assignParams = new URLSearchParams({
-        propertyID: CLOUDBEDS_PROPERTY_ID,
-        reservationID: reservationID.toString(),
-        roomID: roomID,
+        propertyID: CLOUDBEDS_PROPERTY_ID || '',
+        reservationID: String(reservationID),
+        roomID: roomID || '',
       });
 
       results.steps.push({
@@ -187,8 +187,8 @@ export async function POST(request: NextRequest) {
 
       // Step 5: Check in
       const checkInParams = new URLSearchParams({
-        propertyID: CLOUDBEDS_PROPERTY_ID,
-        reservationID: reservationID.toString(),
+        propertyID: CLOUDBEDS_PROPERTY_ID || '',
+        reservationID: String(reservationID),
         status: 'checked_in',
       });
 
