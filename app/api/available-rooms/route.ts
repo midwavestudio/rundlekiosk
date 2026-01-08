@@ -56,25 +56,34 @@ export async function GET(request: NextRequest) {
         const data = JSON.parse(responseText);
         console.log('Parsed unassigned rooms data:', JSON.stringify(data, null, 2));
         
-        availableRooms = data.data || data.rooms || data || [];
+        // Cloudbeds returns: { success: true, data: [{ propertyID: "...", rooms: [...] }] }
+        if (data.data && Array.isArray(data.data) && data.data.length > 0 && data.data[0].rooms) {
+          availableRooms = data.data[0].rooms;
+        } else {
+          availableRooms = data.data || data.rooms || data || [];
+        }
         console.log('Found unassigned rooms:', availableRooms.length);
         
         if (availableRooms.length > 0) {
           // Format and return - handle different response structures
-          const formattedRooms = availableRooms.map((room: any) => {
-            // Try multiple field names that Cloudbeds might use
-            const roomID = room.roomID || room.id || room.room_id || room.roomId;
-            const roomName = room.roomName || room.name || room.room_name || room.roomNumber || roomID;
-            const roomType = room.roomTypeName || room.roomType || room.room_type || room.typeName || room.type || 'Standard Room';
-            
-            console.log('Formatting room:', { original: room, formatted: { roomID, roomName, roomType } });
-            
-            return {
-              roomID: roomID || roomName || 'unknown',
-              roomName: roomName || roomID || 'Unknown Room',
-              roomTypeName: roomType,
-            };
-          }).filter((room: any) => room.roomID !== 'unknown'); // Filter out malformed rooms
+          // Filter out blocked rooms
+          const formattedRooms = availableRooms
+            .filter((room: any) => !room.roomBlocked) // Exclude blocked rooms
+            .map((room: any) => {
+              // Try multiple field names that Cloudbeds might use
+              const roomID = room.roomID || room.id || room.room_id || room.roomId;
+              const roomName = room.roomName || room.name || room.room_name || room.roomNumber || roomID;
+              const roomType = room.roomTypeName || room.roomType || room.room_type || room.typeName || room.type || 'Standard Room';
+              
+              console.log('Formatting room:', { original: room, formatted: { roomID, roomName, roomType } });
+              
+              return {
+                roomID: roomID || roomName || 'unknown',
+                roomName: roomName || roomID || 'Unknown Room',
+                roomTypeName: roomType,
+              };
+            })
+            .filter((room: any) => room.roomID !== 'unknown'); // Filter out malformed rooms
           
           console.log('Returning unassigned rooms:', formattedRooms);
           return NextResponse.json({
@@ -115,7 +124,13 @@ export async function GET(request: NextRequest) {
         console.log('getRooms response:', responseText);
         
         const roomsData = JSON.parse(responseText);
-        const allRooms = roomsData.data || roomsData.rooms || roomsData || [];
+        // Cloudbeds returns: { success: true, data: [{ propertyID: "...", rooms: [...] }] }
+        let allRooms = [];
+        if (roomsData.data && Array.isArray(roomsData.data) && roomsData.data.length > 0 && roomsData.data[0].rooms) {
+          allRooms = roomsData.data[0].rooms;
+        } else {
+          allRooms = roomsData.data || roomsData.rooms || roomsData || [];
+        }
         console.log('Total rooms found:', allRooms.length);
 
         // Get reservations to find occupied rooms
@@ -156,11 +171,12 @@ export async function GET(request: NextRequest) {
           console.warn('Could not fetch reservations:', resError);
         }
 
-        // Filter out occupied rooms
+        // Filter out occupied and blocked rooms
         availableRooms = allRooms.filter((room: any) => {
           const roomID = (room.roomID || room.id)?.toString();
           const roomName = room.roomName || room.name;
-          return !occupiedRoomIDs.has(roomID) && !occupiedRoomNames.has(roomName);
+          const isBlocked = room.roomBlocked === true;
+          return !isBlocked && !occupiedRoomIDs.has(roomID) && !occupiedRoomNames.has(roomName);
         });
 
         console.log('Available rooms after filtering:', availableRooms.length);
