@@ -68,6 +68,7 @@ export async function POST(request: NextRequest) {
         guestLastName: lastName || '',
         guestEmail: `${firstName.toLowerCase()}.${lastName.toLowerCase()}@guest.com`,
         guestPhone: phoneNumber || '',
+        guestCountry: 'US', // United States (BNSF crew)
         startDate: checkInDate,
         endDate: checkOutDate,
         adults: '1',
