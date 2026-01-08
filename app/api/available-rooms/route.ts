@@ -60,12 +60,21 @@ export async function GET(request: NextRequest) {
         console.log('Found unassigned rooms:', availableRooms.length);
         
         if (availableRooms.length > 0) {
-          // Format and return
-          const formattedRooms = availableRooms.map((room: any) => ({
-            roomID: room.roomID || room.id || room.roomName,
-            roomName: room.roomName || room.name || `Room ${room.roomID || room.id}`,
-            roomTypeName: room.roomTypeName || room.roomType || room.typeName || 'Standard Room',
-          }));
+          // Format and return - handle different response structures
+          const formattedRooms = availableRooms.map((room: any) => {
+            // Try multiple field names that Cloudbeds might use
+            const roomID = room.roomID || room.id || room.room_id || room.roomId;
+            const roomName = room.roomName || room.name || room.room_name || room.roomNumber || roomID;
+            const roomType = room.roomTypeName || room.roomType || room.room_type || room.typeName || room.type || 'Standard Room';
+            
+            console.log('Formatting room:', { original: room, formatted: { roomID, roomName, roomType } });
+            
+            return {
+              roomID: roomID || roomName || 'unknown',
+              roomName: roomName || roomID || 'Unknown Room',
+              roomTypeName: roomType,
+            };
+          }).filter(room => room.roomID !== 'unknown'); // Filter out malformed rooms
           
           console.log('Returning unassigned rooms:', formattedRooms);
           return NextResponse.json({
@@ -157,11 +166,20 @@ export async function GET(request: NextRequest) {
         console.log('Available rooms after filtering:', availableRooms.length);
 
         if (availableRooms.length > 0) {
-          const formattedRooms = availableRooms.map((room: any) => ({
-            roomID: room.roomID || room.id || room.roomName,
-            roomName: room.roomName || room.name || `Room ${room.roomID || room.id}`,
-            roomTypeName: room.roomTypeName || room.roomType || room.typeName || 'Standard Room',
-          }));
+          const formattedRooms = availableRooms.map((room: any) => {
+            // Try multiple field names that Cloudbeds might use
+            const roomID = room.roomID || room.id || room.room_id || room.roomId;
+            const roomName = room.roomName || room.name || room.room_name || room.roomNumber || roomID;
+            const roomType = room.roomTypeName || room.roomType || room.room_type || room.typeName || room.type || 'Standard Room';
+            
+            console.log('Formatting room:', { original: room, formatted: { roomID, roomName, roomType } });
+            
+            return {
+              roomID: roomID || roomName || 'unknown',
+              roomName: roomName || roomID || 'Unknown Room',
+              roomTypeName: roomType,
+            };
+          }).filter(room => room.roomID !== 'unknown'); // Filter out malformed rooms
           
           console.log('Returning filtered rooms:', formattedRooms);
           return NextResponse.json({
