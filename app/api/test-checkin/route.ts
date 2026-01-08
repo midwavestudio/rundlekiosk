@@ -61,6 +61,7 @@ export async function POST(request: NextRequest) {
       const roomID = selectedRoom.roomID;
 
       // Step 2: Create reservation with guest info (Cloudbeds creates guest automatically)
+      // Using TYE source (s-945658) for all kiosk check-ins
       const reservationParams = new URLSearchParams({
         propertyID: CLOUDBEDS_PROPERTY_ID || '',
         guestFirstName: firstName || '',
@@ -73,13 +74,18 @@ export async function POST(request: NextRequest) {
         children: '0',
         roomTypeName: roomTypeName,
         status: 'confirmed',
+        sourceID: 's-945658', // TYE rate plan
       });
 
-      results.steps.push({
+      const step2 = {
         step: 2,
         action: 'postReservation (creates guest + reservation)',
         payload: Object.fromEntries(reservationParams),
-      });
+        status: 0,
+        response: '',
+        parsed: null,
+      };
+      results.steps.push(step2);
 
       const reservationResponse = await fetch(`${CLOUDBEDS_API_URL}/postReservation`, {
         method: 'POST',
@@ -91,9 +97,9 @@ export async function POST(request: NextRequest) {
       });
 
       const reservationText = await reservationResponse.text();
-      results.steps[2].status = reservationResponse.status;
-      results.steps[2].response = reservationText;
-      results.steps[2].parsed = (() => {
+      step2.status = reservationResponse.status;
+      step2.response = reservationText;
+      step2.parsed = (() => {
         try {
           return JSON.parse(reservationText);
         } catch {
@@ -102,7 +108,7 @@ export async function POST(request: NextRequest) {
       })();
 
       if (!reservationResponse.ok) {
-        results.error = 'Failed at step 3: postReservation';
+        results.error = 'Failed at step 2: postReservation';
         return NextResponse.json(results);
       }
 
@@ -119,11 +125,15 @@ export async function POST(request: NextRequest) {
         roomID: roomID || '',
       });
 
-      results.steps.push({
+      const step3 = {
         step: 3,
         action: 'postRoomAssign',
         payload: Object.fromEntries(assignParams),
-      });
+        status: 0,
+        response: '',
+        parsed: null,
+      };
+      results.steps.push(step3);
 
       const assignResponse = await fetch(`${CLOUDBEDS_API_URL}/postRoomAssign`, {
         method: 'POST',
@@ -135,9 +145,9 @@ export async function POST(request: NextRequest) {
       });
 
       const assignText = await assignResponse.text();
-      results.steps[2].status = assignResponse.status;
-      results.steps[2].response = assignText;
-      results.steps[2].parsed = (() => {
+      step3.status = assignResponse.status;
+      step3.response = assignText;
+      step3.parsed = (() => {
         try {
           return JSON.parse(assignText);
         } catch {
@@ -152,11 +162,15 @@ export async function POST(request: NextRequest) {
         status: 'checked_in',
       });
 
-      results.steps.push({
+      const step4 = {
         step: 4,
         action: 'putReservation (check-in)',
         payload: Object.fromEntries(checkInParams),
-      });
+        status: 0,
+        response: '',
+        parsed: null,
+      };
+      results.steps.push(step4);
 
       const checkInResponse = await fetch(`${CLOUDBEDS_API_URL}/putReservation`, {
         method: 'PUT',
@@ -168,9 +182,9 @@ export async function POST(request: NextRequest) {
       });
 
       const checkInText = await checkInResponse.text();
-      results.steps[3].status = checkInResponse.status;
-      results.steps[3].response = checkInText;
-      results.steps[3].parsed = (() => {
+      step4.status = checkInResponse.status;
+      step4.response = checkInText;
+      step4.parsed = (() => {
         try {
           return JSON.parse(checkInText);
         } catch {
