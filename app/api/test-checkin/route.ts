@@ -76,6 +76,7 @@ export async function POST(request: NextRequest) {
         roomTypeID: roomTypeID || '', // Use roomTypeID instead of roomTypeName
         status: 'confirmed',
         sourceID: 's-945658', // TYE rate plan
+        paymentMethod: 'invoice', // BNSF crew pays later via invoice
       });
 
       const step2 = {
