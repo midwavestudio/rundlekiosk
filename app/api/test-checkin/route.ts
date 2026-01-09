@@ -7,7 +7,7 @@ export async function POST(request: NextRequest) {
 
     const CLOUDBEDS_API_KEY = process.env.CLOUDBEDS_API_KEY;
     const CLOUDBEDS_PROPERTY_ID = process.env.CLOUDBEDS_PROPERTY_ID;
-    const CLOUDBEDS_API_URL = process.env.CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.2';
+    const CLOUDBEDS_API_URL = process.env.CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.3';
 
     const today = new Date();
     const checkInDate = today.toISOString().split('T')[0];

@@ -14,7 +14,7 @@ export async function DELETE(request: NextRequest) {
 
     const CLOUDBEDS_API_KEY = process.env.CLOUDBEDS_API_KEY;
     const CLOUDBEDS_PROPERTY_ID = process.env.CLOUDBEDS_PROPERTY_ID;
-    const CLOUDBEDS_API_URL = process.env.CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.2';
+    const CLOUDBEDS_API_URL = process.env.CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.3';
 
     if (!CLOUDBEDS_API_KEY || !CLOUDBEDS_PROPERTY_ID) {
       console.warn('Cloudbeds API credentials not configured');

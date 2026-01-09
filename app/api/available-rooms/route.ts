@@ -4,7 +4,7 @@ export async function GET(request: NextRequest) {
   try {
     const CLOUDBEDS_API_KEY = process.env.CLOUDBEDS_API_KEY;
     const CLOUDBEDS_PROPERTY_ID = process.env.CLOUDBEDS_PROPERTY_ID;
-    const CLOUDBEDS_API_URL = process.env.CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.2';
+    const CLOUDBEDS_API_URL = process.env.CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.3';
 
     // IMPORTANT: Always use TODAY's date for check-in, tomorrow for check-out
     // This ensures we only show rooms available for today
