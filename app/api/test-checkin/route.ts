@@ -62,7 +62,7 @@ export async function POST(request: NextRequest) {
 
       // Step 2: Create reservation with guest info (Cloudbeds creates guest automatically)
       // Using TYE source (s-945658) for all kiosk check-ins
-      // Try form-urlencoded with rooms as JSON string
+      // Note: adults must be an array format like [1], and rooms must be a JSON string
       const roomsArray = JSON.stringify([{ roomTypeID: roomTypeID || '', quantity: 1 }]);
       
       const reservationParams = new URLSearchParams({
@@ -74,8 +74,8 @@ export async function POST(request: NextRequest) {
         guestCountry: 'US', // United States (BNSF crew)
         startDate: checkInDate,
         endDate: checkOutDate,
-        adults: '1',
-        children: '0',
+        adults: '[1]', // Must be array format
+        children: '[0]', // Must be array format
         rooms: roomsArray, // JSON string of array
         status: 'confirmed',
         sourceID: 's-945658', // TYE rate plan
@@ -124,10 +124,11 @@ export async function POST(request: NextRequest) {
       results.guestID = guestID;
 
       // Step 3: Assign specific room
+      // Note: postRoomAssign requires 'newRoomID' parameter, not 'roomID'
       const assignParams = new URLSearchParams({
         propertyID: CLOUDBEDS_PROPERTY_ID || '',
         reservationID: String(reservationID),
-        roomID: roomID || '',
+        newRoomID: roomID || '',
       });
 
       const step3 = {

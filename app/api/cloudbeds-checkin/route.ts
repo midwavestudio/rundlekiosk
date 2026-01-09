@@ -194,9 +194,9 @@ export async function POST(request: NextRequest) {
       reservationID: reservationID,
     };
     
-    // Use roomID if we have it, otherwise fall back to roomName
+    // Use newRoomID parameter (required by Cloudbeds API) if we have it, otherwise fall back to roomName
     if (actualRoomID) {
-      assignPayload.roomID = actualRoomID;
+      assignPayload.newRoomID = actualRoomID;
     } else {
       assignPayload.roomName = roomName;
     }
