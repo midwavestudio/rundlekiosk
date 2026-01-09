@@ -6,15 +6,18 @@ export async function GET(request: NextRequest) {
     const CLOUDBEDS_PROPERTY_ID = process.env.CLOUDBEDS_PROPERTY_ID;
     const CLOUDBEDS_API_URL = process.env.CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.2';
 
+    // IMPORTANT: Always use TODAY's date for check-in, tomorrow for check-out
+    // This ensures we only show rooms available for today
     const today = new Date().toISOString().split('T')[0];
     const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
-    console.log('Available Rooms API called:', {
+    console.log('Available Rooms API called for TODAY only:', {
       hasApiKey: !!CLOUDBEDS_API_KEY,
       hasPropertyId: !!CLOUDBEDS_PROPERTY_ID,
       propertyId: CLOUDBEDS_PROPERTY_ID,
       checkIn: today,
       checkOut: tomorrow,
+      note: 'Only showing rooms available for today',
     });
 
     if (!CLOUDBEDS_API_KEY || !CLOUDBEDS_PROPERTY_ID) {
@@ -138,10 +141,17 @@ export async function GET(request: NextRequest) {
         let occupiedRoomIDs = new Set<string>();
 
         try {
+          // Get reservations for TODAY only - check both arrivals and current guests
+          // We need to check: 1) Guests checking in today, 2) Guests already checked in
           const reservationsUrl = `${CLOUDBEDS_API_URL}/getReservations?propertyID=${CLOUDBEDS_PROPERTY_ID}&checkInFrom=${today}&checkInTo=${today}`;
-          console.log('Reservations URL:', reservationsUrl);
+          const checkedInUrl = `${CLOUDBEDS_API_URL}/getReservations?propertyID=${CLOUDBEDS_PROPERTY_ID}&status=checked_in`;
+          
+          console.log('Checking occupied rooms for today...');
+          console.log('Arrivals URL:', reservationsUrl);
+          console.log('Checked-in URL:', checkedInUrl);
 
-          const reservationsResponse = await fetch(reservationsUrl, {
+          // Get today's arrivals
+          const arrivalsResponse = await fetch(reservationsUrl, {
             method: 'GET',
             headers: {
               'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
@@ -149,24 +159,51 @@ export async function GET(request: NextRequest) {
             },
           });
 
-          if (reservationsResponse.ok) {
-            const reservationsData = await reservationsResponse.json();
-            const reservations = reservationsData.data || reservationsData || [];
-            
-            reservations.forEach((reservation: any) => {
-              if (reservation.rooms && Array.isArray(reservation.rooms)) {
-                reservation.rooms.forEach((room: any) => {
-                  if (room.roomID) occupiedRoomIDs.add(room.roomID.toString());
-                  if (room.roomName) occupiedRoomNames.add(room.roomName);
-                });
-              }
-              // Also check roomName directly on reservation
-              if (reservation.roomName) occupiedRoomNames.add(reservation.roomName);
-            });
-            
-            console.log('Occupied room IDs:', Array.from(occupiedRoomIDs));
-            console.log('Occupied room names:', Array.from(occupiedRoomNames));
+          // Get currently checked-in guests
+          const checkedInResponse = await fetch(checkedInUrl, {
+            method: 'GET',
+            headers: {
+              'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
+              'Content-Type': 'application/json',
+            },
+          });
+
+          const allReservations: any[] = [];
+
+          if (arrivalsResponse.ok) {
+            const arrivalsData = await arrivalsResponse.json();
+            const arrivals = arrivalsData.data || arrivalsData || [];
+            allReservations.push(...arrivals);
+            console.log(`Found ${arrivals.length} arrivals for today`);
           }
+
+          if (checkedInResponse.ok) {
+            const checkedInData = await checkedInResponse.json();
+            const checkedIn = checkedInData.data || checkedInData || [];
+            // Filter to only include those checking out AFTER today
+            const stayingTonight = checkedIn.filter((r: any) => {
+              const checkOut = r.endDate || r.checkOutDate;
+              return checkOut && checkOut > today;
+            });
+            allReservations.push(...stayingTonight);
+            console.log(`Found ${stayingTonight.length} guests staying tonight`);
+          }
+            
+          allReservations.forEach((reservation: any) => {
+            if (reservation.rooms && Array.isArray(reservation.rooms)) {
+              reservation.rooms.forEach((room: any) => {
+                if (room.roomID) occupiedRoomIDs.add(room.roomID.toString());
+                if (room.roomName) occupiedRoomNames.add(room.roomName);
+              });
+            }
+            // Also check roomName/roomID directly on reservation
+            if (reservation.roomName) occupiedRoomNames.add(reservation.roomName);
+            if (reservation.roomID) occupiedRoomIDs.add(reservation.roomID.toString());
+          });
+          
+          console.log(`Total occupied rooms for tonight: ${occupiedRoomIDs.size + occupiedRoomNames.size}`);
+          console.log('Occupied room IDs:', Array.from(occupiedRoomIDs));
+          console.log('Occupied room names:', Array.from(occupiedRoomNames));
         } catch (resError) {
           console.warn('Could not fetch reservations:', resError);
         }

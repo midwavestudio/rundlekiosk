@@ -112,14 +112,23 @@ export async function POST(request: NextRequest) {
         }
       })();
 
-      if (!reservationResponse.ok) {
+      if (!reservationResponse.ok || !step2.parsed?.success) {
+        results.success = false;
         results.error = 'Failed at step 2: postReservation';
+        results.errorMessage = step2.parsed?.message || 'Unknown error creating reservation';
         return NextResponse.json(results);
       }
 
       const reservationData = JSON.parse(reservationText);
       const reservationID = reservationData.data?.reservationID || reservationData.reservationID;
       const guestID = reservationData.data?.guestID || reservationData.guestID;
+      
+      if (!reservationID) {
+        results.success = false;
+        results.error = 'Failed at step 2: No reservationID returned';
+        return NextResponse.json(results);
+      }
+      
       results.reservationID = reservationID;
       results.guestID = guestID;
 
@@ -161,6 +170,14 @@ export async function POST(request: NextRequest) {
         }
       })();
 
+      // Validate room assignment succeeded
+      if (!assignResponse.ok || !step3.parsed?.success) {
+        results.success = false;
+        results.message = 'Room assignment failed at step 3';
+        results.error = step3.parsed?.message || 'Failed to assign room to reservation';
+        return NextResponse.json(results);
+      }
+
       // Step 4: Check in
       const checkInParams = new URLSearchParams({
         propertyID: CLOUDBEDS_PROPERTY_ID || '',
@@ -198,8 +215,16 @@ export async function POST(request: NextRequest) {
         }
       })();
 
+      // Validate check-in actually succeeded
+      if (!checkInResponse.ok || !step4.parsed?.success) {
+        results.success = false;
+        results.message = 'Check-in failed at step 4';
+        results.error = step4.parsed?.message || 'Failed to update reservation status to checked_in';
+        return NextResponse.json(results);
+      }
+
       results.success = true;
-      results.message = 'All steps completed';
+      results.message = 'Guest successfully checked in!';
       
     } catch (error: any) {
       results.error = error.message;

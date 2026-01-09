@@ -179,11 +179,19 @@ export async function POST(request: NextRequest) {
     if (!reservationResponse.ok) {
       const errorData = await reservationResponse.json().catch(() => ({}));
       console.error('Cloudbeds reservation creation failed:', errorData);
-      throw new Error('Failed to create reservation in Cloudbeds');
+      throw new Error(`Failed to create reservation in Cloudbeds: ${errorData.message || 'Unknown error'}`);
     }
 
     const reservationData = await reservationResponse.json();
+    if (!reservationData.success) {
+      console.error('Reservation creation returned success:false:', reservationData);
+      throw new Error(`Reservation creation failed: ${reservationData.message || 'Unknown error'}`);
+    }
+    
     const reservationID = reservationData.data?.reservationID || reservationData.reservationID;
+    if (!reservationID) {
+      throw new Error('No reservationID returned from Cloudbeds');
+    }
     console.log('Reservation created with ID:', reservationID);
 
     // Step 4: Assign the specific room to the reservation
@@ -215,11 +223,15 @@ export async function POST(request: NextRequest) {
     if (!roomAssignResponse.ok) {
       const assignErrorText = await roomAssignResponse.text();
       console.error('Room assignment failed:', roomAssignResponse.status, assignErrorText);
-      // Continue anyway - reservation is created
-    } else {
-      const assignResult = await roomAssignResponse.json();
-      console.log('Room assigned successfully:', assignResult);
+      throw new Error(`Failed to assign room: ${assignErrorText}`);
     }
+    
+    const assignResult = await roomAssignResponse.json();
+    if (!assignResult.success) {
+      console.error('Room assignment returned success:false:', assignResult);
+      throw new Error(`Room assignment failed: ${assignResult.message || 'Unknown error'}`);
+    }
+    console.log('Room assigned successfully:', assignResult);
 
     // Step 5: Check in the guest (set status to checked_in)
     console.log('Checking in guest...');
@@ -239,7 +251,13 @@ export async function POST(request: NextRequest) {
     if (!checkInResponse.ok) {
       const errorData = await checkInResponse.json().catch(() => ({}));
       console.error('Cloudbeds check-in status update failed:', errorData);
-      // Don't fail - reservation is created, just status update failed
+      throw new Error(`Failed to check in guest: ${errorData.message || 'Unknown error'}`);
+    }
+
+    const checkInData = await checkInResponse.json();
+    if (!checkInData.success) {
+      console.error('Check-in returned success:false:', checkInData);
+      throw new Error(`Check-in failed: ${checkInData.message || 'Unknown error'}`);
     }
 
     console.log('Check-in complete!');
