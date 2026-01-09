@@ -60,14 +60,68 @@ export async function POST(request: NextRequest) {
       const roomTypeID = selectedRoom.roomTypeID;
       const roomID = selectedRoom.roomID;
 
-      // Step 2: Create reservation first (postReservation creates guest automatically)
-      const reservationPayload = {
+      // Step 2: Create guest first (matching production flow)
+      const guestPayload = {
         propertyID: CLOUDBEDS_PROPERTY_ID,
         guestFirstName: firstName,
         guestLastName: lastName,
-        guestEmail: `${firstName.toLowerCase()}.${lastName.toLowerCase()}@guest.com`,
         guestPhone: phoneNumber,
-        guestCountry: 'US',
+        guestEmail: `${firstName.toLowerCase()}.${lastName.toLowerCase()}@guest.com`,
+        guestNotes: `Kiosk check-in on ${checkInDate}`,
+      };
+
+      const step2: any = {
+        step: 2,
+        action: 'postGuest (create guest)',
+        payload: guestPayload,
+        status: 0,
+        response: '',
+        parsed: null as any,
+      };
+      results.steps.push(step2);
+
+      const guestResponse = await fetch(`${CLOUDBEDS_API_URL}/postGuest`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(guestPayload),
+      });
+
+      const guestText = await guestResponse.text();
+      step2.status = guestResponse.status;
+      step2.response = guestText;
+      step2.parsed = (() => {
+        try {
+          return JSON.parse(guestText);
+        } catch {
+          return null;
+        }
+      })();
+
+      if (!guestResponse.ok || !step2.parsed?.success) {
+        results.success = false;
+        results.error = 'Failed at step 2: postGuest';
+        results.errorMessage = step2.parsed?.message || 'Unknown error creating guest';
+        return NextResponse.json(results);
+      }
+
+      const guestData = JSON.parse(guestText);
+      const guestID = guestData.data?.guestID || guestData.guestID;
+      
+      if (!guestID) {
+        results.success = false;
+        results.error = 'Failed at step 2: No guestID returned';
+        return NextResponse.json(results);
+      }
+      
+      results.guestID = guestID;
+
+      // Step 3: Create reservation with the guestID
+      const reservationPayload = {
+        propertyID: CLOUDBEDS_PROPERTY_ID,
+        guestID: guestID,
         startDate: checkInDate,
         endDate: checkOutDate,
         adults: 1,
@@ -76,15 +130,15 @@ export async function POST(request: NextRequest) {
         status: 'confirmed',
       };
 
-      const step2: any = {
-        step: 2,
-        action: 'postReservation (create guest + reservation)',
+      const step3: any = {
+        step: 3,
+        action: 'postReservation (create reservation)',
         payload: reservationPayload,
         status: 0,
         response: '',
         parsed: null as any,
       };
-      results.steps.push(step2);
+      results.steps.push(step3);
 
       const reservationResponse = await fetch(`${CLOUDBEDS_API_URL}/postReservation`, {
         method: 'POST',
@@ -96,9 +150,9 @@ export async function POST(request: NextRequest) {
       });
 
       const reservationText = await reservationResponse.text();
-      step2.status = reservationResponse.status;
-      step2.response = reservationText;
-      step2.parsed = (() => {
+      step3.status = reservationResponse.status;
+      step3.response = reservationText;
+      step3.parsed = (() => {
         try {
           return JSON.parse(reservationText);
         } catch {
@@ -106,42 +160,40 @@ export async function POST(request: NextRequest) {
         }
       })();
 
-      if (!reservationResponse.ok || !step2.parsed?.success) {
+      if (!reservationResponse.ok || !step3.parsed?.success) {
         results.success = false;
-        results.error = 'Failed at step 2: postReservation';
-        results.errorMessage = step2.parsed?.message || 'Unknown error creating reservation';
+        results.error = 'Failed at step 3: postReservation';
+        results.errorMessage = step3.parsed?.message || 'Unknown error creating reservation';
         return NextResponse.json(results);
       }
 
       const reservationData = JSON.parse(reservationText);
       const reservationID = reservationData.data?.reservationID || reservationData.reservationID;
-      const guestID = reservationData.data?.guestID || reservationData.guestID;
       
       if (!reservationID) {
         results.success = false;
-        results.error = 'Failed at step 2: No reservationID returned';
+        results.error = 'Failed at step 3: No reservationID returned';
         return NextResponse.json(results);
       }
       
       results.reservationID = reservationID;
-      results.guestID = guestID;
 
-      // Step 3: Assign specific room
+      // Step 4: Assign specific room
       const assignPayload = {
         propertyID: CLOUDBEDS_PROPERTY_ID,
         reservationID: reservationID,
         newRoomID: roomID,
       };
 
-      const step3: any = {
-        step: 3,
+      const step4: any = {
+        step: 4,
         action: 'postRoomAssign',
         payload: assignPayload,
         status: 0,
         response: '',
         parsed: null as any,
       };
-      results.steps.push(step3);
+      results.steps.push(step4);
 
       const assignResponse = await fetch(`${CLOUDBEDS_API_URL}/postRoomAssign`, {
         method: 'POST',
@@ -153,9 +205,9 @@ export async function POST(request: NextRequest) {
       });
 
       const assignText = await assignResponse.text();
-      step3.status = assignResponse.status;
-      step3.response = assignText;
-      step3.parsed = (() => {
+      step4.status = assignResponse.status;
+      step4.response = assignText;
+      step4.parsed = (() => {
         try {
           return JSON.parse(assignText);
         } catch {
@@ -164,29 +216,29 @@ export async function POST(request: NextRequest) {
       })();
 
       // Validate room assignment succeeded
-      if (!assignResponse.ok || !step3.parsed?.success) {
+      if (!assignResponse.ok || !step4.parsed?.success) {
         results.success = false;
-        results.message = 'Room assignment failed at step 3';
-        results.error = step3.parsed?.message || 'Failed to assign room to reservation';
+        results.message = 'Room assignment failed at step 4';
+        results.error = step4.parsed?.message || 'Failed to assign room to reservation';
         return NextResponse.json(results);
       }
 
-      // Step 4: Check in
+      // Step 5: Check in
       const checkInPayload = {
         propertyID: CLOUDBEDS_PROPERTY_ID,
         reservationID: reservationID,
         status: 'checked_in',
       };
 
-      const step4: any = {
-        step: 4,
+      const step5: any = {
+        step: 5,
         action: 'putReservation (check-in)',
         payload: checkInPayload,
         status: 0,
         response: '',
         parsed: null as any,
       };
-      results.steps.push(step4);
+      results.steps.push(step5);
 
       const checkInResponse = await fetch(`${CLOUDBEDS_API_URL}/putReservation`, {
         method: 'PUT',
@@ -198,9 +250,9 @@ export async function POST(request: NextRequest) {
       });
 
       const checkInText = await checkInResponse.text();
-      step4.status = checkInResponse.status;
-      step4.response = checkInText;
-      step4.parsed = (() => {
+      step5.status = checkInResponse.status;
+      step5.response = checkInText;
+      step5.parsed = (() => {
         try {
           return JSON.parse(checkInText);
         } catch {
@@ -209,10 +261,10 @@ export async function POST(request: NextRequest) {
       })();
 
       // Validate check-in actually succeeded
-      if (!checkInResponse.ok || !step4.parsed?.success) {
+      if (!checkInResponse.ok || !step5.parsed?.success) {
         results.success = false;
-        results.message = 'Check-in failed at step 4';
-        results.error = step4.parsed?.message || 'Failed to update reservation status to checked_in';
+        results.message = 'Check-in failed at step 5';
+        results.error = step5.parsed?.message || 'Failed to update reservation status to checked_in';
         return NextResponse.json(results);
       }
 
