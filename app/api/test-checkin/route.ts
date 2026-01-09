@@ -61,25 +61,27 @@ export async function POST(request: NextRequest) {
       const roomID = selectedRoom.roomID;
 
       // Step 2: Create reservation with guest info (creates both guest and reservation)
-      // postReservation can create a new guest when you provide guest details
-      const reservationPayload = {
-        propertyID: CLOUDBEDS_PROPERTY_ID,
-        guestFirstName: firstName,
-        guestLastName: lastName,
-        guestEmail: `${firstName.toLowerCase()}.${lastName.toLowerCase()}@guest.com`,
-        guestPhone: phoneNumber,
-        startDate: checkInDate,
-        endDate: checkOutDate,
-        adults: 1,
-        children: 0,
-        roomTypeName: roomTypeName,
-        status: 'confirmed',
-      };
+      // IMPORTANT: v1.3 API requires application/x-www-form-urlencoded format
+      // and specific array formatting for adults/children/rooms
+      const reservationParams = new URLSearchParams();
+      reservationParams.append('propertyID', CLOUDBEDS_PROPERTY_ID || '');
+      reservationParams.append('guestFirstName', firstName);
+      reservationParams.append('guestLastName', lastName);
+      reservationParams.append('guestEmail', `${firstName.toLowerCase()}.${lastName.toLowerCase()}@guest.com`);
+      reservationParams.append('guestPhone', phoneNumber);
+      reservationParams.append('startDate', checkInDate);
+      reservationParams.append('endDate', checkOutDate);
+      reservationParams.append('adults[0]', '1'); // Array format for first room type
+      reservationParams.append('children[0]', '0'); // Array format for first room type
+      reservationParams.append('rooms[0][roomTypeID]', roomTypeID || '');
+      reservationParams.append('rooms[0][quantity]', '1');
+      reservationParams.append('status', 'confirmed');
+      reservationParams.append('sourceID', 's-2-1'); // Walk-in source (primary)
 
       const step2: any = {
         step: 2,
         action: 'postReservation (create guest + reservation)',
-        payload: reservationPayload,
+        payload: Object.fromEntries(reservationParams),
         status: 0,
         response: '',
         parsed: null as any,
@@ -90,9 +92,9 @@ export async function POST(request: NextRequest) {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
-          'Content-Type': 'application/json',
+          'Content-Type': 'application/x-www-form-urlencoded',
         },
-        body: JSON.stringify(reservationPayload),
+        body: reservationParams.toString(),
       });
 
       const reservationText = await reservationResponse.text();
@@ -127,16 +129,15 @@ export async function POST(request: NextRequest) {
       results.guestID = guestID;
 
       // Step 3: Assign specific room
-      const assignPayload = {
-        propertyID: CLOUDBEDS_PROPERTY_ID,
-        reservationID: reservationID,
-        newRoomID: roomID,
-      };
+      const assignParams = new URLSearchParams();
+      assignParams.append('propertyID', CLOUDBEDS_PROPERTY_ID || '');
+      assignParams.append('reservationID', String(reservationID));
+      assignParams.append('newRoomID', roomID);
 
       const step3: any = {
         step: 3,
         action: 'postRoomAssign',
-        payload: assignPayload,
+        payload: Object.fromEntries(assignParams),
         status: 0,
         response: '',
         parsed: null as any,
@@ -147,9 +148,9 @@ export async function POST(request: NextRequest) {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
-          'Content-Type': 'application/json',
+          'Content-Type': 'application/x-www-form-urlencoded',
         },
-        body: JSON.stringify(assignPayload),
+        body: assignParams.toString(),
       });
 
       const assignText = await assignResponse.text();
@@ -172,16 +173,15 @@ export async function POST(request: NextRequest) {
       }
 
       // Step 4: Check in
-      const checkInPayload = {
-        propertyID: CLOUDBEDS_PROPERTY_ID,
-        reservationID: reservationID,
-        status: 'checked_in',
-      };
+      const checkInParams = new URLSearchParams();
+      checkInParams.append('propertyID', CLOUDBEDS_PROPERTY_ID || '');
+      checkInParams.append('reservationID', String(reservationID));
+      checkInParams.append('status', 'checked_in');
 
       const step4: any = {
         step: 4,
         action: 'putReservation (check-in)',
-        payload: checkInPayload,
+        payload: Object.fromEntries(checkInParams),
         status: 0,
         response: '',
         parsed: null as any,
@@ -192,9 +192,9 @@ export async function POST(request: NextRequest) {
         method: 'PUT',
         headers: {
           'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
-          'Content-Type': 'application/json',
+          'Content-Type': 'application/x-www-form-urlencoded',
         },
-        body: JSON.stringify(checkInPayload),
+        body: checkInParams.toString(),
       });
 
       const checkInText = await checkInResponse.text();

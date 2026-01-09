@@ -29,17 +29,18 @@ export async function POST(request: NextRequest) {
     }
 
     // Check out the reservation
+    const checkOutParams = new URLSearchParams();
+    checkOutParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+    checkOutParams.append('reservationID', reservationID);
+    checkOutParams.append('status', 'checked_out');
+    
     const checkOutResponse = await fetch(`${CLOUDBEDS_API_URL}/putReservation`, {
       method: 'PUT',
       headers: {
         'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
-        'Content-Type': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded',
       },
-      body: JSON.stringify({
-        propertyID: CLOUDBEDS_PROPERTY_ID,
-        reservationID: reservationID,
-        status: 'checked_out',
-      }),
+      body: checkOutParams.toString(),
     });
 
     if (!checkOutResponse.ok) {

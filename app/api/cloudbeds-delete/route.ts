@@ -31,17 +31,18 @@ export async function DELETE(request: NextRequest) {
     // Cancel/delete the reservation in Cloudbeds
     // Note: Cloudbeds may use different endpoints for cancellation vs deletion
     // Using putReservation with status 'cancelled' as a safe approach
+    const deleteParams = new URLSearchParams();
+    deleteParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+    deleteParams.append('reservationID', reservationID);
+    deleteParams.append('status', 'cancelled');
+    
     const deleteResponse = await fetch(`${CLOUDBEDS_API_URL}/putReservation`, {
       method: 'PUT',
       headers: {
         'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
-        'Content-Type': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded',
       },
-      body: JSON.stringify({
-        propertyID: CLOUDBEDS_PROPERTY_ID,
-        reservationID: reservationID,
-        status: 'cancelled',
-      }),
+      body: deleteParams.toString(),
     });
 
     if (!deleteResponse.ok) {
