@@ -82,13 +82,13 @@ export async function POST(request: NextRequest) {
         paymentMethod: 'CLC', // CLC payment method for BNSF crew
       });
 
-      const step2 = {
+      const step2: any = {
         step: 2,
         action: 'postReservation (creates guest + reservation)',
         payload: Object.fromEntries(reservationParams),
         status: 0,
         response: '',
-        parsed: null,
+        parsed: null as any,
       };
       results.steps.push(step2);
 
@@ -140,13 +140,13 @@ export async function POST(request: NextRequest) {
         newRoomID: roomID || '',
       });
 
-      const step3 = {
+      const step3: any = {
         step: 3,
         action: 'postRoomAssign',
         payload: Object.fromEntries(assignParams),
         status: 0,
         response: '',
-        parsed: null,
+        parsed: null as any,
       };
       results.steps.push(step3);
 
@@ -185,13 +185,13 @@ export async function POST(request: NextRequest) {
         status: 'checked_in',
       });
 
-      const step4 = {
+      const step4: any = {
         step: 4,
         action: 'putReservation (check-in)',
         payload: Object.fromEntries(checkInParams),
         status: 0,
         response: '',
-        parsed: null,
+        parsed: null as any,
       };
       results.steps.push(step4);
 
