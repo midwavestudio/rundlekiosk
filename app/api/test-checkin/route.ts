@@ -77,6 +77,7 @@ export async function POST(request: NextRequest) {
       reservationParams.append('rooms[0][quantity]', '1');
       reservationParams.append('status', 'confirmed');
       reservationParams.append('sourceID', 's-2-1'); // Walk-in source (primary)
+      reservationParams.append('paymentMethod', 'cash'); // Required parameter
 
       const step2: any = {
         step: 2,
