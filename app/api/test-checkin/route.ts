@@ -62,7 +62,7 @@ export async function POST(request: NextRequest) {
 
       // Step 2: Create reservation with guest info (creates both guest and reservation)
       // IMPORTANT: v1.3 API requires application/x-www-form-urlencoded format
-      // and specific array formatting for adults/children/rooms
+      // with nested array structure for adults/children per room type
       const reservationParams = new URLSearchParams();
       reservationParams.append('propertyID', CLOUDBEDS_PROPERTY_ID || '');
       reservationParams.append('guestFirstName', firstName);
@@ -72,12 +72,15 @@ export async function POST(request: NextRequest) {
       reservationParams.append('guestCountry', 'US'); // United States - required parameter
       reservationParams.append('startDate', checkInDate);
       reservationParams.append('endDate', checkOutDate);
-      reservationParams.append('adults[0]', '1'); // Array format for first room type
-      reservationParams.append('children[0]', '0'); // Array format for first room type
+      // v1.3 requires adults/children to be associated with each room type
+      reservationParams.append('adults[0][roomTypeID]', roomTypeID || '');
+      reservationParams.append('adults[0][quantity]', '1');
+      reservationParams.append('children[0][roomTypeID]', roomTypeID || '');
+      reservationParams.append('children[0][quantity]', '0');
       reservationParams.append('rooms[0][roomTypeID]', roomTypeID || '');
       reservationParams.append('rooms[0][quantity]', '1');
       reservationParams.append('status', 'confirmed');
-      reservationParams.append('sourceID', 's-2-1'); // Walk-in source (primary)
+      reservationParams.append('sourceID', 's-2-1'); // Walk-in source (TYE)
       reservationParams.append('paymentMethod', 'CLC'); // CLC payment method for BNSF crew
 
       const step2: any = {
