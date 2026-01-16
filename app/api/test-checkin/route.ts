@@ -69,6 +69,7 @@ export async function POST(request: NextRequest) {
       reservationParams.append('guestLastName', lastName);
       reservationParams.append('guestEmail', `${firstName.toLowerCase()}.${lastName.toLowerCase()}@guest.com`);
       reservationParams.append('guestPhone', phoneNumber);
+      reservationParams.append('guestCountry', 'US'); // United States - required parameter
       reservationParams.append('startDate', checkInDate);
       reservationParams.append('endDate', checkOutDate);
       reservationParams.append('adults[0]', '1'); // Array format for first room type

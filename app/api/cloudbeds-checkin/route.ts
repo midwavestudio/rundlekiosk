@@ -163,6 +163,7 @@ export async function POST(request: NextRequest) {
     const reservationParams = new URLSearchParams();
     reservationParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
     reservationParams.append('guestID', String(guestID));
+    reservationParams.append('guestCountry', 'US'); // United States - required parameter
     reservationParams.append('startDate', checkInDate);
     reservationParams.append('endDate', checkOutDate);
     reservationParams.append('adults[0]', '1'); // Array format for first room type
