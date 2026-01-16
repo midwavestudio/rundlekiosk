@@ -171,7 +171,7 @@ export async function POST(request: NextRequest) {
     reservationParams.append('rooms[0][quantity]', '1');
     reservationParams.append('status', 'confirmed');
     reservationParams.append('sourceID', 's-2-1'); // Walk-in source (primary)
-    reservationParams.append('paymentMethod', 'cash'); // Required parameter
+    reservationParams.append('paymentMethod', 'CLC'); // CLC payment method for BNSF crew
     
     const reservationResponse = await fetch(`${CLOUDBEDS_API_URL}/postReservation`, {
       method: 'POST',
