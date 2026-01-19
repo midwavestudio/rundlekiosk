@@ -160,23 +160,24 @@ export async function POST(request: NextRequest) {
     // Step 3: Create a reservation with the room type
     // IMPORTANT: v1.3 API requires application/x-www-form-urlencoded format
     // with nested array structure for adults/children per room type
+    // Format based on Cloudbeds developer example
     console.log('Creating reservation with room type:', roomTypeName, 'roomTypeID:', roomTypeID);
     const reservationParams = new URLSearchParams();
     reservationParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
     reservationParams.append('guestID', String(guestID));
-    reservationParams.append('guestCountry', 'US'); // United States - required parameter
     reservationParams.append('startDate', checkInDate);
     reservationParams.append('endDate', checkOutDate);
-    // v1.3 requires adults/children to be associated with each room type
+    reservationParams.append('guestCountry', 'US'); // United States - required parameter
+    reservationParams.append('guestZip', '00000'); // Required parameter - default zip
+    reservationParams.append('paymentMethod', 'CLC'); // CLC payment method for BNSF crew
+    // Nested array structure for rooms, adults, and children per room type
+    reservationParams.append('rooms[0][roomTypeID]', roomTypeID || '');
+    reservationParams.append('rooms[0][quantity]', '1');
     reservationParams.append('adults[0][roomTypeID]', roomTypeID || '');
     reservationParams.append('adults[0][quantity]', '1');
     reservationParams.append('children[0][roomTypeID]', roomTypeID || '');
     reservationParams.append('children[0][quantity]', '0');
-    reservationParams.append('rooms[0][roomTypeID]', roomTypeID || '');
-    reservationParams.append('rooms[0][quantity]', '1');
-    reservationParams.append('status', 'confirmed');
     reservationParams.append('sourceID', 's-2-1'); // Walk-in source (TYE)
-    reservationParams.append('paymentMethod', 'CLC'); // CLC payment method for BNSF crew
     
     const reservationResponse = await fetch(`${CLOUDBEDS_API_URL}/postReservation`, {
       method: 'POST',
