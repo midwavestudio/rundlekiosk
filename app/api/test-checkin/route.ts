@@ -93,7 +93,7 @@ export async function POST(request: NextRequest) {
         response: '',
         parsed: null as any,
       };
-      results.steps.push(step3);
+      results.steps.push(step2);
 
       const reservationResponse = await fetch(`${CLOUDBEDS_API_URL}/postReservation`, {
         method: 'POST',
