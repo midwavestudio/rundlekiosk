@@ -75,6 +75,7 @@ export async function POST(request: NextRequest) {
       reservationParams.append('guestEmail', `${firstName.toLowerCase()}.${lastName.toLowerCase()}@guest.com`);
       reservationParams.append('guestPhone', phoneNumber);
       reservationParams.append('paymentMethod', 'CLC'); // CLC payment method for BNSF crew
+      reservationParams.append('rateID', 'TYE'); // TYE rate for BNSF crew lodging
       // Nested array structure for rooms, adults, and children per room type
       reservationParams.append('rooms[0][roomTypeID]', roomTypeID || '');
       reservationParams.append('rooms[0][quantity]', '1');
