@@ -19,17 +19,20 @@ export async function GET(request: NextRequest) {
       attempts: [],
     };
 
+    // Get today's date for rate plan lookup
+    const today = new Date().toISOString().split('T')[0];
+
     // Try different possible endpoints for rates
     const endpoints = [
-      '/getRatePlans',
-      '/getRates',
-      '/getRoomRates',
-      '/getPropertyRates',
+      { path: '/getRatePlans', params: `propertyID=${CLOUDBEDS_PROPERTY_ID}&startDate=${today}` },
+      { path: '/getRates', params: `propertyID=${CLOUDBEDS_PROPERTY_ID}&startDate=${today}` },
+      { path: '/getRoomRates', params: `propertyID=${CLOUDBEDS_PROPERTY_ID}&startDate=${today}` },
+      { path: '/getPropertyRates', params: `propertyID=${CLOUDBEDS_PROPERTY_ID}&startDate=${today}` },
     ];
 
     for (const endpoint of endpoints) {
       try {
-        const url = `${CLOUDBEDS_API_URL}${endpoint}?propertyID=${CLOUDBEDS_PROPERTY_ID}`;
+        const url = `${CLOUDBEDS_API_URL}${endpoint.path}?${endpoint.params}`;
         const response = await fetch(url, {
           method: 'GET',
           headers: {
@@ -45,7 +48,7 @@ export async function GET(request: NextRequest) {
         } catch {}
 
         results.attempts.push({
-          endpoint,
+          endpoint: endpoint.path,
           url,
           status: response.status,
           success: response.ok,
@@ -55,14 +58,14 @@ export async function GET(request: NextRequest) {
         if (response.ok && parsed) {
           return NextResponse.json({
             success: true,
-            endpoint,
+            endpoint: endpoint.path,
             rates: parsed.data || parsed.rates || parsed,
             rawResponse: parsed,
           });
         }
       } catch (error: any) {
         results.attempts.push({
-          endpoint,
+          endpoint: endpoint.path,
           error: error.message,
         });
       }
