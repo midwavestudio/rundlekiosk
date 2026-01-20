@@ -83,35 +83,7 @@ export async function POST(request: NextRequest) {
     const checkInDate = today.toISOString().split('T')[0];
     const checkOutDate = new Date(today.getTime() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
-    // Step 1: Create a guest in Cloudbeds
-    console.log('Creating guest in Cloudbeds...');
-    const guestResponse = await fetch(`${CLOUDBEDS_API_URL}/postGuest`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        propertyID: CLOUDBEDS_PROPERTY_ID,
-        guestFirstName: firstName,
-        guestLastName: lastName,
-        guestPhone: phoneNumber,
-        guestEmail: email || `${firstName.toLowerCase()}.${lastName.toLowerCase()}@guest.com`,
-        guestNotes: `CLC Number: ${clcNumber || 'N/A'}, Class: ${classType || 'N/A'}`,
-      }),
-    });
-
-    if (!guestResponse.ok) {
-      const errorData = await guestResponse.json().catch(() => ({}));
-      console.error('Cloudbeds guest creation failed:', errorData);
-      throw new Error('Failed to create guest in Cloudbeds');
-    }
-
-    const guestData = await guestResponse.json();
-    const guestID = guestData.data?.guestID || guestData.guestID;
-    console.log('Guest created with ID:', guestID);
-
-    // Step 2: Get the room details to find the room type and roomID
+    // Step 1: Get the room details to find the room type and roomID
     console.log('Fetching room details for room:', roomName);
     const roomsResponse = await fetch(`${CLOUDBEDS_API_URL}/getRooms?propertyID=${CLOUDBEDS_PROPERTY_ID}`, {
       method: 'GET',
@@ -154,21 +126,25 @@ export async function POST(request: NextRequest) {
         console.log('Found room details:', { roomTypeName, roomTypeID, actualRoomID });
       } else {
         console.warn('Room not found:', roomName);
+        throw new Error(`Room ${roomName} not found`);
       }
     }
 
-    // Step 3: Create a reservation with the room type
-    // IMPORTANT: v1.3 API requires application/x-www-form-urlencoded format
+    // Step 2: Create reservation with guest info (creates both guest and reservation)
+    // IMPORTANT: v1.2 API requires application/x-www-form-urlencoded format
     // with nested array structure for adults/children per room type
     // Format based on Cloudbeds developer example
     console.log('Creating reservation with room type:', roomTypeName, 'roomTypeID:', roomTypeID);
     const reservationParams = new URLSearchParams();
     reservationParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
-    reservationParams.append('guestID', String(guestID));
     reservationParams.append('startDate', checkInDate);
     reservationParams.append('endDate', checkOutDate);
+    reservationParams.append('guestFirstName', firstName);
+    reservationParams.append('guestLastName', lastName);
     reservationParams.append('guestCountry', 'US'); // United States - required parameter
     reservationParams.append('guestZip', '00000'); // Required parameter - default zip
+    reservationParams.append('guestEmail', email || `${firstName.toLowerCase()}.${lastName.toLowerCase()}@guest.com`);
+    reservationParams.append('guestPhone', phoneNumber || '000-000-0000');
     reservationParams.append('paymentMethod', 'CLC'); // CLC payment method for BNSF crew
     // Nested array structure for rooms, adults, and children per room type
     reservationParams.append('rooms[0][roomTypeID]', roomTypeID || '');
@@ -201,27 +177,14 @@ export async function POST(request: NextRequest) {
     }
     
     const reservationID = reservationData.data?.reservationID || reservationData.reservationID;
+    const guestID = reservationData.data?.guestID || reservationData.guestID;
     if (!reservationID) {
       throw new Error('No reservationID returned from Cloudbeds');
     }
-    console.log('Reservation created with ID:', reservationID);
+    console.log('Reservation created with ID:', reservationID, 'guestID:', guestID);
 
-    // Step 4: Assign the specific room to the reservation
+    // Step 3: Assign the specific room to the reservation
     console.log('Assigning room ID:', actualRoomID, 'roomName:', roomName);
-    
-    const assignPayload: any = {
-      propertyID: CLOUDBEDS_PROPERTY_ID,
-      reservationID: reservationID,
-    };
-    
-    // Use newRoomID parameter (required by Cloudbeds API) if we have it, otherwise fall back to roomName
-    if (actualRoomID) {
-      assignPayload.newRoomID = actualRoomID;
-    } else {
-      assignPayload.roomName = roomName;
-    }
-    
-    console.log('Room assign payload:', assignPayload);
     
     const assignParams = new URLSearchParams();
     assignParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
@@ -254,7 +217,7 @@ export async function POST(request: NextRequest) {
     }
     console.log('Room assigned successfully:', assignResult);
 
-    // Step 5: Check in the guest (set status to checked_in)
+    // Step 4: Check in the guest (set status to checked_in)
     console.log('Checking in guest...');
     const checkInParams = new URLSearchParams();
     checkInParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
