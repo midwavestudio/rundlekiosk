@@ -130,39 +130,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Step 2: Get TYE rateID for this room type
-    let tyeRateID = null;
-    try {
-      const ratesUrl = `${CLOUDBEDS_API_URL}/getRatePlans?propertyID=${CLOUDBEDS_PROPERTY_ID}&startDate=${checkInDate}&endDate=${checkOutDate}`;
-      const ratesResponse = await fetch(ratesUrl, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-      });
-      
-      if (ratesResponse.ok) {
-        const ratesData = await ratesResponse.json();
-        if (ratesData.success && ratesData.data) {
-          // Find TYE rate for this room type
-          const tyeRate = ratesData.data.find((rate: any) => 
-            rate.ratePlanID === '227753' && 
-            rate.roomTypeID === roomTypeID
-          );
-          if (tyeRate) {
-            tyeRateID = tyeRate.rateID;
-            console.log('Found TYE rateID:', tyeRateID, 'for roomTypeID:', roomTypeID);
-          } else {
-            console.warn('TYE rate not found for roomTypeID:', roomTypeID);
-          }
-        }
-      }
-    } catch (error) {
-      console.warn('Could not fetch TYE rate, will try without rateID:', error);
-    }
-
-    // Step 3: Create reservation with guest info (creates both guest and reservation)
+    // Step 2: Create reservation with guest info (creates both guest and reservation)
     // IMPORTANT: v1.2 API requires application/x-www-form-urlencoded format
     // with nested array structure for adults/children per room type
     // Format based on Cloudbeds developer example
@@ -178,13 +146,7 @@ export async function POST(request: NextRequest) {
     reservationParams.append('guestEmail', email || `${firstName.toLowerCase()}.${lastName.toLowerCase()}@guest.com`);
     reservationParams.append('guestPhone', phoneNumber || '000-000-0000');
     reservationParams.append('paymentMethod', 'CLC'); // CLC payment method for BNSF crew
-    if (tyeRateID) {
-      reservationParams.append('rateID', tyeRateID); // TYE rate for BNSF crew lodging
-      console.log('Using TYE rateID:', tyeRateID);
-    } else {
-      reservationParams.append('ratePlanID', '227753'); // TYE rate plan ID as fallback
-      console.log('Using TYE ratePlanID as fallback: 227753');
-    }
+    reservationParams.append('ratePlanID', '227753'); // TYE rate plan - all rooms use TYE rate
     // Nested array structure for rooms, adults, and children per room type
     reservationParams.append('rooms[0][roomTypeID]', roomTypeID || '');
     reservationParams.append('rooms[0][quantity]', '1');

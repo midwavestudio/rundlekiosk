@@ -60,38 +60,7 @@ export async function POST(request: NextRequest) {
       const roomTypeID = selectedRoom.roomTypeID;
       const roomID = selectedRoom.roomID;
 
-      // Step 2: Get TYE rateID for this room type
-      let tyeRateID = null;
-      try {
-        const today = new Date().toISOString().split('T')[0];
-        const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-        const ratesUrl = `${CLOUDBEDS_API_URL}/getRatePlans?propertyID=${CLOUDBEDS_PROPERTY_ID}&startDate=${today}&endDate=${tomorrow}`;
-        const ratesResponse = await fetch(ratesUrl, {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
-            'Content-Type': 'application/json',
-          },
-        });
-        
-        if (ratesResponse.ok) {
-          const ratesData = await ratesResponse.json();
-          if (ratesData.success && ratesData.data) {
-            // Find TYE rate for this room type
-            const tyeRate = ratesData.data.find((rate: any) => 
-              rate.ratePlanID === '227753' && 
-              rate.roomTypeID === roomTypeID
-            );
-            if (tyeRate) {
-              tyeRateID = tyeRate.rateID;
-            }
-          }
-        }
-      } catch (error) {
-        console.warn('Could not fetch TYE rate, will try without rateID:', error);
-      }
-
-      // Step 3: Create reservation with guest info (creates both guest and reservation)
+      // Step 2: Create reservation with guest info (creates both guest and reservation)
       // IMPORTANT: v1.2 API requires application/x-www-form-urlencoded format
       // with nested array structure for adults/children per room type
       // Format based on Cloudbeds developer example
@@ -106,11 +75,7 @@ export async function POST(request: NextRequest) {
       reservationParams.append('guestEmail', `${firstName.toLowerCase()}.${lastName.toLowerCase()}@guest.com`);
       reservationParams.append('guestPhone', phoneNumber);
       reservationParams.append('paymentMethod', 'CLC'); // CLC payment method for BNSF crew
-      if (tyeRateID) {
-        reservationParams.append('rateID', tyeRateID); // TYE rate for BNSF crew lodging
-      } else {
-        reservationParams.append('ratePlanID', '227753'); // TYE rate plan ID as fallback
-      }
+      reservationParams.append('ratePlanID', '227753'); // TYE rate plan - all rooms use TYE rate
       // Nested array structure for rooms, adults, and children per room type
       reservationParams.append('rooms[0][roomTypeID]', roomTypeID || '');
       reservationParams.append('rooms[0][quantity]', '1');
@@ -120,8 +85,8 @@ export async function POST(request: NextRequest) {
       reservationParams.append('children[0][quantity]', '0');
       reservationParams.append('sourceID', 's-2-1'); // Walk-in source (TYE)
 
-      const step3: any = {
-        step: 3,
+      const step2: any = {
+        step: 2,
         action: 'postReservation (create guest + reservation)',
         payload: Object.fromEntries(reservationParams),
         status: 0,
@@ -140,9 +105,9 @@ export async function POST(request: NextRequest) {
       });
 
       const reservationText = await reservationResponse.text();
-      step3.status = reservationResponse.status;
-      step3.response = reservationText;
-      step3.parsed = (() => {
+      step2.status = reservationResponse.status;
+      step2.response = reservationText;
+      step2.parsed = (() => {
         try {
           return JSON.parse(reservationText);
         } catch {
@@ -150,10 +115,10 @@ export async function POST(request: NextRequest) {
         }
       })();
 
-      if (!reservationResponse.ok || !step3.parsed?.success) {
+      if (!reservationResponse.ok || !step2.parsed?.success) {
         results.success = false;
-        results.error = 'Failed at step 3: postReservation';
-        results.errorMessage = step3.parsed?.message || 'Unknown error creating reservation';
+        results.error = 'Failed at step 2: postReservation';
+        results.errorMessage = step2.parsed?.message || 'Unknown error creating reservation';
         return NextResponse.json(results);
       }
 
@@ -163,21 +128,21 @@ export async function POST(request: NextRequest) {
       
       if (!reservationID) {
         results.success = false;
-        results.error = 'Failed at step 3: No reservationID returned';
+        results.error = 'Failed at step 2: No reservationID returned';
         return NextResponse.json(results);
       }
       
       results.reservationID = reservationID;
       results.guestID = guestID;
 
-      // Step 4: Assign specific room
+      // Step 3: Assign specific room
       const assignParams = new URLSearchParams();
       assignParams.append('propertyID', CLOUDBEDS_PROPERTY_ID || '');
       assignParams.append('reservationID', String(reservationID));
       assignParams.append('newRoomID', roomID);
 
-      const step4: any = {
-        step: 4,
+      const step3: any = {
+        step: 3,
         action: 'postRoomAssign',
         payload: Object.fromEntries(assignParams),
         status: 0,
@@ -196,9 +161,9 @@ export async function POST(request: NextRequest) {
       });
 
       const assignText = await assignResponse.text();
-      step4.status = assignResponse.status;
-      step4.response = assignText;
-      step4.parsed = (() => {
+      step3.status = assignResponse.status;
+      step3.response = assignText;
+      step3.parsed = (() => {
         try {
           return JSON.parse(assignText);
         } catch {
@@ -207,28 +172,28 @@ export async function POST(request: NextRequest) {
       })();
 
       // Validate room assignment succeeded
-      if (!assignResponse.ok || !step4.parsed?.success) {
+      if (!assignResponse.ok || !step3.parsed?.success) {
         results.success = false;
-        results.message = 'Room assignment failed at step 4';
-        results.error = step4.parsed?.message || 'Failed to assign room to reservation';
+        results.message = 'Room assignment failed at step 3';
+        results.error = step3.parsed?.message || 'Failed to assign room to reservation';
         return NextResponse.json(results);
       }
 
-      // Step 5: Check in
+      // Step 4: Check in
       const checkInParams = new URLSearchParams();
       checkInParams.append('propertyID', CLOUDBEDS_PROPERTY_ID || '');
       checkInParams.append('reservationID', String(reservationID));
       checkInParams.append('status', 'checked_in');
 
-      const step5: any = {
-        step: 5,
+      const step4: any = {
+        step: 4,
         action: 'putReservation (check-in)',
         payload: Object.fromEntries(checkInParams),
         status: 0,
         response: '',
         parsed: null as any,
       };
-      results.steps.push(step5);
+      results.steps.push(step4);
 
       const checkInResponse = await fetch(`${CLOUDBEDS_API_URL}/putReservation`, {
         method: 'PUT',
@@ -240,9 +205,9 @@ export async function POST(request: NextRequest) {
       });
 
       const checkInText = await checkInResponse.text();
-      step5.status = checkInResponse.status;
-      step5.response = checkInText;
-      step5.parsed = (() => {
+      step4.status = checkInResponse.status;
+      step4.response = checkInText;
+      step4.parsed = (() => {
         try {
           return JSON.parse(checkInText);
         } catch {
@@ -251,10 +216,10 @@ export async function POST(request: NextRequest) {
       })();
 
       // Validate check-in actually succeeded
-      if (!checkInResponse.ok || !step5.parsed?.success) {
+      if (!checkInResponse.ok || !step4.parsed?.success) {
         results.success = false;
-        results.message = 'Check-in failed at step 5';
-        results.error = step5.parsed?.message || 'Failed to update reservation status to checked_in';
+        results.message = 'Check-in failed at step 4';
+        results.error = step4.parsed?.message || 'Failed to update reservation status to checked_in';
         return NextResponse.json(results);
       }
 
