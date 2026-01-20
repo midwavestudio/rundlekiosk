@@ -21,13 +21,14 @@ export async function GET(request: NextRequest) {
 
     // Get today's date for rate plan lookup
     const today = new Date().toISOString().split('T')[0];
+    const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
     // Try different possible endpoints for rates
     const endpoints = [
-      { path: '/getRatePlans', params: `propertyID=${CLOUDBEDS_PROPERTY_ID}&startDate=${today}` },
-      { path: '/getRates', params: `propertyID=${CLOUDBEDS_PROPERTY_ID}&startDate=${today}` },
-      { path: '/getRoomRates', params: `propertyID=${CLOUDBEDS_PROPERTY_ID}&startDate=${today}` },
-      { path: '/getPropertyRates', params: `propertyID=${CLOUDBEDS_PROPERTY_ID}&startDate=${today}` },
+      { path: '/getRatePlans', params: `propertyID=${CLOUDBEDS_PROPERTY_ID}&startDate=${today}&endDate=${tomorrow}` },
+      { path: '/getRates', params: `propertyID=${CLOUDBEDS_PROPERTY_ID}&startDate=${today}&endDate=${tomorrow}` },
+      { path: '/getRoomRates', params: `propertyID=${CLOUDBEDS_PROPERTY_ID}&startDate=${today}&endDate=${tomorrow}` },
+      { path: '/getPropertyRates', params: `propertyID=${CLOUDBEDS_PROPERTY_ID}&startDate=${today}&endDate=${tomorrow}` },
     ];
 
     for (const endpoint of endpoints) {
