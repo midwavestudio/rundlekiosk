@@ -65,6 +65,12 @@ export async function POST(request: NextRequest) {
     const CLOUDBEDS_API_KEY = process.env.CLOUDBEDS_API_KEY;
     const CLOUDBEDS_PROPERTY_ID = process.env.CLOUDBEDS_PROPERTY_ID;
     const CLOUDBEDS_API_URL = process.env.CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.2';
+    
+    console.log('Check-in API configuration:', {
+      hasApiKey: !!CLOUDBEDS_API_KEY,
+      hasPropertyId: !!CLOUDBEDS_PROPERTY_ID,
+      apiUrl: CLOUDBEDS_API_URL,
+    });
 
     if (!CLOUDBEDS_API_KEY || !CLOUDBEDS_PROPERTY_ID) {
       console.warn('Cloudbeds API credentials not configured');
@@ -132,8 +138,10 @@ export async function POST(request: NextRequest) {
 
     // Step 2: Get TYE rateID for this room type
     let tyeRateID = null;
+    let tyeRatePlanID = null;
     try {
       const ratesUrl = `${CLOUDBEDS_API_URL}/getRatePlans?propertyID=${CLOUDBEDS_PROPERTY_ID}&startDate=${checkInDate}&endDate=${checkOutDate}`;
+      console.log('Fetching rates from:', ratesUrl);
       const ratesResponse = await fetch(ratesUrl, {
         method: 'GET',
         headers: {
@@ -144,26 +152,49 @@ export async function POST(request: NextRequest) {
       
       if (ratesResponse.ok) {
         const ratesData = await ratesResponse.json();
-        if (ratesData.success && ratesData.data) {
-          // Find TYE rate (ratePlanID: 227753) for this specific room type
-          const tyeRate = ratesData.data.find((rate: any) => 
-            rate.ratePlanID === '227753' && 
-            rate.roomTypeID === roomTypeID
-          );
-          if (tyeRate) {
-            tyeRateID = tyeRate.rateID;
-            console.log('Found TYE rateID:', tyeRateID, 'for roomTypeID:', roomTypeID);
-          } else {
-            console.warn('TYE rate not found for roomTypeID:', roomTypeID);
+        console.log('Rates response structure:', JSON.stringify(ratesData, null, 2));
+        
+        // Handle different response structures
+        const rates = ratesData.data || ratesData.rates || ratesData || [];
+        console.log('Available rates:', rates.length);
+        
+        // Find TYE rate (ratePlanID: 227753) for this specific room type
+        // Handle both string and number comparisons
+        const tyeRate = rates.find((rate: any) => {
+          const planID = String(rate.ratePlanID || rate.rate_plan_id || rate.ratePlan_id || '');
+          const rtID = rate.roomTypeID || rate.room_type_id || rate.roomType_id;
+          // Compare both as strings and numbers to handle type mismatches
+          const planMatches = planID === '227753' || Number(planID) === 227753;
+          const roomMatches = String(rtID) === String(roomTypeID) || Number(rtID) === Number(roomTypeID);
+          const matches = planMatches && roomMatches;
+          if (matches) {
+            console.log('Found matching TYE rate:', rate);
           }
+          return matches;
+        });
+        
+        if (tyeRate) {
+          tyeRateID = tyeRate.rateID || tyeRate.rate_id || tyeRate.id;
+          tyeRatePlanID = tyeRate.ratePlanID || tyeRate.rate_plan_id || tyeRate.ratePlan_id || '227753';
+          console.log('Found TYE rateID:', tyeRateID, 'ratePlanID:', tyeRatePlanID, 'for roomTypeID:', roomTypeID);
+        } else {
+          console.warn('TYE rate not found. Available rates:', rates.map((r: any) => ({
+            ratePlanID: r.ratePlanID || r.rate_plan_id,
+            roomTypeID: r.roomTypeID || r.room_type_id,
+            rateID: r.rateID || r.rate_id,
+            name: r.name || r.rateName
+          })));
         }
+      } else {
+        const errorText = await ratesResponse.text();
+        console.error('Failed to fetch rates:', ratesResponse.status, errorText);
       }
-    } catch (error) {
-      console.warn('Could not fetch TYE rate:', error);
+    } catch (error: any) {
+      console.error('Error fetching TYE rate:', error.message, error.stack);
     }
 
-    if (!tyeRateID) {
-      throw new Error(`TYE rate not available for ${roomTypeName}`);
+    if (!tyeRateID && !tyeRatePlanID) {
+      throw new Error(`TYE rate not available for ${roomTypeName}. Please contact staff.`);
     }
 
     // Step 3: Create reservation with guest info (creates both guest and reservation)
@@ -182,16 +213,36 @@ export async function POST(request: NextRequest) {
     reservationParams.append('guestEmail', email || `${firstName.toLowerCase()}.${lastName.toLowerCase()}@guest.com`);
     reservationParams.append('guestPhone', phoneNumber || '000-000-0000');
     reservationParams.append('paymentMethod', 'CLC'); // CLC payment method for BNSF crew
-    reservationParams.append('roomRateID', tyeRateID); // TYE rate ID for this specific room type
-    console.log('Using TYE roomRateID:', tyeRateID);
+    
+    // Add rate parameter - Cloudbeds API typically uses 'rateID' for the specific rate
+    // Some API versions require rate in the rooms array, others as top-level parameter
+    // Try both approaches: top-level rateID and also in rooms array
+    if (tyeRateID) {
+      // Top-level rate parameter (most common)
+      reservationParams.append('rateID', String(tyeRateID));
+      console.log('Using rateID (top-level):', tyeRateID);
+    } else if (tyeRatePlanID) {
+      // Fallback to ratePlanID if rateID not available
+      reservationParams.append('ratePlanID', String(tyeRatePlanID));
+      console.log('Using ratePlanID (fallback):', tyeRatePlanID);
+    } else {
+      console.warn('No rate ID found, creating reservation without explicit rate');
+    }
+    
     // Nested array structure for rooms, adults, and children per room type
-    reservationParams.append('rooms[0][roomTypeID]', roomTypeID || '');
+    reservationParams.append('rooms[0][roomTypeID]', String(roomTypeID || ''));
     reservationParams.append('rooms[0][quantity]', '1');
-    reservationParams.append('adults[0][roomTypeID]', roomTypeID || '');
+    // Also add rate to rooms array if available (some API versions require this)
+    if (tyeRateID) {
+      reservationParams.append('rooms[0][rateID]', String(tyeRateID));
+    }
+    reservationParams.append('adults[0][roomTypeID]', String(roomTypeID || ''));
     reservationParams.append('adults[0][quantity]', '1');
-    reservationParams.append('children[0][roomTypeID]', roomTypeID || '');
+    reservationParams.append('children[0][roomTypeID]', String(roomTypeID || ''));
     reservationParams.append('children[0][quantity]', '0');
     reservationParams.append('sourceID', 's-2-1'); // Walk-in source (TYE)
+    
+    console.log('Reservation params:', reservationParams.toString());
     
     const reservationResponse = await fetch(`${CLOUDBEDS_API_URL}/postReservation`, {
       method: 'POST',
@@ -202,13 +253,32 @@ export async function POST(request: NextRequest) {
       body: reservationParams.toString(),
     });
 
+    const responseText = await reservationResponse.text();
+    console.log('Reservation response status:', reservationResponse.status);
+    console.log('Reservation response body:', responseText);
+
     if (!reservationResponse.ok) {
-      const errorData = await reservationResponse.json().catch(() => ({}));
-      console.error('Cloudbeds reservation creation failed:', errorData);
-      throw new Error(`Failed to create reservation in Cloudbeds: ${errorData.message || 'Unknown error'}`);
+      let errorData: any = {};
+      try {
+        errorData = JSON.parse(responseText);
+      } catch {
+        errorData = { message: responseText };
+      }
+      console.error('Cloudbeds reservation creation failed:', {
+        status: reservationResponse.status,
+        statusText: reservationResponse.statusText,
+        error: errorData,
+      });
+      throw new Error(`Failed to create reservation in Cloudbeds: ${errorData.message || responseText || 'Unknown error'}`);
     }
 
-    const reservationData = await reservationResponse.json();
+    let reservationData: any = {};
+    try {
+      reservationData = JSON.parse(responseText);
+    } catch {
+      throw new Error(`Invalid response from Cloudbeds: ${responseText}`);
+    }
+    
     if (!reservationData.success) {
       console.error('Reservation creation returned success:false:', reservationData);
       throw new Error(`Reservation creation failed: ${reservationData.message || 'Unknown error'}`);
