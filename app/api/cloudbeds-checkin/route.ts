@@ -214,28 +214,22 @@ export async function POST(request: NextRequest) {
     reservationParams.append('guestPhone', phoneNumber || '000-000-0000');
     reservationParams.append('paymentMethod', 'CLC'); // CLC payment method for BNSF crew
     
-    // Add rate parameter - Cloudbeds API typically uses 'rateID' for the specific rate
-    // Some API versions require rate in the rooms array, others as top-level parameter
-    // Try both approaches: top-level rateID and also in rooms array
+    // Add roomRateID parameter as recommended by Cloudbeds developer
+    // This forces the reservation to use the TYE rate instead of the base rate
     if (tyeRateID) {
-      // Top-level rate parameter (most common)
-      reservationParams.append('rateID', String(tyeRateID));
-      console.log('Using rateID (top-level):', tyeRateID);
+      reservationParams.append('roomRateID', String(tyeRateID));
+      console.log('Using roomRateID for TYE rate:', tyeRateID);
     } else if (tyeRatePlanID) {
-      // Fallback to ratePlanID if rateID not available
-      reservationParams.append('ratePlanID', String(tyeRatePlanID));
-      console.log('Using ratePlanID (fallback):', tyeRatePlanID);
+      // Fallback: try with ratePlanID if rateID not available
+      reservationParams.append('roomRateID', String(tyeRatePlanID));
+      console.log('Using roomRateID with ratePlanID (fallback):', tyeRatePlanID);
     } else {
-      console.warn('No rate ID found, creating reservation without explicit rate');
+      console.warn('No rate ID found - reservation will use base rate');
     }
     
     // Nested array structure for rooms, adults, and children per room type
     reservationParams.append('rooms[0][roomTypeID]', String(roomTypeID || ''));
     reservationParams.append('rooms[0][quantity]', '1');
-    // Also add rate to rooms array if available (some API versions require this)
-    if (tyeRateID) {
-      reservationParams.append('rooms[0][rateID]', String(tyeRateID));
-    }
     reservationParams.append('adults[0][roomTypeID]', String(roomTypeID || ''));
     reservationParams.append('adults[0][quantity]', '1');
     reservationParams.append('children[0][roomTypeID]', String(roomTypeID || ''));
