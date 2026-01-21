@@ -62,8 +62,20 @@ export async function POST(request: NextRequest) {
 
       // Step 2: Get TYE rateID for this room type
       let tyeRateID = null;
+      let tyeRateData = null;
+      const step2: any = {
+        step: 2,
+        action: 'getRatePlans (find TYE rate)',
+        url: '',
+        status: 0,
+        response: '',
+        parsed: null as any,
+        tyeRateFound: false,
+      };
+      
       try {
         const ratesUrl = `${CLOUDBEDS_API_URL}/getRatePlans?propertyID=${CLOUDBEDS_PROPERTY_ID}&startDate=${checkInDate}&endDate=${checkOutDate}`;
+        step2.url = ratesUrl;
         const ratesResponse = await fetch(ratesUrl, {
           method: 'GET',
           headers: {
@@ -72,31 +84,54 @@ export async function POST(request: NextRequest) {
           },
         });
         
-        if (ratesResponse.ok) {
-          const ratesData = await ratesResponse.json();
-          if (ratesData.success && ratesData.data) {
-            // Find TYE rate (ratePlanID: 227753) for this specific room type
-            const tyeRate = ratesData.data.find((rate: any) => 
-              rate.ratePlanID === '227753' && 
-              rate.roomTypeID === roomTypeID
-            );
-            if (tyeRate) {
-              tyeRateID = tyeRate.rateID;
-            }
+        step2.status = ratesResponse.status;
+        const ratesText = await ratesResponse.text();
+        step2.response = ratesText;
+        step2.parsed = (() => {
+          try {
+            return JSON.parse(ratesText);
+          } catch {
+            return null;
+          }
+        })();
+        
+        if (ratesResponse.ok && step2.parsed?.success && step2.parsed.data) {
+          // Find TYE rate (ratePlanID: 227753) for this specific room type
+          const tyeRate = step2.parsed.data.find((rate: any) => 
+            rate.ratePlanID === '227753' && 
+            rate.roomTypeID === roomTypeID
+          );
+          if (tyeRate) {
+            tyeRateID = tyeRate.rateID;
+            tyeRateData = tyeRate;
+            step2.tyeRateFound = true;
+            step2.tyeRateID = tyeRateID;
+            step2.tyeRateData = tyeRate;
+            step2.roomsAvailable = tyeRate.roomsAvailable;
           }
         }
-      } catch (error) {
+      } catch (error: any) {
+        step2.error = error.message;
         console.warn('Could not fetch TYE rate:', error);
       }
+      
+      results.steps.push(step2);
 
       if (!tyeRateID) {
         results.success = false;
         results.error = 'TYE rate not found for this room type';
-        results.message = `TYE rate not available for ${roomTypeName}. Please contact staff.`;
+        results.message = `TYE rate not available for ${roomTypeName} on ${checkInDate}. Please contact staff.`;
         return NextResponse.json(results);
       }
 
-      // Step 3: Create reservation with guest info (creates both guest and reservation)
+      if (tyeRateData && tyeRateData.roomsAvailable === 0) {
+        results.success = false;
+        results.error = 'TYE rate not available - no rooms available';
+        results.message = `TYE rate exists but no rooms available for ${roomTypeName} on ${checkInDate}. Please select a different room.`;
+        return NextResponse.json(results);
+      }
+
+      // Step 3: Create reservation with guest info (creates both guest + reservation)
       // IMPORTANT: v1.2 API requires application/x-www-form-urlencoded format
       // with nested array structure for adults/children per room type
       // Format based on Cloudbeds developer example
