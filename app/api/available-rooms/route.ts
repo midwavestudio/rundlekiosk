@@ -36,7 +36,95 @@ export async function GET(request: NextRequest) {
     let availableRooms = [];
     let apiError = null;
 
-    // Try Method 1: Use getRoomsUnassigned (best method - returns only available rooms)
+    // Method 1: Use getRatePlans with TYE rate to get available rooms
+    // This ensures we only show rooms that have TYE rate availability
+    try {
+      console.log('Method 1: Trying getRatePlans for TYE rate...');
+      const ratesUrl = `${CLOUDBEDS_API_URL}/getRatePlans?propertyID=${CLOUDBEDS_PROPERTY_ID}&startDate=${today}&endDate=${tomorrow}`;
+      console.log('URL:', ratesUrl);
+
+      const ratesResponse = await fetch(ratesUrl, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      console.log('getRatePlans status:', ratesResponse.status);
+      
+      if (ratesResponse.ok) {
+        const responseText = await ratesResponse.text();
+        console.log('getRatePlans response:', responseText);
+        
+        const data = JSON.parse(responseText);
+        
+        if (data.success && data.data) {
+          // Filter to only TYE rate plan (ratePlanID: 227753) with available rooms
+          const tyeRates = data.data.filter((rate: any) => 
+            rate.ratePlanID === '227753' && 
+            rate.roomsAvailable > 0 &&
+            !rate.roomBlocked
+          );
+          
+          console.log('Found TYE rates with availability:', tyeRates.length);
+          
+          if (tyeRates.length > 0) {
+            // Get room details for each available rate
+            const roomDetailsUrl = `${CLOUDBEDS_API_URL}/getRooms?propertyID=${CLOUDBEDS_PROPERTY_ID}`;
+            const roomsResponse = await fetch(roomDetailsUrl, {
+              method: 'GET',
+              headers: {
+                'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
+                'Content-Type': 'application/json',
+              },
+            });
+            
+            let allRooms = [];
+            if (roomsResponse.ok) {
+              const roomsData = await roomsResponse.json();
+              if (roomsData.data && Array.isArray(roomsData.data) && roomsData.data.length > 0 && roomsData.data[0].rooms) {
+                allRooms = roomsData.data[0].rooms;
+              }
+            }
+            
+            // Match rates to actual rooms
+            const formattedRooms: any[] = [];
+            tyeRates.forEach((rate: any) => {
+              // Find all rooms of this room type
+              const roomsOfType = allRooms.filter((room: any) => 
+                room.roomTypeID === rate.roomTypeID && !room.roomBlocked
+              );
+              
+              roomsOfType.forEach((room: any) => {
+                formattedRooms.push({
+                  roomID: room.roomID,
+                  roomName: room.roomName,
+                  roomTypeName: room.roomTypeName,
+                  rateID: rate.rateID,
+                  rate: rate.totalRate,
+                });
+              });
+            });
+            
+            console.log('Returning rooms with TYE rate availability:', formattedRooms);
+            return NextResponse.json({
+              success: true,
+              rooms: formattedRooms,
+              count: formattedRooms.length,
+              method: 'getRatePlans_TYE',
+            });
+          }
+        }
+      } else {
+        const errorText = await ratesResponse.text();
+        console.warn('getRatePlans failed:', ratesResponse.status, errorText);
+      }
+    } catch (error: any) {
+      console.warn('getRatePlans error:', error.message);
+    }
+
+    // Try Method 2: Use getRoomsUnassigned (best method - returns only available rooms)
     try {
       console.log('Method 1: Trying getRoomsUnassigned...');
       const unassignedUrl = `${CLOUDBEDS_API_URL}/getRoomsUnassigned?propertyID=${CLOUDBEDS_PROPERTY_ID}&checkIn=${today}&checkOut=${tomorrow}`;
