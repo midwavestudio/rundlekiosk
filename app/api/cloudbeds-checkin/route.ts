@@ -234,7 +234,7 @@ export async function POST(request: NextRequest) {
     reservationParams.append('adults[0][quantity]', '1');
     reservationParams.append('children[0][roomTypeID]', String(roomTypeID || ''));
     reservationParams.append('children[0][quantity]', '0');
-    reservationParams.append('sourceID', 's-2-1'); // Walk-in source (TYE)
+    reservationParams.append('sourceID', 's-945658'); // TYE source
     
     console.log('Reservation params:', reservationParams.toString());
     
