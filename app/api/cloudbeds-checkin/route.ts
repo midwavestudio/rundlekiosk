@@ -214,22 +214,19 @@ export async function POST(request: NextRequest) {
     reservationParams.append('guestPhone', phoneNumber || '000-000-0000');
     reservationParams.append('paymentMethod', 'CLC'); // CLC payment method for BNSF crew
     
-    // Add roomRateID parameter as recommended by Cloudbeds developer
-    // This forces the reservation to use the TYE rate instead of the base rate
-    if (tyeRateID) {
-      reservationParams.append('roomRateID', String(tyeRateID));
-      console.log('Using roomRateID for TYE rate:', tyeRateID);
-    } else if (tyeRatePlanID) {
-      // Fallback: try with ratePlanID if rateID not available
-      reservationParams.append('roomRateID', String(tyeRatePlanID));
-      console.log('Using roomRateID with ratePlanID (fallback):', tyeRatePlanID);
-    } else {
-      console.warn('No rate ID found - reservation will use base rate');
-    }
-    
     // Nested array structure for rooms, adults, and children per room type
+    // roomRateID must be inside rooms[0] per Cloudbeds API format
     reservationParams.append('rooms[0][roomTypeID]', String(roomTypeID || ''));
     reservationParams.append('rooms[0][quantity]', '1');
+    if (tyeRateID) {
+      reservationParams.append('rooms[0][roomRateID]', String(tyeRateID));
+      console.log('Using rooms[0][roomRateID] for TYE rate:', tyeRateID);
+    } else if (tyeRatePlanID) {
+      reservationParams.append('rooms[0][roomRateID]', String(tyeRatePlanID));
+      console.log('Using rooms[0][roomRateID] with ratePlanID (fallback):', tyeRatePlanID);
+    } else {
+      console.warn('No rate ID found - reservation may use base rate');
+    }
     reservationParams.append('adults[0][roomTypeID]', String(roomTypeID || ''));
     reservationParams.append('adults[0][quantity]', '1');
     reservationParams.append('children[0][roomTypeID]', String(roomTypeID || ''));

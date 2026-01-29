@@ -146,10 +146,10 @@ export async function POST(request: NextRequest) {
       reservationParams.append('guestEmail', `${firstName.toLowerCase()}.${lastName.toLowerCase()}@guest.com`);
       reservationParams.append('guestPhone', phoneNumber);
       reservationParams.append('paymentMethod', 'CLC'); // CLC payment method for BNSF crew
-      reservationParams.append('roomRateID', tyeRateID); // TYE rate ID for this specific room type
-      // Nested array structure for rooms, adults, and children per room type
+      // roomRateID must be inside rooms[0] per Cloudbeds API format
       reservationParams.append('rooms[0][roomTypeID]', roomTypeID || '');
       reservationParams.append('rooms[0][quantity]', '1');
+      reservationParams.append('rooms[0][roomRateID]', String(tyeRateID));
       reservationParams.append('adults[0][roomTypeID]', roomTypeID || '');
       reservationParams.append('adults[0][quantity]', '1');
       reservationParams.append('children[0][roomTypeID]', roomTypeID || '');
