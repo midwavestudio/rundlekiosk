@@ -1,5 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+/** Returns YYYY-MM-DD in server local time (not UTC). Reservations must use today's local date. */
+function getLocalDateStr(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -84,10 +92,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get today's date for check-in
-    const today = new Date();
-    const checkInDate = today.toISOString().split('T')[0];
-    const checkOutDate = new Date(today.getTime() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    // Use LOCAL date for today/tomorrow so reservations are always for today (not UTC)
+    const now = new Date();
+    const checkInDate = getLocalDateStr(now);
+    const checkOutDate = getLocalDateStr(new Date(now.getTime() + 24 * 60 * 60 * 1000));
+    console.log('Reservation dates (local):', { checkInDate, checkOutDate });
 
     // Step 1: Get the room details to find the room type and roomID
     console.log('Fetching room details for room:', roomName);
@@ -116,9 +125,13 @@ export async function POST(request: NextRequest) {
       }
       
       console.log('Searching for room:', roomName, 'in', rooms.length, 'rooms');
-      
+      const roomKey = String(roomName).trim();
       const selectedRoom = rooms.find((r: any) => {
-        const matches = (r.roomName === roomName || r.name === roomName || r.roomID === roomName || r.id === roomName);
+        const idStr = r.roomID != null ? String(r.roomID) : '';
+        const idAlt = r.id != null ? String(r.id) : '';
+        const nameStr = r.roomName != null ? String(r.roomName) : '';
+        const nameAlt = r.name != null ? String(r.name) : '';
+        const matches = idStr === roomKey || idAlt === roomKey || nameStr === roomKey || nameAlt === roomKey;
         if (matches) {
           console.log('Found matching room:', r);
         }

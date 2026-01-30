@@ -1,15 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+/** Returns YYYY-MM-DD in server local time (not UTC). */
+function getLocalDateStr(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 export async function GET(request: NextRequest) {
   try {
     const CLOUDBEDS_API_KEY = process.env.CLOUDBEDS_API_KEY;
     const CLOUDBEDS_PROPERTY_ID = process.env.CLOUDBEDS_PROPERTY_ID;
     const CLOUDBEDS_API_URL = process.env.CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.2';
 
-    // IMPORTANT: Always use TODAY's date for check-in, tomorrow for check-out
-    // This ensures we only show rooms available for today
-    const today = new Date().toISOString().split('T')[0];
-    const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    // Use LOCAL date so "today" matches the property's timezone (not UTC)
+    const now = new Date();
+    const today = getLocalDateStr(now);
+    const tomorrow = getLocalDateStr(new Date(now.getTime() + 24 * 60 * 60 * 1000));
 
     console.log('Available Rooms API called for TODAY only:', {
       hasApiKey: !!CLOUDBEDS_API_KEY,
@@ -33,82 +41,13 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    let availableRooms = [];
+    let availableRooms: any[] = [];
     let apiError = null;
 
-    // Method 1: Use getRoomsUnassigned (best method - returns only available rooms for today)
-    // This shows ALL available rooms regardless of rate plan
-    // The TYE rate will be applied when creating the reservation
+    // Method 1: Get ALL rooms and filter by reservations for TODAY (local date)
+    // This shows every vacant room (e.g. 322) that has no reservation for today
     try {
-      console.log('Method 1: Trying getRoomsUnassigned...');
-      const unassignedUrl = `${CLOUDBEDS_API_URL}/getRoomsUnassigned?propertyID=${CLOUDBEDS_PROPERTY_ID}&checkIn=${today}&checkOut=${tomorrow}`;
-      console.log('URL:', unassignedUrl);
-
-      const unassignedResponse = await fetch(unassignedUrl, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-      });
-
-      console.log('getRoomsUnassigned status:', unassignedResponse.status);
-      
-      if (unassignedResponse.ok) {
-        const responseText = await unassignedResponse.text();
-        console.log('getRoomsUnassigned response:', responseText);
-        
-        const data = JSON.parse(responseText);
-        console.log('Parsed unassigned rooms data:', JSON.stringify(data, null, 2));
-        
-        // Cloudbeds returns: { success: true, data: [{ propertyID: "...", rooms: [...] }] }
-        if (data.data && Array.isArray(data.data) && data.data.length > 0 && data.data[0].rooms) {
-          availableRooms = data.data[0].rooms;
-        } else {
-          availableRooms = data.data || data.rooms || data || [];
-        }
-        console.log('Found unassigned rooms:', availableRooms.length);
-        
-        if (availableRooms.length > 0) {
-          // Format and return - handle different response structures
-          // Filter out blocked rooms
-          const formattedRooms = availableRooms
-            .filter((room: any) => !room.roomBlocked) // Exclude blocked rooms
-            .map((room: any) => {
-              // Try multiple field names that Cloudbeds might use
-              const roomID = room.roomID || room.id || room.room_id || room.roomId;
-              const roomName = room.roomName || room.name || room.room_name || room.roomNumber || roomID;
-              const roomType = room.roomTypeName || room.roomType || room.room_type || room.typeName || room.type || 'Standard Room';
-              
-              console.log('Formatting room:', { original: room, formatted: { roomID, roomName, roomType } });
-              
-              return {
-                roomID: roomID || roomName || 'unknown',
-                roomName: roomName || roomID || 'Unknown Room',
-                roomTypeName: roomType,
-              };
-            })
-            .filter((room: any) => room.roomID !== 'unknown'); // Filter out malformed rooms
-          
-          console.log('Returning unassigned rooms:', formattedRooms);
-          return NextResponse.json({
-            success: true,
-            rooms: formattedRooms,
-            count: formattedRooms.length,
-            method: 'getRoomsUnassigned',
-          });
-        }
-      } else {
-        const errorText = await unassignedResponse.text();
-        console.warn('getRoomsUnassigned failed:', unassignedResponse.status, errorText);
-      }
-    } catch (error: any) {
-      console.warn('getRoomsUnassigned error:', error.message);
-    }
-
-    // Method 2: Get all rooms and filter by reservations (fallback if getRoomsUnassigned fails)
-    try {
-      console.log('Method 2: Trying getRooms with reservation filtering...');
+      console.log('Method 1: Trying getRooms with reservation filtering...');
       
       // First, get all rooms
       const allRoomsUrl = `${CLOUDBEDS_API_URL}/getRooms?propertyID=${CLOUDBEDS_PROPERTY_ID}`;
@@ -252,8 +191,47 @@ export async function GET(request: NextRequest) {
         apiError = `getRooms returned ${allRoomsResponse.status}: ${errorText}`;
       }
     } catch (error: any) {
-      console.error('Method 2 error:', error);
+      console.error('Method 1 error:', error);
       apiError = error.message;
+    }
+
+    // Method 2: Fallback - use getRoomsUnassigned if Method 1 failed or returned no rooms
+    if (availableRooms.length === 0) {
+      try {
+        console.log('Method 2: Trying getRoomsUnassigned...');
+        const unassignedUrl = `${CLOUDBEDS_API_URL}/getRoomsUnassigned?propertyID=${CLOUDBEDS_PROPERTY_ID}&checkIn=${today}&checkOut=${tomorrow}`;
+        const unassignedResponse = await fetch(unassignedUrl, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
+            'Content-Type': 'application/json',
+          },
+        });
+        if (unassignedResponse.ok) {
+          const data = await unassignedResponse.json();
+          let rooms: any[] = [];
+          if (data.data?.[0]?.rooms) rooms = data.data[0].rooms;
+          else rooms = data.data || data.rooms || [];
+          if (rooms.length > 0) {
+            const formattedRooms = rooms
+              .filter((room: any) => !room.roomBlocked)
+              .map((room: any) => ({
+                roomID: room.roomID || room.id || room.room_id || room.roomId || room.roomName,
+                roomName: room.roomName || room.name || room.room_number || room.roomNumber || room.roomID,
+                roomTypeName: room.roomTypeName || room.roomType || room.room_type || room.typeName || 'Standard Room',
+              }))
+              .filter((r: any) => r.roomID != null && r.roomID !== 'unknown');
+            return NextResponse.json({
+              success: true,
+              rooms: formattedRooms,
+              count: formattedRooms.length,
+              method: 'getRoomsUnassigned',
+            });
+          }
+        }
+      } catch (e: any) {
+        console.warn('getRoomsUnassigned fallback error:', e?.message);
+      }
     }
 
     // Fallback: Return all rooms if we can't determine availability

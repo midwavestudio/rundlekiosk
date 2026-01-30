@@ -1,5 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+function getLocalDateStr(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -9,9 +16,9 @@ export async function POST(request: NextRequest) {
     const CLOUDBEDS_PROPERTY_ID = process.env.CLOUDBEDS_PROPERTY_ID;
     const CLOUDBEDS_API_URL = process.env.CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.2';
 
-    const today = new Date();
-    const checkInDate = today.toISOString().split('T')[0];
-    const checkOutDate = new Date(today.getTime() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const now = new Date();
+    const checkInDate = getLocalDateStr(now);
+    const checkOutDate = getLocalDateStr(new Date(now.getTime() + 24 * 60 * 60 * 1000));
 
     const results: any = {
       input: body,
