@@ -149,9 +149,10 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Step 2: Get TYE rateID for this room type
-    let tyeRateID = null;
-    let tyeRatePlanID = null;
+    // Step 2: Get rate for this room type — prefer TYE (ratePlanID 227753), fallback to any available rate
+    // This allows reservations in all room classes (Interior Queen, Interior Double Queen, etc.), not just Queen
+    let rateID = null;
+    let ratePlanID = null;
     try {
       const ratesUrl = `${CLOUDBEDS_API_URL}/getRatePlans?propertyID=${CLOUDBEDS_PROPERTY_ID}&startDate=${checkInDate}&endDate=${checkOutDate}`;
       console.log('Fetching rates from:', ratesUrl);
@@ -165,49 +166,46 @@ export async function POST(request: NextRequest) {
       
       if (ratesResponse.ok) {
         const ratesData = await ratesResponse.json();
-        console.log('Rates response structure:', JSON.stringify(ratesData, null, 2));
-        
-        // Handle different response structures
         const rates = ratesData.data || ratesData.rates || ratesData || [];
-        console.log('Available rates:', rates.length);
+        const roomTypeStr = String(roomTypeID);
+        const roomTypeNum = Number(roomTypeID);
         
-        // Find TYE rate (ratePlanID: 227753) for this specific room type
-        // Handle both string and number comparisons
-        const tyeRate = rates.find((rate: any) => {
-          const planID = String(rate.ratePlanID || rate.rate_plan_id || rate.ratePlan_id || '');
-          const rtID = rate.roomTypeID || rate.room_type_id || rate.roomType_id;
-          // Compare both as strings and numbers to handle type mismatches
-          const planMatches = planID === '227753' || Number(planID) === 227753;
-          const roomMatches = String(rtID) === String(roomTypeID) || Number(rtID) === Number(roomTypeID);
-          const matches = planMatches && roomMatches;
-          if (matches) {
-            console.log('Found matching TYE rate:', rate);
-          }
-          return matches;
+        // Any rate for this room type (for fallback)
+        const ratesForRoomType = rates.filter((rate: any) => {
+          const rtID = rate.roomTypeID ?? rate.room_type_id ?? rate.roomType_id;
+          return (String(rtID) === roomTypeStr || Number(rtID) === roomTypeNum) &&
+            (rate.roomsAvailable == null || rate.roomsAvailable > 0) &&
+            !rate.roomBlocked;
+        });
+        
+        // Prefer TYE rate (ratePlanID 227753) for this room type
+        const tyeRate = ratesForRoomType.find((rate: any) => {
+          const planID = String(rate.ratePlanID ?? rate.rate_plan_id ?? rate.ratePlan_id ?? '');
+          return planID === '227753' || Number(planID) === 227753;
         });
         
         if (tyeRate) {
-          tyeRateID = tyeRate.rateID || tyeRate.rate_id || tyeRate.id;
-          tyeRatePlanID = tyeRate.ratePlanID || tyeRate.rate_plan_id || tyeRate.ratePlan_id || '227753';
-          console.log('Found TYE rateID:', tyeRateID, 'ratePlanID:', tyeRatePlanID, 'for roomTypeID:', roomTypeID);
+          rateID = tyeRate.rateID ?? tyeRate.rate_id ?? tyeRate.id;
+          ratePlanID = tyeRate.ratePlanID ?? tyeRate.rate_plan_id ?? tyeRate.ratePlan_id ?? '227753';
+          console.log('Using TYE rate for', roomTypeName, 'rateID:', rateID);
+        } else if (ratesForRoomType.length > 0) {
+          const fallback = ratesForRoomType[0];
+          rateID = fallback.rateID ?? fallback.rate_id ?? fallback.id;
+          ratePlanID = fallback.ratePlanID ?? fallback.rate_plan_id ?? fallback.ratePlan_id;
+          console.log('TYE rate not available for', roomTypeName, '— using fallback rate:', rateID, fallback.name ?? fallback.rateName);
         } else {
-          console.warn('TYE rate not found. Available rates:', rates.map((r: any) => ({
-            ratePlanID: r.ratePlanID || r.rate_plan_id,
-            roomTypeID: r.roomTypeID || r.room_type_id,
-            rateID: r.rateID || r.rate_id,
-            name: r.name || r.rateName
-          })));
+          console.warn('No rates for room type:', roomTypeName, roomTypeID, 'rates count:', rates.length);
         }
       } else {
         const errorText = await ratesResponse.text();
         console.error('Failed to fetch rates:', ratesResponse.status, errorText);
       }
     } catch (error: any) {
-      console.error('Error fetching TYE rate:', error.message, error.stack);
+      console.error('Error fetching rates:', error.message, error.stack);
     }
 
-    if (!tyeRateID && !tyeRatePlanID) {
-      throw new Error(`TYE rate not available for ${roomTypeName}. Please contact staff.`);
+    if (!rateID && !ratePlanID) {
+      throw new Error(`No rate available for ${roomTypeName}. Please contact staff.`);
     }
 
     // Step 3: Create reservation with guest info (creates both guest and reservation)
@@ -231,14 +229,12 @@ export async function POST(request: NextRequest) {
     // roomRateID must be inside rooms[0] per Cloudbeds API format
     reservationParams.append('rooms[0][roomTypeID]', String(roomTypeID || ''));
     reservationParams.append('rooms[0][quantity]', '1');
-    if (tyeRateID) {
-      reservationParams.append('rooms[0][roomRateID]', String(tyeRateID));
-      console.log('Using rooms[0][roomRateID] for TYE rate:', tyeRateID);
-    } else if (tyeRatePlanID) {
-      reservationParams.append('rooms[0][roomRateID]', String(tyeRatePlanID));
-      console.log('Using rooms[0][roomRateID] with ratePlanID (fallback):', tyeRatePlanID);
-    } else {
-      console.warn('No rate ID found - reservation may use base rate');
+    if (rateID) {
+      reservationParams.append('rooms[0][roomRateID]', String(rateID));
+      console.log('Using rooms[0][roomRateID]:', rateID);
+    } else if (ratePlanID) {
+      reservationParams.append('rooms[0][roomRateID]', String(ratePlanID));
+      console.log('Using rooms[0][roomRateID] (plan fallback):', ratePlanID);
     }
     reservationParams.append('adults[0][roomTypeID]', String(roomTypeID || ''));
     reservationParams.append('adults[0][quantity]', '1');
@@ -295,17 +291,15 @@ export async function POST(request: NextRequest) {
     }
     console.log('Reservation created with ID:', reservationID, 'guestID:', guestID);
 
-    // Step 3: Assign the specific room to the reservation
-    console.log('Assigning room ID:', actualRoomID, 'roomName:', roomName);
+    // Step 4: Assign the SELECTED room to the reservation (so guest gets the room from the dropdown)
+    // Cloudbeds expects roomID (the physical room ID), not newRoomID, for postRoomAssign
+    const roomIdToAssign = actualRoomID != null ? String(actualRoomID) : String(roomName);
+    console.log('Assigning selected room to reservation:', { reservationID, roomIdToAssign, requestedRoom: roomName });
     
     const assignParams = new URLSearchParams();
     assignParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
     assignParams.append('reservationID', String(reservationID));
-    if (actualRoomID) {
-      assignParams.append('newRoomID', actualRoomID);
-    } else {
-      assignParams.append('roomName', roomName);
-    }
+    assignParams.append('roomID', roomIdToAssign);
     
     const roomAssignResponse = await fetch(`${CLOUDBEDS_API_URL}/postRoomAssign`, {
       method: 'POST',

@@ -217,7 +217,7 @@ export async function POST(request: NextRequest) {
       const assignParams = new URLSearchParams();
       assignParams.append('propertyID', CLOUDBEDS_PROPERTY_ID || '');
       assignParams.append('reservationID', String(reservationID));
-      assignParams.append('newRoomID', roomID);
+      assignParams.append('roomID', String(roomID));
 
       const step4: any = {
         step: 4,
