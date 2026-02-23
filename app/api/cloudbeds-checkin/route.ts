@@ -98,7 +98,7 @@ export async function POST(request: NextRequest) {
     const checkOutDate = getLocalDateStr(new Date(now.getTime() + 24 * 60 * 60 * 1000));
     console.log('Reservation dates (local):', { checkInDate, checkOutDate });
 
-    // Step 1: Get the room details to find the room type and roomID
+    // Step 1: Get the SELECTED room's details — we need its roomTypeID for postReservation
     console.log('Fetching room details for room:', roomName);
     const roomsResponse = await fetch(`${CLOUDBEDS_API_URL}/getRooms?propertyID=${CLOUDBEDS_PROPERTY_ID}`, {
       method: 'GET',
@@ -149,8 +149,8 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Step 2: Get rate for this room type — prefer TYE (ratePlanID 227753), fallback to any available rate
-    // This allows reservations in all room classes (Interior Queen, Interior Double Queen, etc.), not just Queen
+    // Step 2: Get rate for THIS room type from getRatePlans — we need rateID for postReservation
+    // (e.g. Interior Queen + TYE → rateID 1594322; roomTypeID 517732. Must pass the pair that match the selected room.)
     let rateID = null;
     let ratePlanID = null;
     try {
@@ -208,40 +208,49 @@ export async function POST(request: NextRequest) {
       throw new Error(`No rate available for ${roomTypeName}. Please contact staff.`);
     }
 
-    // Step 3: Create reservation with guest info (creates both guest and reservation)
-    // IMPORTANT: v1.2 API requires application/x-www-form-urlencoded format
-    // with nested array structure for adults/children per room type
-    // Format based on Cloudbeds developer example
-    console.log('Creating reservation with room type:', roomTypeName, 'roomTypeID:', roomTypeID);
+    // Step 3: Create reservation — pass roomTypeID and rateID that correspond to the SELECTED room
+    // (from getRooms for the selected room, and getRatePlans for that room type — e.g. Interior Queen + TYE rate)
+    const roomTypeIDStr = String(roomTypeID ?? '');
+    const roomRateIDStr = rateID != null ? String(rateID) : (ratePlanID != null ? String(ratePlanID) : '');
+    const postReservationRoomPayload = {
+      'rooms[0][roomTypeID]': roomTypeIDStr,
+      'rooms[0][quantity]': '1',
+      'rooms[0][roomRateID]': roomRateIDStr,
+      'adults[0][roomTypeID]': roomTypeIDStr,
+      'adults[0][quantity]': '1',
+      'children[0][roomTypeID]': roomTypeIDStr,
+      'children[0][quantity]': '0',
+    };
+    console.log('postReservation room/rate (for selected room):', {
+      roomTypeName,
+      roomTypeID: roomTypeIDStr,
+      roomRateID: roomRateIDStr,
+      payload: postReservationRoomPayload,
+    });
+
     const reservationParams = new URLSearchParams();
     reservationParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
     reservationParams.append('startDate', checkInDate);
     reservationParams.append('endDate', checkOutDate);
     reservationParams.append('guestFirstName', firstName);
     reservationParams.append('guestLastName', lastName);
-    reservationParams.append('guestCountry', 'US'); // United States - required parameter
-    reservationParams.append('guestZip', '00000'); // Required parameter - default zip
+    reservationParams.append('guestCountry', 'US');
+    reservationParams.append('guestZip', '00000');
     reservationParams.append('guestEmail', email || `${firstName.toLowerCase()}.${lastName.toLowerCase()}@guest.com`);
     reservationParams.append('guestPhone', phoneNumber || '000-000-0000');
-    reservationParams.append('paymentMethod', 'CLC'); // CLC payment method for BNSF crew
-    
-    // Nested array structure for rooms, adults, and children per room type
-    // roomRateID must be inside rooms[0] per Cloudbeds API format
-    reservationParams.append('rooms[0][roomTypeID]', String(roomTypeID || ''));
+    reservationParams.append('paymentMethod', 'CLC');
+
+    reservationParams.append('rooms[0][roomTypeID]', roomTypeIDStr);
     reservationParams.append('rooms[0][quantity]', '1');
-    if (rateID) {
-      reservationParams.append('rooms[0][roomRateID]', String(rateID));
-      console.log('Using rooms[0][roomRateID]:', rateID);
-    } else if (ratePlanID) {
-      reservationParams.append('rooms[0][roomRateID]', String(ratePlanID));
-      console.log('Using rooms[0][roomRateID] (plan fallback):', ratePlanID);
+    if (roomRateIDStr) {
+      reservationParams.append('rooms[0][roomRateID]', roomRateIDStr);
     }
-    reservationParams.append('adults[0][roomTypeID]', String(roomTypeID || ''));
+    reservationParams.append('adults[0][roomTypeID]', roomTypeIDStr);
     reservationParams.append('adults[0][quantity]', '1');
-    reservationParams.append('children[0][roomTypeID]', String(roomTypeID || ''));
+    reservationParams.append('children[0][roomTypeID]', roomTypeIDStr);
     reservationParams.append('children[0][quantity]', '0');
-    reservationParams.append('sourceID', 's-945658-1'); // TYE source (primary source requires -1)
-    
+    reservationParams.append('sourceID', 's-945658-1');
+
     console.log('Reservation params:', reservationParams.toString());
     
     const reservationResponse = await fetch(`${CLOUDBEDS_API_URL}/postReservation`, {
