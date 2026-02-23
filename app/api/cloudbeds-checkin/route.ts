@@ -301,14 +301,14 @@ export async function POST(request: NextRequest) {
     console.log('Reservation created with ID:', reservationID, 'guestID:', guestID);
 
     // Step 4: Assign the SELECTED room to the reservation (so guest gets the room from the dropdown)
-    // Cloudbeds expects roomID (the physical room ID), not newRoomID, for postRoomAssign
+    // Cloudbeds requires newRoomID (not roomID) for postRoomAssign — see CHECKIN_FIX_SUMMARY
     const roomIdToAssign = actualRoomID != null ? String(actualRoomID) : String(roomName);
-    console.log('Assigning selected room to reservation:', { reservationID, roomIdToAssign, requestedRoom: roomName });
+    console.log('Assigning selected room to reservation:', { reservationID, newRoomID: roomIdToAssign, requestedRoom: roomName });
     
     const assignParams = new URLSearchParams();
     assignParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
     assignParams.append('reservationID', String(reservationID));
-    assignParams.append('roomID', roomIdToAssign);
+    assignParams.append('newRoomID', roomIdToAssign);
     
     const roomAssignResponse = await fetch(`${CLOUDBEDS_API_URL}/postRoomAssign`, {
       method: 'POST',
