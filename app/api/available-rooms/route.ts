@@ -54,55 +54,7 @@ export async function GET(request: NextRequest) {
       };
     }
 
-    // PRIMARY: getRoomsUnassigned = Cloudbeds' authoritative list of rooms available for the date range.
-    // Use this only so the dropdown matches Cloudbeds precisely (e.g. 206i yes, 204i no).
-    let rawUnassigned: any[] = [];
-    try {
-      const unassignedUrl = `${CLOUDBEDS_API_URL}/getRoomsUnassigned?propertyID=${CLOUDBEDS_PROPERTY_ID}&checkIn=${today}&checkOut=${tomorrow}`;
-      console.log('getRoomsUnassigned URL:', unassignedUrl);
-      const unassignedResponse = await fetch(unassignedUrl, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-      });
-      const unassignedText = await unassignedResponse.text();
-      if (!unassignedResponse.ok) {
-        console.warn('getRoomsUnassigned failed:', unassignedResponse.status, unassignedText);
-      } else {
-        const data = JSON.parse(unassignedText);
-        if (data?.data?.[0]?.rooms && Array.isArray(data.data[0].rooms)) {
-          rawUnassigned = data.data[0].rooms;
-        } else if (Array.isArray(data?.data)) {
-          rawUnassigned = data.data;
-        } else if (Array.isArray(data?.rooms)) {
-          rawUnassigned = data.rooms;
-        } else if (Array.isArray(data)) {
-          rawUnassigned = data;
-        }
-        console.log('getRoomsUnassigned returned', rawUnassigned.length, 'rooms');
-      }
-    } catch (e: any) {
-      console.warn('getRoomsUnassigned error:', e?.message);
-    }
-
-    if (rawUnassigned.length > 0) {
-      const rooms = rawUnassigned
-        .filter((room: any) => room && room.roomBlocked !== true)
-        .map(formatRoom)
-        .filter((r: any) => r.roomID !== 'unknown');
-      return NextResponse.json({
-        success: true,
-        rooms,
-        count: rooms.length,
-        method: 'getRoomsUnassigned',
-        checkIn: today,
-        checkOut: tomorrow,
-      });
-    }
-
-    // FALLBACK: if getRoomsUnassigned failed or returned empty, use getRooms + reservation filter (less accurate)
+    // PRIMARY: getRooms + filter by reservations — shows ALL rooms that are not occupied today
     let apiError: string | null = null;
     let availableRooms: any[] = [];
     try {
@@ -154,6 +106,7 @@ export async function GET(request: NextRequest) {
           const name = room.roomName ?? room.name;
           return !room.roomBlocked && !occupiedRoomIDs.has(id) && !occupiedRoomNames.has(name);
         });
+        console.log('getRooms + filter: total', allRooms.length, 'available', availableRooms.length);
       }
     } catch (e: any) {
       apiError = e?.message ?? 'Unknown error';
@@ -165,10 +118,40 @@ export async function GET(request: NextRequest) {
         success: true,
         rooms,
         count: rooms.length,
-        method: 'getRooms_with_filtering_fallback',
+        method: 'getRooms_with_filtering',
         checkIn: today,
         checkOut: tomorrow,
-        note: 'Availability may be less accurate; getRoomsUnassigned was empty or failed.',
+      });
+    }
+
+    // FALLBACK: getRoomsUnassigned when getRooms+filter returned no rooms
+    let rawUnassigned: any[] = [];
+    try {
+      const unassignedUrl = `${CLOUDBEDS_API_URL}/getRoomsUnassigned?propertyID=${CLOUDBEDS_PROPERTY_ID}&checkIn=${today}&checkOut=${tomorrow}`;
+      const unassignedResponse = await fetch(unassignedUrl, {
+        method: 'GET',
+        headers: { 'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/json' },
+      });
+      if (unassignedResponse.ok) {
+        const data = await unassignedResponse.json();
+        if (data?.data?.[0]?.rooms) rawUnassigned = data.data[0].rooms;
+        else if (Array.isArray(data?.data)) rawUnassigned = data.data;
+        else if (Array.isArray(data?.rooms)) rawUnassigned = data.rooms;
+        else if (Array.isArray(data)) rawUnassigned = data;
+      }
+    } catch (_) {}
+    if (rawUnassigned.length > 0) {
+      const rooms = rawUnassigned
+        .filter((room: any) => room && room.roomBlocked !== true)
+        .map(formatRoom)
+        .filter((r: any) => r.roomID !== 'unknown');
+      return NextResponse.json({
+        success: true,
+        rooms,
+        count: rooms.length,
+        method: 'getRoomsUnassigned',
+        checkIn: today,
+        checkOut: tomorrow,
       });
     }
 

@@ -111,6 +111,7 @@ export async function POST(request: NextRequest) {
     let roomTypeName = 'Standard Room'; // Default fallback
     let roomTypeID = null;
     let actualRoomID = null;
+    let selectedRoomName: string | null = null; // e.g. "312", "200" for assign request
     
     if (roomsResponse.ok) {
       const roomsData = await roomsResponse.json();
@@ -142,7 +143,8 @@ export async function POST(request: NextRequest) {
         roomTypeName = selectedRoom.roomTypeName || selectedRoom.roomType || 'Standard Room';
         roomTypeID = selectedRoom.roomTypeID || selectedRoom.roomType_id;
         actualRoomID = selectedRoom.roomID || selectedRoom.id;
-        console.log('Found room details:', { roomTypeName, roomTypeID, actualRoomID });
+        selectedRoomName = selectedRoom.roomName ?? selectedRoom.name ?? null;
+        console.log('Found room details:', { roomTypeName, roomTypeID, actualRoomID, selectedRoomName });
       } else {
         console.warn('Room not found:', roomName);
         throw new Error(`Room ${roomName} not found`);
@@ -301,16 +303,18 @@ export async function POST(request: NextRequest) {
     console.log('Reservation created with ID:', reservationID, 'guestID:', guestID);
 
     // Step 4: Assign the SELECTED room to the reservation (so guest gets the room from the dropdown)
-    // Cloudbeds requires newRoomID (not roomID) for postRoomAssign — see CHECKIN_FIX_SUMMARY
     const roomIdToAssign = actualRoomID != null ? String(actualRoomID) : String(roomName);
-    console.log('Assigning selected room to reservation:', { reservationID, newRoomID: roomIdToAssign, requestedRoom: roomName });
+    const assignApiUrl = (process.env.CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.2').replace(/\/v1\.2\/?$/, '/v1.3');
+    console.log('Assigning selected room to reservation:', { reservationID, newRoomID: roomIdToAssign, roomName: selectedRoomName ?? roomName });
     
     const assignParams = new URLSearchParams();
     assignParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
     assignParams.append('reservationID', String(reservationID));
     assignParams.append('newRoomID', roomIdToAssign);
+    assignParams.append('roomID', roomIdToAssign);
+    if (selectedRoomName) assignParams.append('roomName', selectedRoomName);
     
-    const roomAssignResponse = await fetch(`${CLOUDBEDS_API_URL}/postRoomAssign`, {
+    const roomAssignResponse = await fetch(`${assignApiUrl}/postRoomAssign`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
