@@ -202,7 +202,7 @@ export default function BulkCheckInTab({}: BulkCheckInTabProps) {
             }}
           />
           <p style={{ marginTop: '5px', fontSize: '13px', color: '#999' }}>
-            Leave blank to use today's date or extract from CSV sign-in times
+            Leave blank to use today&apos;s date or extract from CSV sign-in times
           </p>
         </div>
 
@@ -335,9 +335,9 @@ export default function BulkCheckInTab({}: BulkCheckInTabProps) {
       }}>
         <h3 style={{ marginTop: 0, color: '#333', fontSize: '16px' }}>CSV Format Requirements</h3>
         <ul style={{ margin: 0, paddingLeft: '20px', color: '#666', fontSize: '14px', lineHeight: '1.8' }}>
-          <li><strong>Required columns:</strong> name, room number (or "Room number")</li>
+          <li><strong>Required columns:</strong> name, room number (or &quot;Room number&quot;)</li>
           <li><strong>Optional columns:</strong> phone_number, CLC number, Class, sign_in_time</li>
-          <li><strong>Room matching:</strong> Rooms are matched by number only (e.g., "204" matches "204i", "Room 204", etc.)</li>
+          <li><strong>Room matching:</strong> Rooms are matched by number only (e.g., &quot;204&quot; matches &quot;204i&quot;, &quot;Room 204&quot;, etc.)</li>
           <li><strong>Duplicate detection:</strong> Guests with the same name on the same check-in date will be skipped</li>
           <li><strong>Date auto-detect:</strong> If no date is specified, the system will try to extract it from the sign_in_time column</li>
         </ul>
