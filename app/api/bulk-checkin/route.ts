@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { performCloudbedsCheckIn } from '@/lib/cloudbeds-checkin';
 
 interface GuestRow {
   name: string;
@@ -15,13 +16,6 @@ interface CheckInResult {
   status: 'success' | 'skipped' | 'error';
   message: string;
   reservationID?: string;
-}
-
-function getInternalBaseUrl() {
-  if (process.env.NEXT_PUBLIC_BASE_URL) return process.env.NEXT_PUBLIC_BASE_URL;
-  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
-  if (process.env.NEXT_PUBLIC_APP_URL) return process.env.NEXT_PUBLIC_APP_URL;
-  return 'http://localhost:3000';
 }
 
 function parseName(fullName: string) {
@@ -72,8 +66,7 @@ function isDuplicate(guest: GuestRow, existingReservations: any[], checkInDate: 
 
 async function checkInGuest(guest: GuestRow, checkInDate: string, checkOutDate: string, skipDuplicates: boolean, existingReservations: any[]): Promise<CheckInResult> {
   const { firstName, lastName } = parseName(guest.name);
-  
-  // Check for duplicates
+
   if (skipDuplicates && isDuplicate(guest, existingReservations, checkInDate)) {
     return {
       guest: guest.name,
@@ -82,48 +75,31 @@ async function checkInGuest(guest: GuestRow, checkInDate: string, checkOutDate: 
       message: 'Duplicate - already checked in for this date',
     };
   }
-  
+
   try {
-    const baseUrl = getInternalBaseUrl();
-    const response = await fetch(`${baseUrl}/api/cloudbeds-checkin`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        firstName,
-        lastName,
-        phoneNumber: guest.phoneNumber,
-        roomName: guest.roomNumber,
-        clcNumber: guest.clcNumber,
-        classType: guest.classType || 'TYE',
-        checkInDate,
-        checkOutDate,
-      }),
+    const result = await performCloudbedsCheckIn({
+      firstName,
+      lastName,
+      phoneNumber: guest.phoneNumber,
+      roomName: guest.roomNumber,
+      clcNumber: guest.clcNumber,
+      classType: guest.classType || 'TYE',
+      checkInDate,
+      checkOutDate,
     });
-    
-    const data = await response.json();
-    
-    if (!response.ok || !data.success) {
-      return {
-        guest: guest.name,
-        room: guest.roomNumber,
-        status: 'error',
-        message: data.error || data.message || 'Check-in failed',
-      };
-    }
-    
     return {
       guest: guest.name,
       room: guest.roomNumber,
       status: 'success',
-      message: 'Checked in successfully',
-      reservationID: data.reservationID,
+      message: result.message,
+      reservationID: result.reservationID,
     };
   } catch (error: any) {
     return {
       guest: guest.name,
       room: guest.roomNumber,
       status: 'error',
-      message: error.message || 'Network error',
+      message: error?.message || 'Check-in failed',
     };
   }
 }
