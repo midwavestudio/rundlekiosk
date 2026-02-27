@@ -121,13 +121,18 @@ export async function POST(request: NextRequest) {
       const roomsData = await roomsResponse.json();
       console.log('Rooms data structure:', JSON.stringify(roomsData, null, 2));
       
-      // Handle nested structure: data[0].rooms, data[1].rooms, ... (flatten all buildings)
+      // Handle nested structure similar to /api/available-rooms
       let rooms: any[] = [];
-      if (roomsData.data && Array.isArray(roomsData.data)) {
-        rooms = roomsData.data.flatMap((d: any) => d.rooms || []);
-      }
-      if (rooms.length === 0 && roomsData.data) {
-        rooms = Array.isArray(roomsData.data) ? roomsData.data : [roomsData.data];
+      if (roomsData.data?.[0]?.rooms) {
+        rooms = roomsData.data[0].rooms;
+      } else if (Array.isArray(roomsData.data)) {
+        rooms = roomsData.data;
+      } else if (Array.isArray(roomsData.rooms)) {
+        rooms = roomsData.rooms;
+      } else if (Array.isArray(roomsData)) {
+        rooms = roomsData;
+      } else if (roomsData.data) {
+        rooms = [roomsData.data];
       }
       
       console.log('Searching for room:', roomName, 'in', rooms.length, 'rooms');
@@ -196,16 +201,17 @@ export async function POST(request: NextRequest) {
           return String(rtID) === roomTypeStr || Number(rtID) === roomTypeNum;
         });
         
-        // Prefer TYE rate (ratePlanID 227753) for this room type, even if roomsAvailable is 0
+        // Prefer TYE rate (by plan ID OR name containing \"tye\"), even if roomsAvailable is 0
         const tyeRate = allRatesForRoomType.find((rate: any) => {
           const planID = String(rate.ratePlanID ?? rate.rate_plan_id ?? rate.ratePlan_id ?? '');
-          return planID === '227753' || Number(planID) === 227753;
+          const planName = String(rate.ratePlanName ?? rate.name ?? '').toLowerCase();
+          return planID === '227753' || Number(planID) === 227753 || planName.includes('tye');
         });
         
         if (tyeRate) {
           rateID = tyeRate.rateID ?? tyeRate.rate_id ?? tyeRate.id;
-          ratePlanID = tyeRate.ratePlanID ?? tyeRate.rate_plan_id ?? tyeRate.ratePlan_id ?? '227753';
-          console.log('Using TYE rate for', roomTypeName, 'rateID:', rateID);
+          ratePlanID = tyeRate.ratePlanID ?? tyeRate.rate_plan_id ?? tyeRate.ratePlan_id ?? (tyeRate.ratePlanName ? undefined : '227753');
+          console.log('Using TYE rate for', roomTypeName, 'rateID:', rateID, 'ratePlanID:', ratePlanID);
         } else if (allRatesForRoomType.length > 0) {
           // Fallback: pick a rate for this room type that is actually available, otherwise just the first one
           const available = allRatesForRoomType.filter((rate: any) =>
@@ -228,7 +234,7 @@ export async function POST(request: NextRequest) {
     }
 
     if (!rateID && !ratePlanID) {
-      throw new Error(`No rate available for ${roomTypeName}. Please contact staff.`);
+      console.warn(`No specific rate found for ${roomTypeName}; proceeding without explicit roomRateID (Cloudbeds will use default).`);
     }
 
     // Step 3: Create reservation — pass roomTypeID and rateID that correspond to the SELECTED room
