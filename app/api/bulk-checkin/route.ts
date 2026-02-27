@@ -17,6 +17,13 @@ interface CheckInResult {
   reservationID?: string;
 }
 
+function getInternalBaseUrl() {
+  if (process.env.NEXT_PUBLIC_BASE_URL) return process.env.NEXT_PUBLIC_BASE_URL;
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
+  if (process.env.NEXT_PUBLIC_APP_URL) return process.env.NEXT_PUBLIC_APP_URL;
+  return 'http://localhost:3000';
+}
+
 function parseName(fullName: string) {
   const name = (fullName || '').trim();
   const parts = name.split(/\s+/).filter(Boolean);
@@ -77,7 +84,8 @@ async function checkInGuest(guest: GuestRow, checkInDate: string, checkOutDate: 
   }
   
   try {
-    const response = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/api/cloudbeds-checkin`, {
+    const baseUrl = getInternalBaseUrl();
+    const response = await fetch(`${baseUrl}/api/cloudbeds-checkin`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
