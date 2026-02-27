@@ -11,7 +11,7 @@ function getLocalDateStr(d: Date): string {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { firstName, lastName, phoneNumber, roomName, clcNumber, classType, email, reservationID: existingReservationID } = body;
+    const { firstName, lastName, phoneNumber, roomName, clcNumber, classType, email, reservationID: existingReservationID, checkInDate: bodyCheckIn, checkOutDate: bodyCheckOut } = body;
 
     console.log('Check-in API called with:', { firstName, lastName, roomName, clcNumber, classType });
 
@@ -92,10 +92,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Use LOCAL date for today/tomorrow so reservations are always for today (not UTC)
+    // Use optional body dates for backdating, else LOCAL date for today/tomorrow
     const now = new Date();
-    const checkInDate = getLocalDateStr(now);
-    const checkOutDate = getLocalDateStr(new Date(now.getTime() + 24 * 60 * 60 * 1000));
+    const checkInDate = (bodyCheckIn && /^\d{4}-\d{2}-\d{2}$/.test(String(bodyCheckIn)))
+      ? String(bodyCheckIn)
+      : getLocalDateStr(now);
+    const checkOutDate = (bodyCheckOut && /^\d{4}-\d{2}-\d{2}$/.test(String(bodyCheckOut)))
+      ? String(bodyCheckOut)
+      : getLocalDateStr(new Date(now.getTime() + 24 * 60 * 60 * 1000));
     console.log('Reservation dates (local):', { checkInDate, checkOutDate });
 
     // Step 1: Get the SELECTED room's details — we need its roomTypeID for postReservation
@@ -117,22 +121,32 @@ export async function POST(request: NextRequest) {
       const roomsData = await roomsResponse.json();
       console.log('Rooms data structure:', JSON.stringify(roomsData, null, 2));
       
-      // Handle nested structure: data[0].rooms
-      let rooms = [];
-      if (roomsData.data && Array.isArray(roomsData.data) && roomsData.data.length > 0 && roomsData.data[0].rooms) {
-        rooms = roomsData.data[0].rooms;
-      } else {
-        rooms = roomsData.data || [];
+      // Handle nested structure: data[0].rooms, data[1].rooms, ... (flatten all buildings)
+      let rooms: any[] = [];
+      if (roomsData.data && Array.isArray(roomsData.data)) {
+        rooms = roomsData.data.flatMap((d: any) => d.rooms || []);
+      }
+      if (rooms.length === 0 && roomsData.data) {
+        rooms = Array.isArray(roomsData.data) ? roomsData.data : [roomsData.data];
       }
       
       console.log('Searching for room:', roomName, 'in', rooms.length, 'rooms');
       const roomKey = String(roomName).trim();
+      const norm = (s: string) => s.replace(/^Room\s+/i, '').trim();
+      // Cloudbeds may use "204i" etc.; treat as same as "204"
+      const stripTrailingLetter = (s: string) => s.replace(/[a-zA-Z]+$/, '').trim();
       const selectedRoom = rooms.find((r: any) => {
         const idStr = r.roomID != null ? String(r.roomID) : '';
         const idAlt = r.id != null ? String(r.id) : '';
-        const nameStr = r.roomName != null ? String(r.roomName) : '';
-        const nameAlt = r.name != null ? String(r.name) : '';
-        const matches = idStr === roomKey || idAlt === roomKey || nameStr === roomKey || nameAlt === roomKey;
+        const nameStr = (r.roomName != null ? String(r.roomName) : '').trim();
+        const nameAlt = (r.name != null ? String(r.name) : '').trim();
+        const matches =
+          idStr === roomKey || idAlt === roomKey ||
+          nameStr === roomKey || nameAlt === roomKey ||
+          norm(nameStr) === roomKey || norm(nameAlt) === roomKey ||
+          nameStr.endsWith(roomKey) || nameAlt.endsWith(roomKey) ||
+          stripTrailingLetter(idStr) === roomKey || stripTrailingLetter(idAlt) === roomKey ||
+          stripTrailingLetter(nameStr) === roomKey || stripTrailingLetter(nameAlt) === roomKey;
         if (matches) {
           console.log('Found matching room:', r);
         }
@@ -303,15 +317,17 @@ export async function POST(request: NextRequest) {
     console.log('Reservation created with ID:', reservationID, 'guestID:', guestID);
 
     // Step 4: Assign the SELECTED room to the reservation (so guest gets the room from the dropdown)
+    // Use the exact room ID/name from Cloudbeds (e.g. "204i") for assign and room check-in
     const roomIdToAssign = actualRoomID != null ? String(actualRoomID) : String(roomName);
     const assignApiUrl = (process.env.CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.2').replace(/\/v1\.2\/?$/, '/v1.3');
     console.log('Assigning selected room to reservation:', { reservationID, newRoomID: roomIdToAssign, roomName: selectedRoomName ?? roomName });
-    
+
     const assignParams = new URLSearchParams();
     assignParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
     assignParams.append('reservationID', String(reservationID));
     assignParams.append('newRoomID', roomIdToAssign);
     assignParams.append('roomID', roomIdToAssign);
+    if (roomTypeID != null) assignParams.append('roomTypeID', String(roomTypeID));
     if (selectedRoomName) assignParams.append('roomName', selectedRoomName);
     
     const roomAssignResponse = await fetch(`${assignApiUrl}/postRoomAssign`, {

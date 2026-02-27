@@ -6,6 +6,7 @@ import ArrivalsTab from './ArrivalsTab';
 import DeparturesTab from './DeparturesTab';
 import CheckInModal from './CheckInModal';
 import CheckOutModal from './CheckOutModal';
+import BulkCheckInTab from './BulkCheckInTab';
 
 interface DashboardProps {
   user: User;
@@ -13,7 +14,7 @@ interface DashboardProps {
 }
 
 export default function Dashboard({ user, onLogout }: DashboardProps) {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'arrivals' | 'departures'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'arrivals' | 'departures' | 'bulk-checkin'>('dashboard');
   const [showCheckInModal, setShowCheckInModal] = useState(false);
   const [showCheckOutModal, setShowCheckOutModal] = useState(false);
   const [selectedReservation, setSelectedReservation] = useState<any>(null);
@@ -83,7 +84,7 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
             borderBottom: '2px solid #f0f0f0',
             padding: '0 20px'
           }}>
-            {['dashboard', 'arrivals', 'departures'].map((tab) => (
+            {['dashboard', 'arrivals', 'departures', 'bulk-checkin'].map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab as any)}
@@ -100,7 +101,7 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
                   transition: 'all 0.3s'
                 }}
               >
-                {tab}
+                {tab === 'bulk-checkin' ? 'Bulk Check-In' : tab}
               </button>
             ))}
           </div>
@@ -131,6 +132,9 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
                 window.location.reload();
               }}
             />
+          )}
+          {activeTab === 'bulk-checkin' && (
+            <BulkCheckInTab />
           )}
           </div>
         </div>
