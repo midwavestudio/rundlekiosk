@@ -336,14 +336,15 @@ export async function POST(request: NextRequest) {
     }
     console.log('Room assigned successfully:', assignResult);
 
-    // Step 4: Check in the guest (set status to checked_in)
-    console.log('Checking in guest...');
+    // Step 5: Set reservation to checked_in (in house) — use v1.3 so status updates correctly
+    const apiV13 = (process.env.CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.2').replace(/\/v1\.2\/?$/, '/v1.3');
+    console.log('Setting reservation status to checked_in (in house)...');
     const checkInParams = new URLSearchParams();
     checkInParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
     checkInParams.append('reservationID', String(reservationID));
     checkInParams.append('status', 'checked_in');
     
-    const checkInResponse = await fetch(`${CLOUDBEDS_API_URL}/putReservation`, {
+    const checkInResponse = await fetch(`${apiV13}/putReservation`, {
       method: 'PUT',
       headers: {
         'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
@@ -362,6 +363,36 @@ export async function POST(request: NextRequest) {
     if (!checkInData.success) {
       console.error('Check-in returned success:false:', checkInData);
       throw new Error(`Check-in failed: ${checkInData.message || 'Unknown error'}`);
+    }
+    console.log('putReservation status=checked_in OK');
+
+    // Step 6: postRoomCheckIn so the reservation shows as In House (not just Confirmed)
+    try {
+      const roomCheckInParams = new URLSearchParams();
+      roomCheckInParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+      roomCheckInParams.append('reservationID', String(reservationID));
+      roomCheckInParams.append('roomID', roomIdToAssign);
+      const roomCheckInRes = await fetch(`${apiV13}/postRoomCheckIn`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: roomCheckInParams.toString(),
+      });
+      if (roomCheckInRes.ok) {
+        const roomCheckInData = await roomCheckInRes.json();
+        if (roomCheckInData.success) {
+          console.log('postRoomCheckIn OK — reservation is In House');
+        } else {
+          console.warn('postRoomCheckIn success:false', roomCheckInData);
+        }
+      } else {
+        const errText = await roomCheckInRes.text();
+        console.warn('postRoomCheckIn failed:', roomCheckInRes.status, errText);
+      }
+    } catch (e: any) {
+      console.warn('postRoomCheckIn error (continuing):', e?.message);
     }
 
     console.log('Check-in complete!');
