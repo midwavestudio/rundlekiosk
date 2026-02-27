@@ -135,6 +135,9 @@ export async function POST(request: NextRequest) {
       const norm = (s: string) => s.replace(/^Room\s+/i, '').trim();
       // Cloudbeds may use "204i" etc.; treat as same as "204"
       const stripTrailingLetter = (s: string) => s.replace(/[a-zA-Z]+$/, '').trim();
+      // Also compare just the digits so "Queen 302A" or "302 - Queen" match "302"
+      const digits = (s: string) => s.replace(/\D/g, '');
+      const keyDigits = digits(roomKey);
       const selectedRoom = rooms.find((r: any) => {
         const idStr = r.roomID != null ? String(r.roomID) : '';
         const idAlt = r.id != null ? String(r.id) : '';
@@ -146,7 +149,8 @@ export async function POST(request: NextRequest) {
           norm(nameStr) === roomKey || norm(nameAlt) === roomKey ||
           nameStr.endsWith(roomKey) || nameAlt.endsWith(roomKey) ||
           stripTrailingLetter(idStr) === roomKey || stripTrailingLetter(idAlt) === roomKey ||
-          stripTrailingLetter(nameStr) === roomKey || stripTrailingLetter(nameAlt) === roomKey;
+          stripTrailingLetter(nameStr) === roomKey || stripTrailingLetter(nameAlt) === roomKey ||
+          (keyDigits && (digits(idStr) === keyDigits || digits(idAlt) === keyDigits || digits(nameStr) === keyDigits || digits(nameAlt) === keyDigits));
         if (matches) {
           console.log('Found matching room:', r);
         }
@@ -186,16 +190,14 @@ export async function POST(request: NextRequest) {
         const roomTypeStr = String(roomTypeID);
         const roomTypeNum = Number(roomTypeID);
         
-        // Any rate for this room type (for fallback)
-        const ratesForRoomType = rates.filter((rate: any) => {
+        // All rates for this room type (ignore availability first so TYE can still be used when \"sold out\")
+        const allRatesForRoomType = rates.filter((rate: any) => {
           const rtID = rate.roomTypeID ?? rate.room_type_id ?? rate.roomType_id;
-          return (String(rtID) === roomTypeStr || Number(rtID) === roomTypeNum) &&
-            (rate.roomsAvailable == null || rate.roomsAvailable > 0) &&
-            !rate.roomBlocked;
+          return String(rtID) === roomTypeStr || Number(rtID) === roomTypeNum;
         });
         
-        // Prefer TYE rate (ratePlanID 227753) for this room type
-        const tyeRate = ratesForRoomType.find((rate: any) => {
+        // Prefer TYE rate (ratePlanID 227753) for this room type, even if roomsAvailable is 0
+        const tyeRate = allRatesForRoomType.find((rate: any) => {
           const planID = String(rate.ratePlanID ?? rate.rate_plan_id ?? rate.ratePlan_id ?? '');
           return planID === '227753' || Number(planID) === 227753;
         });
@@ -204,8 +206,13 @@ export async function POST(request: NextRequest) {
           rateID = tyeRate.rateID ?? tyeRate.rate_id ?? tyeRate.id;
           ratePlanID = tyeRate.ratePlanID ?? tyeRate.rate_plan_id ?? tyeRate.ratePlan_id ?? '227753';
           console.log('Using TYE rate for', roomTypeName, 'rateID:', rateID);
-        } else if (ratesForRoomType.length > 0) {
-          const fallback = ratesForRoomType[0];
+        } else if (allRatesForRoomType.length > 0) {
+          // Fallback: pick a rate for this room type that is actually available, otherwise just the first one
+          const available = allRatesForRoomType.filter((rate: any) =>
+            (rate.roomsAvailable == null || rate.roomsAvailable > 0) &&
+            !rate.roomBlocked
+          );
+          const fallback = available[0] ?? allRatesForRoomType[0];
           rateID = fallback.rateID ?? fallback.rate_id ?? fallback.id;
           ratePlanID = fallback.ratePlanID ?? fallback.rate_plan_id ?? fallback.ratePlan_id;
           console.log('TYE rate not available for', roomTypeName, '— using fallback rate:', rateID, fallback.name ?? fallback.rateName);
