@@ -46,6 +46,8 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   const CLOUDBEDS_API_KEY = process.env.CLOUDBEDS_API_KEY;
   const CLOUDBEDS_PROPERTY_ID = process.env.CLOUDBEDS_PROPERTY_ID;
   const CLOUDBEDS_API_URL = process.env.CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.2';
+  const baseUrl = (CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.2').replace(/\/v1\.\d+\/?$/, '');
+  const apiV13 = `${baseUrl.replace(/\/$/, '')}/v1.3`;
 
   if (!CLOUDBEDS_API_KEY || !CLOUDBEDS_PROPERTY_ID) {
     throw new Error('Cloudbeds not configured');
@@ -195,7 +197,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   reservationParams.append('children[0][quantity]', '0');
   reservationParams.append('sourceID', 's-945658-1');
 
-  const reservationResponse = await fetch(`${CLOUDBEDS_API_URL}/postReservation`, {
+  const reservationResponse = await fetch(`${apiV13}/postReservation`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
@@ -233,20 +235,15 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     throw new Error('No reservationID returned from Cloudbeds');
   }
 
-  // Step 4: Assign the selected room (must use v1.3 for postRoomAssign)
+  // Step 4: Assign the selected room (v1.3 postRoomAssign; only newRoomID = target room)
   const roomIdToAssign = actualRoomID != null ? String(actualRoomID) : String(roomName);
-  const baseUrl = (CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.2').replace(/\/v1\.\d+\/?$/, '');
-  const apiV13 = `${baseUrl.replace(/\/$/, '')}/v1.3`;
   const assignParams = new URLSearchParams();
   assignParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
   assignParams.append('reservationID', String(reservationID));
   assignParams.append('newRoomID', roomIdToAssign);
-  const assignedRoomFromRes = reservationData.data?.rooms?.[0]?.roomID ?? reservationData.data?.roomID;
-  if (assignedRoomFromRes != null && String(assignedRoomFromRes) !== roomIdToAssign) {
-    assignParams.append('roomID', String(assignedRoomFromRes)); // current room so API reassigns to newRoomID
-  } else {
-    assignParams.append('roomID', roomIdToAssign); // target room (initial assign; some APIs expect roomID)
-  }
+  // Do NOT send roomID here — CloudBeds uses newRoomID as the room to assign; roomID can be interpreted as target and override.
+
+  console.log('[cloudbeds-checkin] Room assign: selectedRoom', { roomName, actualRoomID, roomIdToAssign, assignBody: assignParams.toString() });
 
   const roomAssignResponse = await fetch(`${apiV13}/postRoomAssign`, {
     method: 'POST',
@@ -256,11 +253,18 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     },
     body: assignParams.toString(),
   });
+  const assignResponseText = await roomAssignResponse.text();
   if (!roomAssignResponse.ok) {
-    const assignErrorText = await roomAssignResponse.text();
-    throw new Error(`Failed to assign room: ${assignErrorText}`);
+    console.error('[cloudbeds-checkin] Room assign failed:', roomAssignResponse.status, assignResponseText);
+    throw new Error(`Failed to assign room: ${assignResponseText}`);
   }
-  const assignResult = await roomAssignResponse.json();
+  let assignResult: any = {};
+  try {
+    assignResult = JSON.parse(assignResponseText);
+  } catch {
+    assignResult = { success: false, message: assignResponseText };
+  }
+  console.log('[cloudbeds-checkin] Room assign response:', assignResult.success, assignResult.message || assignResponseText);
   if (!assignResult.success) {
     throw new Error(assignResult.message || 'Room assignment failed');
   }
