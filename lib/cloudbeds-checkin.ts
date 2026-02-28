@@ -233,18 +233,22 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     throw new Error('No reservationID returned from Cloudbeds');
   }
 
-  // Step 4: Assign room
+  // Step 4: Assign the selected room (must use v1.3 for postRoomAssign)
   const roomIdToAssign = actualRoomID != null ? String(actualRoomID) : String(roomName);
-  const assignApiUrl = (CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.2').replace(/\/v1\.2\/?$/, '/v1.3');
+  const baseUrl = (CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.2').replace(/\/v1\.\d+\/?$/, '');
+  const apiV13 = `${baseUrl.replace(/\/$/, '')}/v1.3`;
   const assignParams = new URLSearchParams();
   assignParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
   assignParams.append('reservationID', String(reservationID));
   assignParams.append('newRoomID', roomIdToAssign);
-  assignParams.append('roomID', roomIdToAssign);
-  if (roomTypeID != null) assignParams.append('roomTypeID', String(roomTypeID));
-  if (selectedRoomName) assignParams.append('roomName', selectedRoomName);
+  const assignedRoomFromRes = reservationData.data?.rooms?.[0]?.roomID ?? reservationData.data?.roomID;
+  if (assignedRoomFromRes != null && String(assignedRoomFromRes) !== roomIdToAssign) {
+    assignParams.append('roomID', String(assignedRoomFromRes)); // current room so API reassigns to newRoomID
+  } else {
+    assignParams.append('roomID', roomIdToAssign); // target room (initial assign; some APIs expect roomID)
+  }
 
-  const roomAssignResponse = await fetch(`${assignApiUrl}/postRoomAssign`, {
+  const roomAssignResponse = await fetch(`${apiV13}/postRoomAssign`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
@@ -262,7 +266,6 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   }
 
   // Step 5: Set status to checked_in
-  const apiV13 = (CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.2').replace(/\/v1\.2\/?$/, '/v1.3');
   const checkInParams = new URLSearchParams();
   checkInParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
   checkInParams.append('reservationID', String(reservationID));
