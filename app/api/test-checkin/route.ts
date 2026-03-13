@@ -218,6 +218,7 @@ export async function POST(request: NextRequest) {
       assignParams.append('propertyID', CLOUDBEDS_PROPERTY_ID || '');
       assignParams.append('reservationID', String(reservationID));
       assignParams.append('newRoomID', String(roomID));
+      assignParams.append('roomTypeID', String(roomTypeID));
 
       const step4: any = {
         step: 4,

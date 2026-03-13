@@ -2,11 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { performCloudbedsCheckIn } from '@/lib/cloudbeds-checkin';
 
 export async function POST(request: NextRequest) {
+  let debugLog: Array<{ step: string; request?: unknown; response?: unknown; error?: string }> | undefined;
   try {
     const body = await request.json();
-    const { firstName, lastName, phoneNumber, roomName, clcNumber, classType, email, reservationID: existingReservationID, checkInDate: bodyCheckIn, checkOutDate: bodyCheckOut } = body;
+    const { firstName, lastName, phoneNumber, roomName, clcNumber, classType, email, reservationID: existingReservationID, checkInDate: bodyCheckIn, checkOutDate: bodyCheckOut, debug: enableDebug } = body;
 
     console.log('Check-in API called with:', { firstName, lastName, roomName, clcNumber, classType });
+    debugLog = enableDebug === true ? [] : undefined;
 
     if (!firstName || !lastName || !roomName) {
       return NextResponse.json(
@@ -73,14 +75,17 @@ export async function POST(request: NextRequest) {
         email,
         checkInDate: bodyCheckIn,
         checkOutDate: bodyCheckOut,
+        debugLog,
       });
-      return NextResponse.json({
+      const response: Record<string, unknown> = {
         success: true,
         guestID: result.guestID,
         reservationID: result.reservationID,
         roomName: result.roomName,
         message: result.message,
-      });
+      };
+      if (debugLog && debugLog.length > 0) response.debugTrail = debugLog;
+      return NextResponse.json(response);
     } catch (createError: any) {
       if (createError?.message === 'Cloudbeds not configured') {
         return NextResponse.json(
@@ -93,14 +98,13 @@ export async function POST(request: NextRequest) {
 
   } catch (error: any) {
     console.error('Cloudbeds check-in error:', error);
-    return NextResponse.json(
-      { 
-        success: false, 
-        error: error.message || 'Failed to check in to Cloudbeds',
-        details: error.toString(),
-      },
-      { status: 500 }
-    );
+    const errResponse: Record<string, unknown> = {
+      success: false,
+      error: error.message || 'Failed to check in to Cloudbeds',
+      details: error.toString(),
+    };
+    if (debugLog && debugLog.length > 0) errResponse.debugTrail = debugLog;
+    return NextResponse.json(errResponse, { status: 500 });
   }
 }
 

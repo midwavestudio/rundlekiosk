@@ -20,6 +20,8 @@ export interface PerformCheckInParams {
   email?: string;
   checkInDate?: string;
   checkOutDate?: string;
+  /** If provided, request/response trail for each step is pushed here (for debugging room-assignment issues). */
+  debugLog?: Array<{ step: string; request?: unknown; response?: unknown; error?: string }>;
 }
 
 export interface PerformCheckInResult {
@@ -41,7 +43,12 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     email,
     checkInDate: bodyCheckIn,
     checkOutDate: bodyCheckOut,
+    debugLog,
   } = params;
+
+  const log = (step: string, request?: unknown, response?: unknown, error?: string) => {
+    debugLog?.push({ step, request, response, error });
+  };
 
   const CLOUDBEDS_API_KEY = process.env.CLOUDBEDS_API_KEY;
   const CLOUDBEDS_PROPERTY_ID = process.env.CLOUDBEDS_PROPERTY_ID;
@@ -62,7 +69,9 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     : getLocalDateStr(new Date(now.getTime() + 24 * 60 * 60 * 1000));
 
   // Step 1: Get rooms and find matching room
-  const roomsResponse = await fetch(`${CLOUDBEDS_API_URL}/getRooms?propertyID=${CLOUDBEDS_PROPERTY_ID}`, {
+  const getRoomsUrl = `${CLOUDBEDS_API_URL}/getRooms?propertyID=${CLOUDBEDS_PROPERTY_ID}`;
+  log('1_getRooms_request', { url: getRoomsUrl, method: 'GET' });
+  const roomsResponse = await fetch(getRoomsUrl, {
     method: 'GET',
     headers: {
       Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
@@ -100,6 +109,19 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     rooms = [roomsData.data];
   }
 
+  const roomListSummary = rooms.slice(0, 50).map((r: any) => ({
+    roomID: r.roomID ?? r.id,
+    roomName: r.roomName ?? r.name,
+    roomTypeID: r.roomTypeID ?? r.roomType_id,
+  }));
+  if (rooms.length > 50) roomListSummary.push({ _note: `... and ${rooms.length - 50} more rooms` });
+  log('1_getRooms_response', {
+    status: roomsResponse.status,
+    roomCount: rooms.length,
+    rooms: roomListSummary,
+    rawDataKeys: roomsData.data ? Object.keys(roomsData) : [],
+  });
+
   const roomKey = String(roomName).trim();
   const norm = (s: string) => s.replace(/^Room\s+/i, '').trim();
   const stripTrailingLetter = (s: string) => s.replace(/[a-zA-Z]+$/, '').trim();
@@ -123,6 +145,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   });
 
   if (!selectedRoom) {
+    log('2_room_match', { roomKey, found: false, error: `Room ${roomName} not found` });
     throw new Error(`Room ${roomName} not found`);
   }
 
@@ -130,6 +153,14 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   roomTypeID = selectedRoom.roomTypeID || selectedRoom.roomType_id;
   actualRoomID = selectedRoom.roomID || selectedRoom.id;
   selectedRoomName = selectedRoom.roomName ?? selectedRoom.name ?? null;
+  log('2_room_match', {
+    roomKey,
+    found: true,
+    actualRoomID,
+    selectedRoomName,
+    roomTypeID,
+    roomTypeName,
+  });
 
   // Step 2: Get rate (prefer TYE)
   let rateID: string | number | null = null;
@@ -197,6 +228,18 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   reservationParams.append('children[0][quantity]', '0');
   reservationParams.append('sourceID', 's-945658-1');
 
+  log('3_postReservation_request', {
+    url: `${apiV13}/postReservation`,
+    body: {
+      roomTypeID: roomTypeIDStr,
+      roomRateID: roomRateIDStr || undefined,
+      startDate: checkInDate,
+      endDate: checkOutDate,
+      guestFirstName: firstName,
+      guestLastName: lastName,
+    },
+  });
+
   const reservationResponse = await fetch(`${apiV13}/postReservation`, {
     method: 'POST',
     headers: {
@@ -207,6 +250,16 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   });
 
   const responseText = await reservationResponse.text();
+  log('3_postReservation_response', {
+    status: reservationResponse.status,
+    body: (() => {
+      try {
+        return JSON.parse(responseText);
+      } catch {
+        return responseText;
+      }
+    })(),
+  });
   if (!reservationResponse.ok) {
     let errorData: any = {};
     try {
@@ -235,15 +288,19 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     throw new Error('No reservationID returned from Cloudbeds');
   }
 
-  // Step 4: Assign the selected room (v1.3 postRoomAssign; only newRoomID = target room)
+  // Step 4: Assign the selected room (v1.3 postRoomAssign; newRoomID + roomTypeID required)
   const roomIdToAssign = actualRoomID != null ? String(actualRoomID) : String(roomName);
   const assignParams = new URLSearchParams();
   assignParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
   assignParams.append('reservationID', String(reservationID));
   assignParams.append('newRoomID', roomIdToAssign);
-  // Do NOT send roomID here — CloudBeds uses newRoomID as the room to assign; roomID can be interpreted as target and override.
+  assignParams.append('roomTypeID', String(roomTypeID));
 
-  console.log('[cloudbeds-checkin] Room assign: selectedRoom', { roomName, actualRoomID, roomIdToAssign, assignBody: assignParams.toString() });
+  console.log('[cloudbeds-checkin] Room assign: selectedRoom', { roomName, actualRoomID, roomIdToAssign, roomTypeID, assignBody: assignParams.toString() });
+  log('4_postRoomAssign_request', {
+    url: `${apiV13}/postRoomAssign`,
+    body: { propertyID: CLOUDBEDS_PROPERTY_ID, reservationID: String(reservationID), newRoomID: roomIdToAssign, roomTypeID: String(roomTypeID) },
+  });
 
   const roomAssignResponse = await fetch(`${apiV13}/postRoomAssign`, {
     method: 'POST',
@@ -264,6 +321,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   } catch {
     assignResult = { success: false, message: assignResponseText };
   }
+  log('4_postRoomAssign_response', { status: roomAssignResponse.status, body: assignResult });
   console.log('[cloudbeds-checkin] Room assign response:', assignResult.success, assignResult.message || assignResponseText);
   if (!assignResult.success) {
     throw new Error(assignResult.message || 'Room assignment failed');
@@ -291,6 +349,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   if (!checkInData.success) {
     throw new Error(checkInData.message || 'Check-in failed');
   }
+  log('5_putReservation_response', { status: checkInResponse.status, body: checkInData });
 
   // Step 6: postRoomCheckIn (best effort)
   try {

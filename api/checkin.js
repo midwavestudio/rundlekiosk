@@ -88,7 +88,9 @@ async function handler(req, res) {
 
         if (roomId && !reservation.data?.roomID) {
           try {
-            await cloudbeds.assignRoom(reservationId, roomId);
+            // Get roomTypeID from reservation or room details
+            const roomTypeID = reservation.data?.roomTypeID || reservation.data?.roomType_id;
+            await cloudbeds.assignRoom(reservationId, roomId, { roomTypeID });
             assignedRoomId = roomId;
             await updateTransaction(transactionId, {
               'cloudbeds.roomAssignment': {
