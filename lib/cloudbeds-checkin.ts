@@ -224,8 +224,6 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   reservationParams.append('rooms[0][roomTypeID]', roomTypeIDStr);
   reservationParams.append('rooms[0][quantity]', '1');
   if (roomRateIDStr) reservationParams.append('rooms[0][roomRateID]', roomRateIDStr);
-  // Try specifying the specific room during reservation creation
-  if (actualRoomID) reservationParams.append('rooms[0][roomID]', String(actualRoomID));
   reservationParams.append('adults[0][roomTypeID]', roomTypeIDStr);
   reservationParams.append('adults[0][quantity]', '1');
   reservationParams.append('children[0][roomTypeID]', roomTypeIDStr);
@@ -237,7 +235,6 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     body: {
       roomTypeID: roomTypeIDStr,
       roomRateID: roomRateIDStr || undefined,
-      roomID: actualRoomID ? String(actualRoomID) : undefined,
       startDate: checkInDate,
       endDate: checkOutDate,
       guestFirstName: firstName,
