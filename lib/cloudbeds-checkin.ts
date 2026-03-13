@@ -224,6 +224,8 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   reservationParams.append('rooms[0][roomTypeID]', roomTypeIDStr);
   reservationParams.append('rooms[0][quantity]', '1');
   if (roomRateIDStr) reservationParams.append('rooms[0][roomRateID]', roomRateIDStr);
+  // Try specifying the specific room during reservation creation
+  if (actualRoomID) reservationParams.append('rooms[0][roomID]', String(actualRoomID));
   reservationParams.append('adults[0][roomTypeID]', roomTypeIDStr);
   reservationParams.append('adults[0][quantity]', '1');
   reservationParams.append('children[0][roomTypeID]', roomTypeIDStr);
@@ -235,6 +237,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     body: {
       roomTypeID: roomTypeIDStr,
       roomRateID: roomRateIDStr || undefined,
+      roomID: actualRoomID ? String(actualRoomID) : undefined,
       startDate: checkInDate,
       endDate: checkOutDate,
       guestFirstName: firstName,
@@ -286,50 +289,142 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
 
   const reservationID = reservationData.data?.reservationID || reservationData.reservationID;
   const guestID = reservationData.data?.guestID || reservationData.guestID;
+  const subReservationID = reservationData.unassigned?.[0]?.subReservationID || reservationID;
+  const hasUnassigned = reservationData.unassigned && reservationData.unassigned.length > 0;
+  const assignedRooms = reservationData.assigned || [];
   if (!reservationID) {
     throw new Error('No reservationID returned from Cloudbeds');
   }
 
-  // Step 4: Assign the selected room (v1.3 postRoomAssign; newRoomID + roomTypeID required)
-  // Cloudbeds postRoomAssign expects the room name (e.g. "324") as newRoomID, not the internal ID (e.g. "517731-14")
-  const roomIdToAssign = (selectedRoomName != null && String(selectedRoomName).trim() !== '')
-    ? String(selectedRoomName).trim()
-    : (actualRoomID != null ? String(actualRoomID) : String(roomName));
-  const assignParams = new URLSearchParams();
-  assignParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
-  assignParams.append('reservationID', String(reservationID));
-  assignParams.append('newRoomID', roomIdToAssign);
-  assignParams.append('roomTypeID', String(roomTypeID));
-
-  console.log('[cloudbeds-checkin] Room assign: selectedRoom', { roomName, actualRoomID, selectedRoomName, roomIdToAssign, roomTypeID, assignBody: assignParams.toString() });
-  log('4_postRoomAssign_request', {
-    url: `${apiV13}/postRoomAssign`,
-    body: { propertyID: CLOUDBEDS_PROPERTY_ID, reservationID: String(reservationID), newRoomID: roomIdToAssign, roomTypeID: String(roomTypeID) },
+  log('3a_postReservation_room_status', {
+    hasUnassigned,
+    unassignedCount: reservationData.unassigned?.length || 0,
+    assignedCount: assignedRooms.length,
+    needsRoomAssignment: hasUnassigned,
   });
 
-  const roomAssignResponse = await fetch(`${apiV13}/postRoomAssign`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: assignParams.toString(),
-  });
-  const assignResponseText = await roomAssignResponse.text();
-  if (!roomAssignResponse.ok) {
-    console.error('[cloudbeds-checkin] Room assign failed:', roomAssignResponse.status, assignResponseText);
-    throw new Error(`Failed to assign room: ${assignResponseText}`);
+  // Step 4: Assign the selected room (only if not already assigned during reservation creation)
+  // Try multiple strategies since Cloudbeds API is inconsistent about what it accepts
+  let assignSuccess = !hasUnassigned; // If no unassigned rooms, assume it was assigned during creation
+  let lastError = '';
+  
+  if (assignSuccess) {
+    log('4_room_already_assigned', { message: 'Room was assigned during reservation creation' });
+    console.log('[cloudbeds-checkin] Room already assigned during reservation creation');
   }
-  let assignResult: any = {};
+  
+  // Strategy 1: Try with subReservationID and internal roomID (517731-14)
   try {
-    assignResult = JSON.parse(assignResponseText);
-  } catch {
-    assignResult = { success: false, message: assignResponseText };
+    const assignParams1 = new URLSearchParams();
+    assignParams1.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+    assignParams1.append('subReservationID', String(subReservationID));
+    assignParams1.append('newRoomID', String(actualRoomID));
+    assignParams1.append('roomTypeID', String(roomTypeID));
+
+    log('4a_postRoomAssign_attempt1_request', {
+      url: `${apiV13}/postRoomAssign`,
+      body: { propertyID: CLOUDBEDS_PROPERTY_ID, subReservationID: String(subReservationID), newRoomID: String(actualRoomID), roomTypeID: String(roomTypeID) },
+    });
+
+    const response1 = await fetch(`${apiV13}/postRoomAssign`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: assignParams1.toString(),
+    });
+    const text1 = await response1.text();
+    const result1 = JSON.parse(text1);
+    log('4a_postRoomAssign_attempt1_response', { status: response1.status, body: result1 });
+    
+    if (result1.success) {
+      assignSuccess = true;
+      console.log('[cloudbeds-checkin] Room assigned successfully (strategy 1: subReservationID + internal roomID)');
+    } else {
+      lastError = result1.message || text1;
+    }
+  } catch (e: any) {
+    lastError = e.message;
   }
-  log('4_postRoomAssign_response', { status: roomAssignResponse.status, body: assignResult });
-  console.log('[cloudbeds-checkin] Room assign response:', assignResult.success, assignResult.message || assignResponseText);
-  if (!assignResult.success) {
-    throw new Error(assignResult.message || 'Room assignment failed');
+
+  // Strategy 2: Try with reservationID and room name (324)
+  if (!assignSuccess) {
+    try {
+      const assignParams2 = new URLSearchParams();
+      assignParams2.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+      assignParams2.append('reservationID', String(reservationID));
+      assignParams2.append('newRoomID', String(selectedRoomName || roomName));
+      assignParams2.append('roomTypeID', String(roomTypeID));
+
+      log('4b_postRoomAssign_attempt2_request', {
+        url: `${apiV13}/postRoomAssign`,
+        body: { propertyID: CLOUDBEDS_PROPERTY_ID, reservationID: String(reservationID), newRoomID: String(selectedRoomName || roomName), roomTypeID: String(roomTypeID) },
+      });
+
+      const response2 = await fetch(`${apiV13}/postRoomAssign`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: assignParams2.toString(),
+      });
+      const text2 = await response2.text();
+      const result2 = JSON.parse(text2);
+      log('4b_postRoomAssign_attempt2_response', { status: response2.status, body: result2 });
+      
+      if (result2.success) {
+        assignSuccess = true;
+        console.log('[cloudbeds-checkin] Room assigned successfully (strategy 2: reservationID + room name)');
+      } else {
+        lastError = result2.message || text2;
+      }
+    } catch (e: any) {
+      lastError = e.message;
+    }
+  }
+
+  // Strategy 3: Try putReservation with room assignment
+  if (!assignSuccess) {
+    try {
+      const updateParams = new URLSearchParams();
+      updateParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+      updateParams.append('reservationID', String(reservationID));
+      updateParams.append('roomID', String(actualRoomID));
+
+      log('4c_putReservation_room_attempt3_request', {
+        url: `${apiV13}/putReservation`,
+        body: { propertyID: CLOUDBEDS_PROPERTY_ID, reservationID: String(reservationID), roomID: String(actualRoomID) },
+      });
+
+      const response3 = await fetch(`${apiV13}/putReservation`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: updateParams.toString(),
+      });
+      const text3 = await response3.text();
+      const result3 = JSON.parse(text3);
+      log('4c_putReservation_room_attempt3_response', { status: response3.status, body: result3 });
+      
+      if (result3.success) {
+        assignSuccess = true;
+        console.log('[cloudbeds-checkin] Room assigned successfully (strategy 3: putReservation with roomID)');
+      } else {
+        lastError = result3.message || text3;
+      }
+    } catch (e: any) {
+      lastError = e.message;
+    }
+  }
+
+  if (!assignSuccess) {
+    console.error('[cloudbeds-checkin] All room assignment strategies failed. Last error:', lastError);
+    log('4_postRoomAssign_all_failed', { error: lastError });
+    throw new Error(`Failed to assign room: ${lastError}`);
   }
 
   // Step 5: Set status to checked_in
@@ -361,7 +456,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     const roomCheckInParams = new URLSearchParams();
     roomCheckInParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
     roomCheckInParams.append('reservationID', String(reservationID));
-    roomCheckInParams.append('roomID', roomIdToAssign);
+    roomCheckInParams.append('roomID', String(actualRoomID));
     await fetch(`${apiV13}/postRoomCheckIn`, {
       method: 'POST',
       headers: {
