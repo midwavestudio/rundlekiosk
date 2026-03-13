@@ -109,12 +109,14 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     rooms = [roomsData.data];
   }
 
-  const roomListSummary = rooms.slice(0, 50).map((r: any) => ({
+  const roomListSummary: any[] = rooms.slice(0, 50).map((r: any) => ({
     roomID: r.roomID ?? r.id,
     roomName: r.roomName ?? r.name,
     roomTypeID: r.roomTypeID ?? r.roomType_id,
   }));
-  if (rooms.length > 50) roomListSummary.push({ _note: `... and ${rooms.length - 50} more rooms` });
+  if (rooms.length > 50) {
+    roomListSummary.push({ _note: `... and ${rooms.length - 50} more rooms` });
+  }
   log('1_getRooms_response', {
     status: roomsResponse.status,
     roomCount: rooms.length,
