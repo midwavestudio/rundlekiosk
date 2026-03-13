@@ -40,7 +40,10 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
   const [availableRooms, setAvailableRooms] = useState<Room[]>([]);
   const [loadingRooms, setLoadingRooms] = useState(true);
   const [captureDebugLog, setCaptureDebugLog] = useState(false);
-  const [debugTrailForDeveloper, setDebugTrailForDeveloper] = useState<unknown>(null);
+  const [debugTrailForDeveloper, setDebugTrailForDeveloper] = useState<{
+    requestRoom: string;
+    response: any;
+  } | null>(null);
 
   // Fetch available rooms on component mount
   useEffect(() => {
