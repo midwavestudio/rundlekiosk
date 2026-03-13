@@ -291,14 +291,17 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   }
 
   // Step 4: Assign the selected room (v1.3 postRoomAssign; newRoomID + roomTypeID required)
-  const roomIdToAssign = actualRoomID != null ? String(actualRoomID) : String(roomName);
+  // Cloudbeds postRoomAssign expects the room name (e.g. "324") as newRoomID, not the internal ID (e.g. "517731-14")
+  const roomIdToAssign = (selectedRoomName != null && String(selectedRoomName).trim() !== '')
+    ? String(selectedRoomName).trim()
+    : (actualRoomID != null ? String(actualRoomID) : String(roomName));
   const assignParams = new URLSearchParams();
   assignParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
   assignParams.append('reservationID', String(reservationID));
   assignParams.append('newRoomID', roomIdToAssign);
   assignParams.append('roomTypeID', String(roomTypeID));
 
-  console.log('[cloudbeds-checkin] Room assign: selectedRoom', { roomName, actualRoomID, roomIdToAssign, roomTypeID, assignBody: assignParams.toString() });
+  console.log('[cloudbeds-checkin] Room assign: selectedRoom', { roomName, actualRoomID, selectedRoomName, roomIdToAssign, roomTypeID, assignBody: assignParams.toString() });
   log('4_postRoomAssign_request', {
     url: `${apiV13}/postRoomAssign`,
     body: { propertyID: CLOUDBEDS_PROPERTY_ID, reservationID: String(reservationID), newRoomID: roomIdToAssign, roomTypeID: String(roomTypeID) },
