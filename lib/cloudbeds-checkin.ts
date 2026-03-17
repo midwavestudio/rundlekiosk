@@ -362,6 +362,9 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     const paymentParams = new URLSearchParams();
     paymentParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
     paymentParams.append('reservationID', String(reservationID));
+    // Cloudbeds requires a `type` parameter indicating where the payment is applied.
+    // Since we're paying a reservation folio, use type=reservation.
+    paymentParams.append('type', 'reservation');
     paymentParams.append('amount', paymentAmountStr);
     paymentParams.append('paymentTypeID', String(clcPaymentTypeID));
     paymentParams.append('description', `CLC Direct Bill - ${firstName} ${lastName}`);
@@ -371,6 +374,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       body: {
         propertyID: CLOUDBEDS_PROPERTY_ID,
         reservationID: String(reservationID),
+        type: 'reservation',
         amount: paymentAmountStr,
         paymentTypeID: String(clcPaymentTypeID),
         description: `CLC Direct Bill - ${firstName} ${lastName}`,
