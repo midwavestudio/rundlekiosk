@@ -304,18 +304,64 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   const grandTotalRaw =
     reservationData.data?.grandTotal ??
     reservationData.grandTotal ??
-    (Array.isArray(reservationData.unassigned) && reservationData.unassigned[0]?.roomTotal)
+    ((Array.isArray(reservationData.unassigned) && reservationData.unassigned[0]?.roomTotal)
       ? reservationData.unassigned[0].roomTotal
-      : 0;
+      : 0);
   const grandTotal = Number(grandTotalRaw) || 0;
 
   if (grandTotal > 0) {
+    // Cloudbeds postPayment requires a paymentTypeID (not paymentMethodID).
+    // We call getPaymentMethods to get the list, then find the one for CLC.
+    let clcPaymentTypeID: string | null = null;
+    let paymentMethodsRaw: any = null;
+    
+    try {
+      const url = `${apiV13}/getPaymentMethods?propertyID=${CLOUDBEDS_PROPERTY_ID}`;
+      const resp = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      const text = await resp.text();
+      let parsed: any = null;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = null;
+      }
+      log('4a_getPaymentMethods', { endpoint: '/getPaymentMethods', url, status: resp.status }, parsed ?? text);
+      
+      if (resp.ok && parsed) {
+        paymentMethodsRaw = parsed.data ?? parsed.paymentMethods ?? parsed;
+        const list = Array.isArray(paymentMethodsRaw) ? paymentMethodsRaw : (paymentMethodsRaw?.data ?? []);
+        const candidates = Array.isArray(list) ? list : [];
+        const found = candidates.find((m: any) => {
+          const name = String(m.paymentMethodName ?? m.name ?? m.label ?? '').toLowerCase();
+          const code = String(m.paymentMethodCode ?? m.code ?? m.shortName ?? '').toLowerCase();
+          return name === 'clc' || name.includes('clc') || code === 'clc';
+        });
+        if (found) {
+          clcPaymentTypeID = String(found.paymentTypeID ?? found.paymentMethodID ?? found.id ?? '');
+        }
+      }
+    } catch (e: any) {
+      log('4a_getPaymentMethods_error', undefined, undefined, e?.message);
+    }
+
+    if (!clcPaymentTypeID) {
+      // If we can't find it, fail loudly so we don't create unpaid reservations.
+      throw new Error('Unable to locate Cloudbeds paymentTypeID for "CLC". Ensure a payment method named "CLC" is configured in Cloudbeds Settings → Payment Methods.');
+    }
+
     const paymentAmountStr = grandTotal.toFixed(2);
     const paymentParams = new URLSearchParams();
     paymentParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
     paymentParams.append('reservationID', String(reservationID));
     paymentParams.append('amount', paymentAmountStr);
-    paymentParams.append('paymentMethod', 'CLC');
+    paymentParams.append('paymentTypeID', String(clcPaymentTypeID));
+    paymentParams.append('description', `CLC Direct Bill - ${firstName} ${lastName}`);
 
     log('4_postPayment_request', {
       url: `${apiV13}/postPayment`,
@@ -323,7 +369,8 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
         propertyID: CLOUDBEDS_PROPERTY_ID,
         reservationID: String(reservationID),
         amount: paymentAmountStr,
-        paymentMethod: 'CLC',
+        paymentTypeID: String(clcPaymentTypeID),
+        description: `CLC Direct Bill - ${firstName} ${lastName}`,
       },
     });
 

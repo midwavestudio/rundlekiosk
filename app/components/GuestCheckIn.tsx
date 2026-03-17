@@ -145,10 +145,11 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
           checkInData.cloudbedsGuestID = cloudbedsResult.guestID;
           checkInData.cloudbedsReservationID = cloudbedsResult.reservationID;
         } else {
-          console.warn('Cloudbeds check-in failed, continuing with local storage only:', cloudbedsResult.error);
+          // Cloudbeds must succeed (room assign + payment posting). Do not silently continue.
+          throw new Error(cloudbedsResult.error || 'Cloudbeds check-in failed');
         }
       } catch (cloudbedsError: any) {
-        console.warn('Cloudbeds API error, continuing with local storage only:', cloudbedsError.message);
+        throw cloudbedsError;
       }
 
       // Save to localStorage (temporary storage)
