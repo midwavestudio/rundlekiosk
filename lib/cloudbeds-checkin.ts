@@ -300,13 +300,64 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     needsRoomAssignment: hasUnassigned,
   });
 
-  // Step 4: Assign the selected room (only if not already assigned during reservation creation)
+  // Step 4: Post CLC payment so balance is zero
+  const grandTotalRaw =
+    reservationData.data?.grandTotal ??
+    reservationData.grandTotal ??
+    (Array.isArray(reservationData.unassigned) && reservationData.unassigned[0]?.roomTotal)
+      ? reservationData.unassigned[0].roomTotal
+      : 0;
+  const grandTotal = Number(grandTotalRaw) || 0;
+
+  if (grandTotal > 0) {
+    const paymentAmountStr = grandTotal.toFixed(2);
+    const paymentParams = new URLSearchParams();
+    paymentParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+    paymentParams.append('reservationID', String(reservationID));
+    paymentParams.append('amount', paymentAmountStr);
+    paymentParams.append('paymentMethod', 'CLC');
+
+    log('4_postPayment_request', {
+      url: `${apiV13}/postPayment`,
+      body: {
+        propertyID: CLOUDBEDS_PROPERTY_ID,
+        reservationID: String(reservationID),
+        amount: paymentAmountStr,
+        paymentMethod: 'CLC',
+      },
+    });
+
+    const paymentResponse = await fetch(`${apiV13}/postPayment`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: paymentParams.toString(),
+    });
+    const paymentText = await paymentResponse.text();
+    let paymentResult: any;
+    try {
+      paymentResult = JSON.parse(paymentText);
+    } catch {
+      paymentResult = { success: false, message: paymentText };
+    }
+    log('4_postPayment_response', { status: paymentResponse.status, body: paymentResult });
+
+    if (!paymentResponse.ok || !paymentResult.success) {
+      throw new Error(
+        paymentResult.message || `Failed to post CLC payment: ${paymentText || paymentResponse.status}`,
+      );
+    }
+  }
+
+  // Step 5: Assign the selected room (only if not already assigned during reservation creation)
   // Try multiple strategies since Cloudbeds API is inconsistent about what it accepts
   let assignSuccess = !hasUnassigned; // If no unassigned rooms, assume it was assigned during creation
   let lastError = '';
   
   if (assignSuccess) {
-    log('4_room_already_assigned', { message: 'Room was assigned during reservation creation' });
+    log('5_room_already_assigned', { message: 'Room was assigned during reservation creation' });
     console.log('[cloudbeds-checkin] Room already assigned during reservation creation');
   }
   
