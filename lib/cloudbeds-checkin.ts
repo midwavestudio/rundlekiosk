@@ -334,16 +334,19 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       log('4a_getPaymentMethods', { endpoint: '/getPaymentMethods', url, status: resp.status }, parsed ?? text);
       
       if (resp.ok && parsed) {
+        // Cloudbeds getPaymentMethods v1.3 returns:
+        // { success: true, data: { propertyID, methods: [ { method, code, name, ... } ], gateway: {...} } }
+        // For postPayment, paymentTypeID is the payment method code (e.g. 'CLC', 'cash', 'bill').
         paymentMethodsRaw = parsed.data ?? parsed.paymentMethods ?? parsed;
-        const list = Array.isArray(paymentMethodsRaw) ? paymentMethodsRaw : (paymentMethodsRaw?.data ?? []);
-        const candidates = Array.isArray(list) ? list : [];
-        const found = candidates.find((m: any) => {
-          const name = String(m.paymentMethodName ?? m.name ?? m.label ?? '').toLowerCase();
-          const code = String(m.paymentMethodCode ?? m.code ?? m.shortName ?? '').toLowerCase();
-          return name === 'clc' || name.includes('clc') || code === 'clc';
+        const methods = Array.isArray(paymentMethodsRaw?.methods) ? paymentMethodsRaw.methods : [];
+        const found = methods.find((m: any) => {
+          const name = String(m.name ?? '').toLowerCase();
+          const code = String(m.code ?? '').toLowerCase();
+          const method = String(m.method ?? '').toLowerCase();
+          return name === 'clc' || code === 'clc' || method === 'clc';
         });
         if (found) {
-          clcPaymentTypeID = String(found.paymentTypeID ?? found.paymentMethodID ?? found.id ?? '');
+          clcPaymentTypeID = String(found.code ?? found.method ?? 'CLC');
         }
       }
     } catch (e: any) {
