@@ -1,90 +1,135 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 
 interface GuestCheckOutProps {
   onBack: () => void;
 }
 
+/** Matches what GuestCheckIn saves to localStorage (fields may be missing on older entries). */
 interface CheckedInGuest {
   firstName: string;
   lastName: string;
   clcNumber: string;
   phoneNumber: string;
-  class: 'TYE' | 'MOW';
+  roomNumber?: string;
+  class: 'TYE' | 'MOW' | '';
   checkInTime: string;
+  cloudbedsGuestID?: string;
+  cloudbedsReservationID?: string;
+}
+
+function guestKey(g: CheckedInGuest): string {
+  return `${g.firstName}|${g.lastName}|${g.checkInTime}`;
+}
+
+function roomLabel(g: CheckedInGuest): string {
+  if (g.roomNumber && String(g.roomNumber).trim() !== '') {
+    return String(g.roomNumber);
+  }
+  return '—';
 }
 
 export default function GuestCheckOut({ onBack }: GuestCheckOutProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [checkedInGuests, setCheckedInGuests] = useState<CheckedInGuest[]>([]);
-  const [filteredGuests, setFilteredGuests] = useState<CheckedInGuest[]>([]);
   const [selectedGuest, setSelectedGuest] = useState<CheckedInGuest | null>(null);
   const [success, setSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
   useEffect(() => {
-    // Load checked-in guests from localStorage
-    const guests = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
-    setCheckedInGuests(guests);
+    try {
+      const raw = localStorage.getItem('checkedInGuests');
+      const guests = JSON.parse(raw || '[]') as CheckedInGuest[];
+      setCheckedInGuests(Array.isArray(guests) ? guests : []);
+    } catch {
+      setCheckedInGuests([]);
+    }
   }, []);
 
-  useEffect(() => {
-    // Filter guests based on search query - show results after 3 characters
-    if (searchQuery.trim().length < 3) {
-      setFilteredGuests([]);
-      return;
+  const filteredGuests = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (q.length < 2) {
+      return [];
     }
-
-    const query = searchQuery.toLowerCase();
-    const filtered = checkedInGuests.filter((guest) => {
-      const fullName = `${guest.firstName} ${guest.lastName}`.toLowerCase();
-      return fullName.includes(query) || 
-             guest.firstName.toLowerCase().includes(query) ||
-             guest.lastName.toLowerCase().includes(query);
+    const qDigits = q.replace(/\D/g, '');
+    return checkedInGuests.filter((guest) => {
+      const fn = (guest.firstName || '').toLowerCase();
+      const ln = (guest.lastName || '').toLowerCase();
+      const full = `${fn} ${ln}`.trim();
+      const room = (guest.roomNumber != null ? String(guest.roomNumber) : '').toLowerCase();
+      const roomDigits = room.replace(/\D/g, '');
+      return (
+        full.includes(q) ||
+        fn.includes(q) ||
+        ln.includes(q) ||
+        room.includes(q) ||
+        (qDigits.length > 0 && roomDigits.includes(qDigits))
+      );
     });
-
-    setFilteredGuests(filtered);
   }, [searchQuery, checkedInGuests]);
 
   const handleCheckOut = async () => {
     if (!selectedGuest) return;
 
     setLoading(true);
+    setError('');
 
     try {
-      // Add checkout timestamp
+      const reservationId = selectedGuest.cloudbedsReservationID;
+      if (reservationId) {
+        const res = await fetch('/api/cloudbeds-checkout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reservationID: reservationId }),
+        });
+        const text = await res.text();
+        let data: { success?: boolean; error?: string; message?: string } = {};
+        try {
+          data = JSON.parse(text);
+        } catch {
+          data = {};
+        }
+        if (!res.ok || data.success !== true) {
+          throw new Error(data.error || data.message || `Check-out failed (${res.status})`);
+        }
+      }
+
       const checkOutData = {
         ...selectedGuest,
         checkOutTime: new Date().toISOString(),
       };
 
-      // Remove from checked-in guests
       const updatedGuests = checkedInGuests.filter(
-        (g) =>
-          !(g.firstName === selectedGuest.firstName &&
-            g.lastName === selectedGuest.lastName &&
-            g.checkInTime === selectedGuest.checkInTime)
+        (g) => guestKey(g) !== guestKey(selectedGuest)
       );
-      localStorage.setItem('checkedInGuests', JSON.stringify(updatedGuests));
+      try {
+        localStorage.setItem('checkedInGuests', JSON.stringify(updatedGuests));
+      } catch (e) {
+        console.warn('Could not update checked-in list in storage:', e);
+      }
 
-      // Save to checkout history
-      const checkOutHistory = JSON.parse(localStorage.getItem('checkOutHistory') || '[]');
-      checkOutHistory.push(checkOutData);
-      localStorage.setItem('checkOutHistory', JSON.stringify(checkOutHistory));
-
-      // TODO: Also save to Firebase Firestore when available
-      // await saveCheckOutToFirestore(checkOutData);
+      try {
+        const checkOutHistory = JSON.parse(localStorage.getItem('checkOutHistory') || '[]');
+        checkOutHistory.push(checkOutData);
+        localStorage.setItem('checkOutHistory', JSON.stringify(checkOutHistory));
+      } catch (e) {
+        console.warn('Could not save checkout history:', e);
+      }
 
       setSuccess(true);
 
-      // Return to home after 2 seconds
       setTimeout(() => {
         onBack();
       }, 2000);
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const msg =
+        err instanceof Error && err.message
+          ? err.message
+          : 'Check-out failed. Please try again or contact the front desk.';
+      setError(msg);
       console.error('Check-out error:', err);
-      alert('Check-out failed. Please try again or contact the front desk.');
     } finally {
       setLoading(false);
     }
@@ -107,63 +152,79 @@ export default function GuestCheckOut({ onBack }: GuestCheckOutProps) {
           ← Back
         </button>
         <h1>Guest Check-Out</h1>
-        <p className="subtitle">Search for your reservation</p>
+        <p className="subtitle">Search by your name or room number</p>
       </div>
+
+      {error && <div className="error-message">{error}</div>}
 
       <div className="checkout-search">
         <div className="form-group">
-          <label htmlFor="search">Type Your First Name</label>
+          <label htmlFor="search">Search</label>
           <input
             type="text"
             id="search"
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Type your first name..."
+            onChange={(e) => {
+              setSearchQuery(e.target.value);
+              setError('');
+              setSelectedGuest(null);
+            }}
+            placeholder="Type first name, last name, or room (e.g. 219)…"
             autoFocus
             autoComplete="off"
           />
         </div>
 
-        {searchQuery.length >= 3 && filteredGuests.length === 0 && (
+        {searchQuery.trim().length >= 2 && filteredGuests.length === 0 && checkedInGuests.length > 0 && (
           <div className="no-results">
-            <p>No guests found matching &quot;{searchQuery}&quot;</p>
+            <p>No guests found matching &quot;{searchQuery.trim()}&quot;</p>
             <p className="no-results-help">
-              Please check your spelling or contact the front desk for assistance.
+              Try another spelling, or search by room number. Contact the front desk if you need help.
             </p>
           </div>
         )}
 
+        {searchQuery.trim().length > 0 && searchQuery.trim().length < 2 && (
+          <p className="no-results-help" style={{ marginTop: '8px' }}>
+            Enter at least 2 characters to search.
+          </p>
+        )}
+
         {filteredGuests.length > 0 && (
           <div className="guest-list">
-            <p className="guest-list-title">Select your name:</p>
-            {filteredGuests.map((guest, index) => (
-              <button
-                key={index}
-                className={`guest-card ${selectedGuest === guest ? 'selected' : ''}`}
-                onClick={() => setSelectedGuest(guest)}
-              >
-                <div className="guest-info">
-                  <div className="guest-name">
-                    {guest.firstName} {guest.lastName}
+            <p className="guest-list-title">Select your stay:</p>
+            {filteredGuests.map((guest) => {
+              const selected =
+                selectedGuest !== null && guestKey(selectedGuest) === guestKey(guest);
+              return (
+                <button
+                  key={guestKey(guest)}
+                  type="button"
+                  className={`guest-card ${selected ? 'selected' : ''}`}
+                  onClick={() => setSelectedGuest(guest)}
+                >
+                  <div className="guest-info">
+                    <div className="guest-name">
+                      {guest.firstName} {guest.lastName}
+                    </div>
+                    <div className="guest-details">
+                      Room: {roomLabel(guest)} • CLC: {guest.clcNumber} • Class: {guest.class || '—'}
+                    </div>
+                    <div className="guest-details">
+                      Checked in: {new Date(guest.checkInTime).toLocaleString()}
+                    </div>
                   </div>
-                  <div className="guest-details">
-                    CLC: {guest.clcNumber} • Class: {guest.class}
-                  </div>
-                  <div className="guest-details">
-                    Checked in: {new Date(guest.checkInTime).toLocaleString()}
-                  </div>
-                </div>
-                {selectedGuest === guest && (
-                  <div className="selected-check">Selected</div>
-                )}
-              </button>
-            ))}
+                  {selected && <div className="selected-check">Selected</div>}
+                </button>
+              );
+            })}
           </div>
         )}
 
         {selectedGuest && (
           <button
             className="submit-button checkout-confirm"
+            type="button"
             onClick={handleCheckOut}
             disabled={loading}
           >
@@ -180,9 +241,9 @@ export default function GuestCheckOut({ onBack }: GuestCheckOutProps) {
 
         {checkedInGuests.length === 0 && !searchQuery && (
           <div className="no-guests">
-            <p>No guests are currently checked in.</p>
+            <p>No guests are currently checked in on this kiosk.</p>
             <p className="no-guests-help">
-              If you believe this is an error, please contact the front desk.
+              If you checked in at the front desk only, please see staff to check out.
             </p>
           </div>
         )}
@@ -194,4 +255,3 @@ export default function GuestCheckOut({ onBack }: GuestCheckOutProps) {
     </div>
   );
 }
-

@@ -43,10 +43,17 @@ export async function POST(request: NextRequest) {
       body: checkOutParams.toString(),
     });
 
-    if (!checkOutResponse.ok) {
-      const errorData = await checkOutResponse.json().catch(() => ({}));
-      console.error('Cloudbeds check-out failed:', errorData);
-      throw new Error('Failed to check out guest in Cloudbeds');
+    const checkOutText = await checkOutResponse.text();
+    let checkOutData: { success?: boolean; message?: string } = {};
+    try {
+      checkOutData = JSON.parse(checkOutText);
+    } catch {
+      checkOutData = {};
+    }
+
+    if (!checkOutResponse.ok || checkOutData.success === false) {
+      console.error('Cloudbeds check-out failed:', checkOutData);
+      throw new Error(checkOutData.message || 'Failed to check out guest in Cloudbeds');
     }
 
     return NextResponse.json({

@@ -134,28 +134,44 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
           }),
         });
 
-        const cloudbedsResult = await cloudbedsResponse.json();
+        const responseText = await cloudbedsResponse.text();
+        let cloudbedsResult: Record<string, unknown>;
+        try {
+          cloudbedsResult = JSON.parse(responseText) as Record<string, unknown>;
+        } catch {
+          throw new Error(
+            cloudbedsResponse.ok
+              ? 'Invalid response from check-in service'
+              : `Check-in request failed (${cloudbedsResponse.status})`
+          );
+        }
+
         if (captureDebugLog && cloudbedsResult.debugTrail) {
           setDebugTrailForDeveloper({ requestRoom: roomIdentifier, response: cloudbedsResult });
         }
 
-        if (cloudbedsResult.success) {
-          console.log('Cloudbeds check-in successful:', cloudbedsResult);
-          // Add Cloudbeds IDs to the check-in data
-          checkInData.cloudbedsGuestID = cloudbedsResult.guestID;
-          checkInData.cloudbedsReservationID = cloudbedsResult.reservationID;
-        } else {
-          // Cloudbeds must succeed (room assign + payment posting). Do not silently continue.
-          throw new Error(cloudbedsResult.error || 'Cloudbeds check-in failed');
+        if (!cloudbedsResponse.ok || cloudbedsResult.success !== true) {
+          throw new Error(
+            (typeof cloudbedsResult.error === 'string' && cloudbedsResult.error) ||
+              `Cloudbeds check-in failed (${cloudbedsResponse.status})`
+          );
         }
+
+        console.log('Cloudbeds check-in successful:', cloudbedsResult);
+        checkInData.cloudbedsGuestID = cloudbedsResult.guestID as string | undefined;
+        checkInData.cloudbedsReservationID = cloudbedsResult.reservationID as string | undefined;
       } catch (cloudbedsError: any) {
         throw cloudbedsError;
       }
 
-      // Save to localStorage (temporary storage)
-      const existingGuests = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
-      existingGuests.push(checkInData);
-      localStorage.setItem('checkedInGuests', JSON.stringify(existingGuests));
+      // Save to localStorage (best effort — storage quota or privacy mode must not undo a successful check-in)
+      try {
+        const existingGuests = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
+        existingGuests.push(checkInData);
+        localStorage.setItem('checkedInGuests', JSON.stringify(existingGuests));
+      } catch (storageErr) {
+        console.warn('Could not save guest to local storage (check-in still completed):', storageErr);
+      }
 
       setSuccess(true);
       
@@ -164,7 +180,11 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
         onBack();
       }, 2000);
     } catch (err: any) {
-      setError('Check-in failed. Please try again or contact the front desk.');
+      const msg =
+        typeof err?.message === 'string' && err.message.trim().length > 0
+          ? err.message
+          : 'Check-in failed. Please try again or contact the front desk.';
+      setError(msg);
       console.error('Check-in error:', err);
     } finally {
       setLoading(false);
