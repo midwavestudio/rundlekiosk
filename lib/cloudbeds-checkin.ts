@@ -10,6 +10,192 @@ function getLocalDateStr(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+/** Next calendar day as YYYY-MM-DD (for a valid 1-night Cloudbeds stay window). */
+function addOneCalendarDayYmd(ymd: string): string {
+  const [y, m, d] = ymd.split('-').map(Number);
+  if (!y || !m || !d) return ymd;
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + 1);
+  return getLocalDateStr(dt);
+}
+
+/** Outstanding balance from invoice (preferred) or reservation header. */
+async function readOutstandingBalance(
+  apiV13: string,
+  propertyID: string,
+  apiKey: string,
+  reservationID: string
+): Promise<number> {
+  try {
+    const u = `${apiV13}/getReservationInvoiceInformation?propertyID=${encodeURIComponent(propertyID)}&reservationID=${encodeURIComponent(reservationID)}`;
+    const r = await fetch(u, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    });
+    const j = await r.json();
+    const data = j.data ?? j;
+    const raw =
+      data?.balance ??
+      data?.totalBalance ??
+      data?.amountDue ??
+      data?.remainingBalance ??
+      data?.grandTotal;
+    const n = Number(raw);
+    if (!Number.isNaN(n) && n >= 0) return n;
+  } catch {
+    /* fall through */
+  }
+  try {
+    const u = `${apiV13}/getReservation?propertyID=${encodeURIComponent(propertyID)}&reservationID=${encodeURIComponent(reservationID)}`;
+    const r = await fetch(u, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    });
+    const j = await r.json();
+    const d = j.data ?? j;
+    const n = Number(d?.balance ?? d?.totalBalance ?? 0);
+    if (!Number.isNaN(n) && n >= 0) return n;
+  } catch {
+    /* ignore */
+  }
+  return 0;
+}
+
+/** Ordered payment method `type` values for postPayment (must match getPaymentMethods `method`). */
+async function resolvePaymentTypesToTry(
+  apiV13: string,
+  propertyID: string,
+  apiKey: string
+): Promise<string[]> {
+  const envType = process.env.CLOUDBEDS_POST_PAYMENT_TYPE?.trim();
+  const ordered: string[] = [];
+  if (envType) ordered.push(envType);
+  try {
+    const url = `${apiV13}/getPaymentMethods?propertyID=${encodeURIComponent(propertyID)}`;
+    const resp = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    });
+    const parsed = await resp.json();
+    const paymentMethodsRaw = parsed?.data ?? parsed?.paymentMethods ?? parsed;
+    const methods = Array.isArray(paymentMethodsRaw?.methods) ? paymentMethodsRaw.methods : [];
+    const byPreference = (name: string) =>
+      methods.find((m: any) => {
+        const n = String(m.name ?? '').toLowerCase();
+        const c = String(m.code ?? '').toLowerCase();
+        const method = String(m.method ?? '').toLowerCase();
+        return n === name || c === name || method === name;
+      });
+    const pushMethod = (m: any) => {
+      const t = String(m?.method ?? m?.code ?? '').trim();
+      if (t && !ordered.includes(t)) ordered.push(t);
+    };
+    const clc = byPreference('clc');
+    if (clc) pushMethod(clc);
+    const cash = byPreference('cash');
+    if (cash) pushMethod(cash);
+    for (const m of methods) pushMethod(m);
+  } catch {
+    /* ignore */
+  }
+  if (!ordered.includes('cash')) ordered.push('cash');
+  if (!ordered.includes('CLC')) ordered.push('CLC');
+  return [...new Set(ordered)];
+}
+
+async function postPaymentWithType(
+  apiV13: string,
+  propertyID: string,
+  apiKey: string,
+  reservationID: string,
+  amount: number,
+  paymentType: string,
+  description: string
+): Promise<{ ok: boolean; data: any; raw: string }> {
+  const paymentParams = new URLSearchParams();
+  paymentParams.append('propertyID', propertyID);
+  paymentParams.append('reservationID', String(reservationID));
+  paymentParams.append('type', paymentType);
+  paymentParams.append('amount', amount.toFixed(2));
+  paymentParams.append('description', description);
+  const paymentResponse = await fetch(`${apiV13}/postPayment`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: paymentParams.toString(),
+  });
+  const paymentText = await paymentResponse.text();
+  let paymentResult: any;
+  try {
+    paymentResult = JSON.parse(paymentText);
+  } catch {
+    paymentResult = { success: false, message: paymentText };
+  }
+  const ok = paymentResponse.ok && paymentResult.success === true;
+  return { ok, data: paymentResult, raw: paymentText };
+}
+
+/**
+ * Pay down folio until Cloudbeds reports no meaningful balance — required before checked_in when
+ * property enforces "collect full amount prior to checking in".
+ */
+async function settleReservationFolio(
+  apiV13: string,
+  propertyID: string,
+  apiKey: string,
+  reservationID: string,
+  guestLabel: string,
+  log: (step: string, request?: unknown, response?: unknown, error?: string) => void
+): Promise<void> {
+  const types = await resolvePaymentTypesToTry(apiV13, propertyID, apiKey);
+  log('4_settleFolio_start', { reservationID, types });
+
+  for (let round = 0; round < 8; round++) {
+    const balance = await readOutstandingBalance(apiV13, propertyID, apiKey, reservationID);
+    if (balance <= 0.01) {
+      log('4_settleFolio_done', { round, balance });
+      return;
+    }
+    let paidThisRound = false;
+    for (const paymentType of types) {
+      const desc = `Kiosk CLC / folio — ${guestLabel}`;
+      const r = await postPaymentWithType(
+        apiV13,
+        propertyID,
+        apiKey,
+        reservationID,
+        balance,
+        paymentType,
+        desc
+      );
+      log('4_settleFolio_postPayment', {
+        round,
+        paymentType,
+        amount: balance.toFixed(2),
+        ok: r.ok,
+        body: r.data,
+      });
+      if (r.ok) {
+        paidThisRound = true;
+        break;
+      }
+    }
+    if (!paidThisRound) {
+      log('4_settleFolio_no_method_succeeded', { round, balance });
+      break;
+    }
+  }
+
+  const finalBal = await readOutstandingBalance(apiV13, propertyID, apiKey, reservationID);
+  if (finalBal > 0.01) {
+    throw new Error(
+      `There is a remaining balance on this reservation (${finalBal.toFixed(2)}). Payment could not be posted automatically — check Cloudbeds payment methods (CLC/cash) or contact support.`
+    );
+  }
+}
+
 function parseRoomsArrayFromGetRoomsJson(roomsData: any): any[] {
   let rooms: any[] = [];
   if (Array.isArray(roomsData.data) && roomsData.data.length > 0) {
@@ -33,11 +219,72 @@ function parseRoomsArrayFromGetRoomsJson(roomsData: any): any[] {
   return rooms;
 }
 
+/**
+ * Cloudbeds getRooms defaults to ~20 rooms per page. Check-in used a single unpaginated call, so rooms
+ * beyond the first page (e.g. 308i) were missing → "Room … not found" even though the kiosk listed them.
+ */
+async function fetchAllRoomsPagesMerged(
+  apiBase: string,
+  propertyID: string,
+  apiKey: string,
+  opts?: { startDate?: string; endDate?: string }
+): Promise<any[]> {
+  const headers: HeadersInit = {
+    Authorization: `Bearer ${apiKey}`,
+    'Content-Type': 'application/json',
+  };
+  const merged: any[] = [];
+  const seen = new Set<string>();
+  const pageSize = 500;
+  let pageNumber = 1;
+  const maxPages = 50;
+
+  for (;;) {
+    const params = new URLSearchParams({
+      propertyID,
+      pageNumber: String(pageNumber),
+      pageSize: String(pageSize),
+      includeRoomRelations: '1',
+    });
+    if (opts?.startDate) params.set('startDate', opts.startDate);
+    if (opts?.endDate) params.set('endDate', opts.endDate);
+
+    const url = `${apiBase}/getRooms?${params.toString()}`;
+    const res = await fetch(url, { method: 'GET', headers });
+    if (!res.ok) {
+      if (pageNumber === 1) return [];
+      break;
+    }
+    const roomsData = await res.json();
+    const batch = parseRoomsArrayFromGetRoomsJson(roomsData);
+    if (batch.length === 0) break;
+
+    let newCount = 0;
+    for (const room of batch) {
+      const id = String(room?.roomID ?? room?.id ?? '');
+      const key = id || `${room?.roomName ?? ''}-${room?.roomTypeID ?? ''}`;
+      if (key && !seen.has(key)) {
+        seen.add(key);
+        merged.push(room);
+        newCount += 1;
+      }
+    }
+    if (newCount === 0) break;
+    pageNumber += 1;
+    if (pageNumber > maxPages) break;
+  }
+  return merged;
+}
+
 function findRoomByKey(rooms: any[], roomKey: string): any | undefined {
   const norm = (s: string) => s.replace(/^Room\s+/i, '').trim();
   const stripTrailingLetter = (s: string) => s.replace(/[a-zA-Z]+$/, '').trim();
   const digits = (s: string) => s.replace(/\D/g, '');
   const keyDigits = digits(roomKey);
+  const looseIdMatch = (a: string, b: string) =>
+    a.replace(/-/g, '').toLowerCase() === b.replace(/-/g, '').toLowerCase();
+  const keyLower = roomKey.toLowerCase();
+
   return rooms.find((r: any) => {
     const idStr = r.roomID != null ? String(r.roomID) : '';
     const idAlt = r.id != null ? String(r.id) : '';
@@ -46,6 +293,10 @@ function findRoomByKey(rooms: any[], roomKey: string): any | undefined {
     return (
       idStr === roomKey ||
       idAlt === roomKey ||
+      looseIdMatch(idStr, roomKey) ||
+      looseIdMatch(idAlt, roomKey) ||
+      nameStr.toLowerCase() === keyLower ||
+      nameAlt.toLowerCase() === keyLower ||
       nameStr === roomKey ||
       nameAlt === roomKey ||
       norm(nameStr) === roomKey ||
@@ -116,6 +367,8 @@ export interface PerformCheckInParams {
   lastName: string;
   phoneNumber?: string;
   roomName: string;
+  /** Human room label from kiosk (e.g. "308i") — used if roomName id doesn't match getRooms rows. */
+  roomNameHint?: string;
   clcNumber?: string;
   classType?: string;
   email?: string;
@@ -139,6 +392,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     lastName,
     phoneNumber,
     roomName,
+    roomNameHint,
     clcNumber,
     classType,
     email,
@@ -165,32 +419,27 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   const checkInDate = (bodyCheckIn && /^\d{4}-\d{2}-\d{2}$/.test(String(bodyCheckIn)))
     ? String(bodyCheckIn)
     : getLocalDateStr(now);
-  const checkOutDate = (bodyCheckOut && /^\d{4}-\d{2}-\d{2}$/.test(String(bodyCheckOut)))
+  // Cloudbeds requires endDate AFTER startDate for a bookable night. Same-day start/end returns
+  // "could not accommodate your request" from postReservation.
+  let checkOutDate = (bodyCheckOut && /^\d{4}-\d{2}-\d{2}$/.test(String(bodyCheckOut)))
     ? String(bodyCheckOut)
-    : getLocalDateStr(new Date(now.getTime() + 24 * 60 * 60 * 1000));
+    : addOneCalendarDayYmd(checkInDate);
+  if (checkOutDate <= checkInDate) {
+    checkOutDate = addOneCalendarDayYmd(checkInDate);
+    log('0_dates_normalized', {
+      reason: 'endDate must be after startDate for Cloudbeds',
+      checkInDate,
+      checkOutDate,
+    });
+  }
 
-  // Step 1: Get rooms and find matching room (use same API minor version as postReservation/postRoomAssign)
-  const getRoomsUrl = `${apiV13}/getRooms?propertyID=${CLOUDBEDS_PROPERTY_ID}`;
-  log('1_getRooms_request', { url: getRoomsUrl, method: 'GET' });
-  const roomsResponse = await fetch(getRoomsUrl, {
-    method: 'GET',
-    headers: {
-      Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-  });
+  // Step 1: Full property room list (paginated — single getRooms only returns ~20 rooms by default).
+  const rooms = await fetchAllRoomsPagesMerged(apiV13, CLOUDBEDS_PROPERTY_ID, CLOUDBEDS_API_KEY);
 
   let roomTypeName = 'Standard Room';
   let roomTypeID: string | number | null = null;
   let actualRoomID: string | number | null = null;
   let selectedRoomName: string | null = null;
-
-  if (!roomsResponse.ok) {
-    throw new Error(`Failed to fetch rooms: ${roomsResponse.status}`);
-  }
-
-  const roomsData = await roomsResponse.json();
-  const rooms = parseRoomsArrayFromGetRoomsJson(roomsData);
 
   const roomListSummary: any[] = rooms.slice(0, 50).map((r: any) => ({
     roomID: r.roomID ?? r.id,
@@ -201,18 +450,24 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     roomListSummary.push({ _note: `... and ${rooms.length - 50} more rooms` });
   }
   log('1_getRooms_response', {
-    status: roomsResponse.status,
+    mode: 'all_pages',
     roomCount: rooms.length,
     rooms: roomListSummary,
-    rawDataKeys: roomsData.data ? Object.keys(roomsData) : [],
   });
 
   const roomKey = String(roomName).trim();
+  const hint = roomNameHint != null && String(roomNameHint).trim() !== '' ? String(roomNameHint).trim() : '';
 
-  const selectedRoom = findRoomByKey(rooms, roomKey);
+  let selectedRoom = findRoomByKey(rooms, roomKey);
+  if (!selectedRoom && hint && hint !== roomKey) {
+    selectedRoom = findRoomByKey(rooms, hint);
+    if (selectedRoom) {
+      log('2_room_match', { roomKey, fallbackHint: hint, found: true });
+    }
+  }
 
   if (!selectedRoom) {
-    log('2_room_match', { roomKey, found: false, error: `Room ${roomName} not found` });
+    log('2_room_match', { roomKey, hint: hint || undefined, found: false, error: `Room ${roomName} not found` });
     throw new Error(`Room ${roomName} not found`);
   }
 
@@ -229,26 +484,22 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     roomTypeName,
   });
 
-  // Same room for the stay window — Cloudbeds uses this list for assignable inventory; IDs may differ from the full property list.
+  // Same room for the stay window — paginated dated getRooms (inventory for check-in → check-out nights).
   let roomIdForStayPeriod: string | null = null;
   try {
-    const stayUrl = `${apiV13}/getRooms?propertyID=${CLOUDBEDS_PROPERTY_ID}&startDate=${encodeURIComponent(checkInDate)}&endDate=${encodeURIComponent(checkOutDate)}`;
-    log('1b_getRooms_stay_dates_request', { url: stayUrl, method: 'GET' });
-    const stayResp = await fetch(stayUrl, {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
+    log('1b_getRooms_stay_dates_request', { startDate: checkInDate, endDate: checkOutDate });
+    const stayRooms = await fetchAllRoomsPagesMerged(apiV13, CLOUDBEDS_PROPERTY_ID, CLOUDBEDS_API_KEY, {
+      startDate: checkInDate,
+      endDate: checkOutDate,
     });
-    const stayData = await stayResp.json();
-    const stayRooms = parseRoomsArrayFromGetRoomsJson(stayData);
-    const stayRoom = findRoomByKey(stayRooms, roomKey);
+    let stayRoom = findRoomByKey(stayRooms, roomKey);
+    if (!stayRoom && hint) {
+      stayRoom = findRoomByKey(stayRooms, hint);
+    }
     if (stayRoom && (stayRoom.roomID != null || stayRoom.id != null)) {
       roomIdForStayPeriod = String(stayRoom.roomID ?? stayRoom.id);
     }
     log('1b_getRooms_stay_dates_response', {
-      status: stayResp.status,
       roomCount: stayRooms.length,
       matchedRoomId: roomIdForStayPeriod,
     });
@@ -441,109 +692,16 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     log('3c_reservation_room_line_id', { reservationRoomLineId, needsPostRoomAssign: hasUnassigned });
   }
 
-  // Step 4: Post CLC payment so balance is zero
-  const grandTotalRaw =
-    reservationData.data?.grandTotal ??
-    reservationData.grandTotal ??
-    ((Array.isArray(reservationData.unassigned) && reservationData.unassigned[0]?.roomTotal)
-      ? reservationData.unassigned[0].roomTotal
-      : 0);
-  const grandTotal = Number(grandTotalRaw) || 0;
-
-  if (grandTotal > 0) {
-    // Cloudbeds postPayment `type` must match getPaymentMethods `method` (e.g. CLC), not the word "payment".
-    let clcPaymentTypeID: string | null = null;
-    let paymentMethodsRaw: any = null;
-    
-    try {
-      const url = `${apiV13}/getPaymentMethods?propertyID=${CLOUDBEDS_PROPERTY_ID}`;
-      const resp = await fetch(url, {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-      });
-      const text = await resp.text();
-      let parsed: any = null;
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        parsed = null;
-      }
-      log('4a_getPaymentMethods', { endpoint: '/getPaymentMethods', url, status: resp.status }, parsed ?? text);
-      
-      if (resp.ok && parsed) {
-        // Cloudbeds getPaymentMethods v1.3 returns:
-        // { success: true, data: { propertyID, methods: [ { method, code, name, ... } ], gateway: {...} } }
-        // For postPayment, use `method` as `type` (e.g. 'CLC', 'cash', 'bill').
-        paymentMethodsRaw = parsed.data ?? parsed.paymentMethods ?? parsed;
-        const methods = Array.isArray(paymentMethodsRaw?.methods) ? paymentMethodsRaw.methods : [];
-        const found = methods.find((m: any) => {
-          const name = String(m.name ?? '').toLowerCase();
-          const code = String(m.code ?? '').toLowerCase();
-          const method = String(m.method ?? '').toLowerCase();
-          return name === 'clc' || code === 'clc' || method === 'clc';
-        });
-        if (found) {
-          // postPayment `type` must be the method from getPaymentMethods (e.g. "CLC", "cash"), not "payment".
-          clcPaymentTypeID = String(found.method ?? found.code ?? 'CLC');
-        }
-      }
-    } catch (e: any) {
-      log('4a_getPaymentMethods_error', undefined, undefined, e?.message);
-    }
-
-    if (!clcPaymentTypeID) {
-      // If we can't find it, fail loudly so we don't create unpaid reservations.
-      throw new Error('Unable to locate Cloudbeds payment method "CLC" from getPaymentMethods. Ensure CLC is configured in Cloudbeds Settings → Payment Methods.');
-    }
-
-    const paymentAmountStr = grandTotal.toFixed(2);
-    // OpenAPI: `type` is the payment method from getPaymentMethods (not the literal "payment").
-    const postPaymentType =
-      process.env.CLOUDBEDS_POST_PAYMENT_TYPE || clcPaymentTypeID;
-    const paymentParams = new URLSearchParams();
-    paymentParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
-    paymentParams.append('reservationID', String(reservationID));
-    paymentParams.append('type', postPaymentType);
-    paymentParams.append('amount', paymentAmountStr);
-    paymentParams.append('description', `CLC Direct Bill - ${firstName} ${lastName}`);
-
-    log('4_postPayment_request', {
-      url: `${apiV13}/postPayment`,
-      body: {
-        propertyID: CLOUDBEDS_PROPERTY_ID,
-        reservationID: String(reservationID),
-        type: postPaymentType,
-        amount: paymentAmountStr,
-        description: `CLC Direct Bill - ${firstName} ${lastName}`,
-      },
-    });
-
-    const paymentResponse = await fetch(`${apiV13}/postPayment`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: paymentParams.toString(),
-    });
-    const paymentText = await paymentResponse.text();
-    let paymentResult: any;
-    try {
-      paymentResult = JSON.parse(paymentText);
-    } catch {
-      paymentResult = { success: false, message: paymentText };
-    }
-    log('4_postPayment_response', { status: paymentResponse.status, body: paymentResult });
-
-    if (!paymentResponse.ok || !paymentResult.success) {
-      // Log the failure but don't hard-fail check-in — reservation + room still need to complete.
-      console.error('[cloudbeds-checkin] postPayment failed:', paymentResult.message);
-      log('4_postPayment_failed', { message: paymentResult.message });
-    }
-  }
+  // Step 4: Clear folio balance using invoice balance (postReservation totals can differ from folio).
+  // Properties that require "collect full amount prior to checking in" will reject checked_in until this succeeds.
+  await settleReservationFolio(
+    apiV13,
+    CLOUDBEDS_PROPERTY_ID,
+    CLOUDBEDS_API_KEY,
+    String(reservationID),
+    `${firstName} ${lastName}`,
+    log
+  );
 
   // Refresh reservation after payment (reservationRoomID may appear; room may show as assigned only now).
   if (hasUnassigned) {
@@ -721,6 +879,16 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       log('5_postRoomAssign_failed_continuing', { message: lastAssignMessage });
     }
   }
+
+  // Folio can change after room assignment; settle again before checked_in (balance rule).
+  await settleReservationFolio(
+    apiV13,
+    CLOUDBEDS_PROPERTY_ID,
+    CLOUDBEDS_API_KEY,
+    String(reservationID),
+    `${firstName} ${lastName}`,
+    log
+  );
 
   const roomIdForCheckIn = String(roomIdForStayPeriod ?? actualRoomID);
 

@@ -5,7 +5,7 @@ export async function POST(request: NextRequest) {
   let debugLog: Array<{ step: string; request?: unknown; response?: unknown; error?: string }> | undefined;
   try {
     const body = await request.json();
-    const { firstName, lastName, phoneNumber, roomName, clcNumber, classType, email, reservationID: existingReservationID, checkInDate: bodyCheckIn, checkOutDate: bodyCheckOut, debug: enableDebug } = body;
+    const { firstName, lastName, phoneNumber, roomName, roomNameHint, clcNumber, classType, email, reservationID: existingReservationID, checkInDate: bodyCheckIn, checkOutDate: bodyCheckOut, debug: enableDebug } = body;
 
     console.log('Check-in API called with:', { firstName, lastName, roomName, clcNumber, classType });
     debugLog = enableDebug === true ? [] : undefined;
@@ -70,6 +70,7 @@ export async function POST(request: NextRequest) {
         lastName,
         phoneNumber,
         roomName,
+        roomNameHint,
         clcNumber,
         classType,
         email,

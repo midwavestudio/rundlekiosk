@@ -1,5 +1,79 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+/**
+ * Merge every `data[].rooms` array from getRooms — Cloudbeds returns one object per room type;
+ * using only `data[0].rooms` hides all other types (e.g. only Queen + first type showed in the dropdown).
+ */
+function parseAllRoomsFromGetRoomsJson(roomsData: any): any[] {
+  let rooms: any[] = [];
+  if (Array.isArray(roomsData.data) && roomsData.data.length > 0) {
+    rooms = roomsData.data.flatMap((d: any) =>
+      d && Array.isArray(d.rooms) ? d.rooms : d.rooms ? [d.rooms] : []
+    );
+  }
+  if (rooms.length === 0 && roomsData.data?.[0]?.rooms) {
+    rooms = roomsData.data[0].rooms;
+  }
+  if (rooms.length === 0 && Array.isArray(roomsData.data)) {
+    rooms = roomsData.data;
+  }
+  if (rooms.length === 0 && Array.isArray(roomsData.rooms)) {
+    rooms = roomsData.rooms;
+  }
+  if (rooms.length === 0 && Array.isArray(roomsData)) {
+    rooms = roomsData;
+  }
+  if (rooms.length === 0 && roomsData.data) {
+    rooms = [roomsData.data];
+  }
+  return rooms;
+}
+
+/**
+ * Cloudbeds getRooms defaults to pageSize=20. Properties with more than 20 physical rooms
+ * only return the first page — remaining room types never appear in the kiosk dropdown.
+ */
+async function fetchAllRoomsPages(
+  getRoomsBase: string,
+  propertyID: string,
+  headers: HeadersInit
+): Promise<any[]> {
+  const merged: any[] = [];
+  const seen = new Set<string>();
+  const pageSize = 500;
+  let pageNumber = 1;
+  const maxPages = 50;
+
+  for (;;) {
+    const url = `${getRoomsBase}/getRooms?propertyID=${encodeURIComponent(propertyID)}&pageNumber=${pageNumber}&pageSize=${pageSize}&includeRoomRelations=1`;
+    const res = await fetch(url, { method: 'GET', headers });
+    if (!res.ok) {
+      if (pageNumber === 1) return [];
+      break;
+    }
+    const roomsData = await res.json();
+    const batch = parseAllRoomsFromGetRoomsJson(roomsData);
+    if (batch.length === 0) break;
+
+    let newCount = 0;
+    for (const room of batch) {
+      const id = String(room?.roomID ?? room?.id ?? '');
+      const key = id || `${room?.roomName ?? ''}-${room?.roomTypeID ?? ''}`;
+      if (key && !seen.has(key)) {
+        seen.add(key);
+        merged.push(room);
+        newCount += 1;
+      }
+    }
+    // If API keeps returning the same page (all duplicates), stop to avoid spinning.
+    if (newCount === 0) break;
+
+    pageNumber += 1;
+    if (pageNumber > maxPages) break;
+  }
+  return merged;
+}
+
 /** Returns YYYY-MM-DD in server local time (not UTC). */
 function getLocalDateStr(d: Date): string {
   const y = d.getFullYear();
@@ -13,6 +87,8 @@ export async function GET(request: NextRequest) {
     const CLOUDBEDS_API_KEY = process.env.CLOUDBEDS_API_KEY;
     const CLOUDBEDS_PROPERTY_ID = process.env.CLOUDBEDS_PROPERTY_ID;
     const CLOUDBEDS_API_URL = process.env.CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.2';
+    const baseUrl = CLOUDBEDS_API_URL.replace(/\/v1\.\d+\/?$/, '');
+    const apiV13 = `${baseUrl.replace(/\/$/, '')}/v1.3`;
 
     // Optional ?date=YYYY-MM-DD for testing; otherwise use today (local)
     const { searchParams } = new URL(request.url);
@@ -58,26 +134,28 @@ export async function GET(request: NextRequest) {
     let apiError: string | null = null;
     let availableRooms: any[] = [];
     try {
-      const allRoomsResponse = await fetch(`${CLOUDBEDS_API_URL}/getRooms?propertyID=${CLOUDBEDS_PROPERTY_ID}`, {
-        method: 'GET',
-        headers: { 'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/json' },
-      });
-      if (!allRoomsResponse.ok) {
-        apiError = `getRooms ${allRoomsResponse.status}`;
+      const headers: HeadersInit = {
+        Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
+        'Content-Type': 'application/json',
+      };
+      // Default getRooms pageSize is 20 — fetch all pages (see fetchAllRoomsPages).
+      let allRooms = await fetchAllRoomsPages(apiV13, CLOUDBEDS_PROPERTY_ID, headers);
+      if (allRooms.length === 0) {
+        const legacyBase = `${baseUrl.replace(/\/$/, '')}/v1.2`;
+        allRooms = await fetchAllRoomsPages(legacyBase, CLOUDBEDS_PROPERTY_ID, headers);
+      }
+      if (allRooms.length === 0) {
+        apiError = 'getRooms returned no rooms';
       } else {
-        const roomsData = await allRoomsResponse.json();
-        let allRooms: any[] = [];
-        if (roomsData.data?.[0]?.rooms) allRooms = roomsData.data[0].rooms;
-        else allRooms = roomsData.data ?? roomsData.rooms ?? [];
         const occupiedRoomIDs = new Set<string>();
         const occupiedRoomNames = new Set<string>();
         try {
           const [arrivalsRes, checkedInRes] = await Promise.all([
-            fetch(`${CLOUDBEDS_API_URL}/getReservations?propertyID=${CLOUDBEDS_PROPERTY_ID}&checkInFrom=${today}&checkInTo=${today}`, {
-              headers: { 'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/json' },
+            fetch(`${apiV13}/getReservations?propertyID=${CLOUDBEDS_PROPERTY_ID}&checkInFrom=${today}&checkInTo=${today}`, {
+              headers,
             }),
-            fetch(`${CLOUDBEDS_API_URL}/getReservations?propertyID=${CLOUDBEDS_PROPERTY_ID}&status=checked_in`, {
-              headers: { 'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/json' },
+            fetch(`${apiV13}/getReservations?propertyID=${CLOUDBEDS_PROPERTY_ID}&status=checked_in`, {
+              headers,
             }),
           ]);
           const addFromRes = (res: any) => {
@@ -104,7 +182,9 @@ export async function GET(request: NextRequest) {
         availableRooms = allRooms.filter((room: any) => {
           const id = (room.roomID ?? room.id)?.toString();
           const name = room.roomName ?? room.name;
-          return !room.roomBlocked && !occupiedRoomIDs.has(id) && !occupiedRoomNames.has(name);
+          // Only treat explicit blocked flag; omitting dates on getRooms can leave roomBlocked unset for some types.
+          const blocked = room.roomBlocked === true;
+          return !blocked && !occupiedRoomIDs.has(id) && !occupiedRoomNames.has(name);
         });
         console.log('getRooms + filter: total', allRooms.length, 'available', availableRooms.length);
       }
@@ -113,7 +193,9 @@ export async function GET(request: NextRequest) {
     }
 
     if (availableRooms.length > 0) {
-      const rooms = availableRooms.map(formatRoom).filter((r: any) => r.roomID !== 'unknown');
+      const rooms = availableRooms
+        .map(formatRoom)
+        .filter((r: any) => r.roomID !== 'unknown' && !r.roomName.includes('(Remove BE)') && !r.roomTypeName.includes('(Remove BE)'));
       return NextResponse.json({
         success: true,
         rooms,
@@ -127,24 +209,24 @@ export async function GET(request: NextRequest) {
     // FALLBACK: getRoomsUnassigned when getRooms+filter returned no rooms
     let rawUnassigned: any[] = [];
     try {
-      const unassignedUrl = `${CLOUDBEDS_API_URL}/getRoomsUnassigned?propertyID=${CLOUDBEDS_PROPERTY_ID}&checkIn=${today}&checkOut=${tomorrow}`;
+      const unassignedUrl = `${apiV13}/getRoomsUnassigned?propertyID=${CLOUDBEDS_PROPERTY_ID}&checkIn=${today}&checkOut=${tomorrow}&pageSize=500`;
       const unassignedResponse = await fetch(unassignedUrl, {
         method: 'GET',
-        headers: { 'Authorization': `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/json' },
+        headers: {
+          Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
       });
       if (unassignedResponse.ok) {
         const data = await unassignedResponse.json();
-        if (data?.data?.[0]?.rooms) rawUnassigned = data.data[0].rooms;
-        else if (Array.isArray(data?.data)) rawUnassigned = data.data;
-        else if (Array.isArray(data?.rooms)) rawUnassigned = data.rooms;
-        else if (Array.isArray(data)) rawUnassigned = data;
+        rawUnassigned = parseAllRoomsFromGetRoomsJson(data);
       }
     } catch (_) {}
     if (rawUnassigned.length > 0) {
       const rooms = rawUnassigned
         .filter((room: any) => room && room.roomBlocked !== true)
         .map(formatRoom)
-        .filter((r: any) => r.roomID !== 'unknown');
+        .filter((r: any) => r.roomID !== 'unknown' && !r.roomName.includes('(Remove BE)') && !r.roomTypeName.includes('(Remove BE)'));
       return NextResponse.json({
         success: true,
         rooms,

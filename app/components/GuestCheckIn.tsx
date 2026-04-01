@@ -24,6 +24,18 @@ interface Room {
   roomTypeName: string;
 }
 
+/** Property-local calendar date from the kiosk (avoids UTC/server "tomorrow" drift on hosted APIs). */
+function kioskLocalDateYmd(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function decodeCloudbedsUserMessage(msg: string): string {
+  return msg.replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
+}
+
 export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
   const [formData, setFormData] = useState<GuestData>({
     firstName: '',
@@ -117,6 +129,11 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
         
         console.log('Checking in with room:', { roomID: roomIdentifier, roomName: selectedRoom?.roomName });
         
+        const today = new Date();
+        const todayYmd = kioskLocalDateYmd(today);
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const tomorrowYmd = kioskLocalDateYmd(tomorrow);
         const cloudbedsResponse = await fetch('/api/cloudbeds-checkin', {
           method: 'POST',
           headers: {
@@ -126,10 +143,14 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
             firstName: formData.firstName,
             lastName: formData.lastName,
             phoneNumber: formData.phoneNumber,
-            roomName: roomIdentifier, // Room ID/name from dropdown so API assigns this exact room
+            roomName: roomIdentifier, // Cloudbeds room id from dropdown
+            roomNameHint: selectedRoom?.roomName, // e.g. 308i — fallback if id shape differs in getRooms
             clcNumber: formData.clcNumber,
             classType: formData.class,
             email: `${formData.firstName.toLowerCase()}.${formData.lastName.toLowerCase()}@guest.com`,
+            // One night: Cloudbeds rejects startDate === endDate ("could not accommodate…")
+            checkInDate: todayYmd,
+            checkOutDate: tomorrowYmd,
             debug: captureDebugLog,
           }),
         });
@@ -151,9 +172,12 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
         }
 
         if (!cloudbedsResponse.ok || cloudbedsResult.success !== true) {
-          throw new Error(
+          const apiMsg =
             (typeof cloudbedsResult.error === 'string' && cloudbedsResult.error) ||
-              `Cloudbeds check-in failed (${cloudbedsResponse.status})`
+            (typeof cloudbedsResult.message === 'string' && cloudbedsResult.message) ||
+            '';
+          throw new Error(
+            decodeCloudbedsUserMessage(apiMsg || `Cloudbeds check-in failed (${cloudbedsResponse.status})`)
           );
         }
 
@@ -180,11 +204,11 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
         onBack();
       }, 2000);
     } catch (err: any) {
-      const msg =
+      const raw =
         typeof err?.message === 'string' && err.message.trim().length > 0
           ? err.message
           : 'Check-in failed. Please try again or contact the front desk.';
-      setError(msg);
+      setError(decodeCloudbedsUserMessage(raw));
       console.error('Check-in error:', err);
     } finally {
       setLoading(false);

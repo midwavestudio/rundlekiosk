@@ -16,6 +16,11 @@ export default function CheckOutModal({ reservation, onClose }: CheckOutModalPro
     try {
       // If reservation has Cloudbeds reservation ID, check out in Cloudbeds
       if (reservation.rawData?.cloudbedsReservationID) {
+        const checkoutAt = new Date();
+        const y = checkoutAt.getFullYear();
+        const m = String(checkoutAt.getMonth() + 1).padStart(2, '0');
+        const day = String(checkoutAt.getDate()).padStart(2, '0');
+        const checkoutLocalDate = `${y}-${m}-${day}`;
         const cloudbedsResponse = await fetch('/api/cloudbeds-checkout', {
           method: 'POST',
           headers: {
@@ -23,6 +28,9 @@ export default function CheckOutModal({ reservation, onClose }: CheckOutModalPro
           },
           body: JSON.stringify({
             reservationID: reservation.rawData.cloudbedsReservationID,
+            checkoutAtIso: checkoutAt.toISOString(),
+            checkoutDate: checkoutLocalDate,
+            checkInDate: reservation.checkInDate || reservation.rawData?.checkInDate,
           }),
         });
 
