@@ -10,7 +10,7 @@ export async function POST(request: NextRequest) {
     console.log('Check-in API called with:', { firstName, lastName, roomName, clcNumber, classType });
     debugLog = enableDebug === true ? [] : undefined;
 
-    if (!firstName || !lastName || !roomName) {
+    if (!String(firstName ?? '').trim() || !String(lastName ?? '').trim() || !roomName) {
       return NextResponse.json(
         { success: false, error: 'Missing required fields' },
         { status: 400 }

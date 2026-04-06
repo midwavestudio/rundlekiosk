@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { buildGuestSyntheticEmail } from '@/lib/guest-email';
 
 function getLocalDateStr(d: Date): string {
   const y = d.getFullYear();
@@ -150,7 +151,7 @@ export async function POST(request: NextRequest) {
       reservationParams.append('guestLastName', lastName);
       reservationParams.append('guestCountry', 'US'); // United States - required parameter
       reservationParams.append('guestZip', '00000'); // Required parameter - default zip
-      reservationParams.append('guestEmail', `${firstName.toLowerCase()}.${lastName.toLowerCase()}@guest.com`);
+      reservationParams.append('guestEmail', buildGuestSyntheticEmail(String(firstName), String(lastName)));
       reservationParams.append('guestPhone', phoneNumber);
       reservationParams.append('paymentMethod', 'CLC'); // CLC payment method for BNSF crew
       // roomRateID must be inside rooms[0] per Cloudbeds API format

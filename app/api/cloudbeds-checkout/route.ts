@@ -4,6 +4,12 @@ import { NextRequest, NextResponse } from 'next/server';
  * Cloudbeds requires the reservation checkout date to be updated **before** any checkout
  * action (postRoomCheckOut or status=checked_out). Calling room checkout first returns:
  * "You must update the check out date prior to checking out the guest."
+ *
+ * getReservation returns assigned rooms under `assigned` (and sometimes `rooms`).
+ * Using only `rooms` leaves the list empty → no roomID/subReservationID → checkout fails.
+ *
+ * putReservation (v1.3) accepts top-level `checkoutDate` only — do not send `startDate`
+ * (not in the published schema; can cause the update to fail).
  */
 
 function getLocalDateStr(d: Date): string {
@@ -101,6 +107,31 @@ function clampCheckoutDate(startYmd: string | undefined, requestedYmd: string): 
   return requestedYmd < startYmd ? startYmd : requestedYmd;
 }
 
+/** getReservation uses `assigned`; getReservations list may use `rooms` — merge for lookup. */
+function mergeReservationRoomRows(reservation: any): any[] {
+  const out: any[] = [];
+  const seen = new Set<string>();
+  for (const key of ['assigned', 'rooms'] as const) {
+    const arr = reservation?.[key];
+    if (!Array.isArray(arr)) continue;
+    for (const r of arr) {
+      if (!r || typeof r !== 'object') continue;
+      const id = `${r.subReservationID ?? ''}|${r.roomID ?? ''}|${r.reservationRoomID ?? ''}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push(r);
+    }
+  }
+  return out;
+}
+
+function pickActiveRoom(rooms: any[]): any | null {
+  if (rooms.length === 0) return null;
+  const inHouse = rooms.find((r: any) => r?.roomStatus === 'in_house');
+  if (inHouse) return inHouse;
+  return rooms[0];
+}
+
 /**
  * Fallback: set checkout on the room line (putReservation rooms[] schema).
  */
@@ -114,7 +145,7 @@ function buildRoomLineCheckoutFields(
   if (!room || !reservation) return null;
   const roomTypeID = room.roomTypeID != null ? String(room.roomTypeID) : '';
   let checkinYmd = '';
-  const rc = room.roomCheckIn;
+  const rc = room.roomCheckIn ?? room.startDate;
   if (rc != null && String(rc).trim() !== '') {
     const s = String(rc).trim();
     checkinYmd = s.length >= 10 ? s.slice(0, 10) : '';
@@ -205,8 +236,8 @@ export async function POST(request: NextRequest) {
 
     checkoutDate = clampCheckoutDate(startYmd, checkoutDate);
 
-    const rooms: any[] = Array.isArray(reservationRecord?.rooms) ? reservationRecord.rooms : [];
-    const activeRoom = rooms.find((r: any) => r?.roomStatus === 'in_house') ?? rooms[0] ?? null;
+    const rooms: any[] = mergeReservationRoomRows(reservationRecord ?? {});
+    const activeRoom = pickActiveRoom(rooms);
     const roomID = activeRoom?.roomID != null ? String(activeRoom.roomID) : undefined;
     const subReservationID = activeRoom?.subReservationID != null ? String(activeRoom.subReservationID) : undefined;
 
@@ -214,18 +245,36 @@ export async function POST(request: NextRequest) {
 
     let lastMessage = '';
 
-    // ── 1) REQUIRED FIRST: update checkout date only (no status, no room checkout) ──
+    // ── 1) REQUIRED FIRST: update checkout date (putReservation accepts checkoutDate only at top level)
     let dateUpdated = false;
-    const topLevelDate = await putForm(putUrl, CLOUDBEDS_API_KEY, {
+
+    const dateFields: Record<string, string | undefined> = {
       propertyID: CLOUDBEDS_PROPERTY_ID,
       reservationID: String(reservationID),
       checkoutDate,
-    });
+    };
+
+    const topLevelDate = await putForm(putUrl, CLOUDBEDS_API_KEY, dateFields);
     log.push({ step: 'putReservation_checkoutDate_only', ok: topLevelDate.ok, data: topLevelDate.data });
     if (topLevelDate.ok) {
       dateUpdated = true;
     } else {
       lastMessage = topLevelDate.data?.message ?? topLevelDate.raw ?? '';
+
+      // If Cloudbeds says the date is already correct / no change needed, that's fine —
+      // treat it as success so postRoomCheckOut can proceed.
+      const alreadySet =
+        /already/i.test(lastMessage) ||
+        /no change/i.test(lastMessage) ||
+        /same date/i.test(lastMessage);
+      if (alreadySet) {
+        dateUpdated = true;
+        log.push({ step: 'putReservation_alreadySet', note: lastMessage });
+      }
+    }
+
+    // Fallback: try with rooms[0] date fields
+    if (!dateUpdated) {
       const roomLine = buildRoomLineCheckoutFields(
         CLOUDBEDS_PROPERTY_ID,
         String(reservationID),
@@ -239,7 +288,17 @@ export async function POST(request: NextRequest) {
         if (roomPut.ok) {
           dateUpdated = true;
         } else {
-          lastMessage = roomPut.data?.message ?? roomPut.raw ?? lastMessage;
+          const msg2 = roomPut.data?.message ?? roomPut.raw ?? '';
+          const alreadySet2 =
+            /already/i.test(msg2) ||
+            /no change/i.test(msg2) ||
+            /same date/i.test(msg2);
+          if (alreadySet2) {
+            dateUpdated = true;
+            log.push({ step: 'putReservation_rooms0_alreadySet', note: msg2 });
+          } else {
+            lastMessage = msg2 || lastMessage;
+          }
         }
       }
     }

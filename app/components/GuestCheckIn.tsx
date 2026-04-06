@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
+import { buildGuestSyntheticEmail } from '@/lib/guest-email';
 
 interface GuestCheckInProps {
   onBack: () => void;
@@ -12,8 +13,9 @@ interface GuestData {
   clcNumber: string;
   phoneNumber: string;
   roomNumber: string;
-  class: 'TYE' | 'MOW' | '';
   checkInTime: string;
+  /** Always TYE for kiosk walk-in check-in */
+  class: 'TYE';
   cloudbedsGuestID?: string;
   cloudbedsReservationID?: string;
 }
@@ -32,19 +34,21 @@ function kioskLocalDateYmd(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+function formatStayNightLabel(d: Date): string {
+  return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
 function decodeCloudbedsUserMessage(msg: string): string {
   return msg.replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
 }
 
 export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
-  const [formData, setFormData] = useState<GuestData>({
+  const [formData, setFormData] = useState<Omit<GuestData, 'class' | 'checkInTime'>>({
     firstName: '',
     lastName: '',
     clcNumber: '',
     phoneNumber: '',
     roomNumber: '',
-    class: '',
-    checkInTime: '',
   });
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState('');
@@ -52,6 +56,8 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
   const [availableRooms, setAvailableRooms] = useState<Room[]>([]);
   const [loadingRooms, setLoadingRooms] = useState(true);
   const [captureDebugLog, setCaptureDebugLog] = useState(false);
+  /** First night of stay: yesterday (late check-in) or tonight (default). */
+  const [stayStartNight, setStayStartNight] = useState<'yesterday' | 'today'>('today');
   const [debugTrailForDeveloper, setDebugTrailForDeveloper] = useState<{
     requestRoom: string;
     response: any;
@@ -81,7 +87,19 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
     fetchAvailableRooms();
   }, []);
 
-  const handleChange = (field: keyof GuestData, value: string) => {
+  const { yesterdayDate, todayDate, yesterdayYmd, todayYmd } = useMemo(() => {
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    return {
+      yesterdayDate: yesterday,
+      todayDate: today,
+      yesterdayYmd: kioskLocalDateYmd(yesterday),
+      todayYmd: kioskLocalDateYmd(today),
+    };
+  }, []);
+
+  const handleChange = (field: keyof Omit<GuestData, 'class' | 'checkInTime'>, value: string) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
     setError('');
   };
@@ -104,9 +122,9 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    // Validation
-    if (!formData.firstName || !formData.lastName || !formData.clcNumber || 
-        !formData.phoneNumber || !formData.roomNumber || !formData.class) {
+    // Validation (trim names so stray spaces do not break synthetic email / Cloudbeds)
+    if (!formData.firstName.trim() || !formData.lastName.trim() || !formData.clcNumber || 
+        !formData.phoneNumber || !formData.roomNumber) {
       setError('Please fill in all fields');
       return;
     }
@@ -115,9 +133,12 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
     setError('');
 
     try {
-      // Add timestamp
-      const checkInData = {
+      // Add timestamp (trim names for storage consistency with API)
+      const checkInData: GuestData = {
         ...formData,
+        firstName: formData.firstName.trim(),
+        lastName: formData.lastName.trim(),
+        class: 'TYE',
         checkInTime: new Date().toISOString(),
       };
 
@@ -129,28 +150,31 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
         
         console.log('Checking in with room:', { roomID: roomIdentifier, roomName: selectedRoom?.roomName });
         
-        const today = new Date();
-        const todayYmd = kioskLocalDateYmd(today);
-        const tomorrow = new Date(today);
-        tomorrow.setDate(tomorrow.getDate() + 1);
-        const tomorrowYmd = kioskLocalDateYmd(tomorrow);
+        const checkInAnchor = new Date();
+        if (stayStartNight === 'yesterday') {
+          checkInAnchor.setDate(checkInAnchor.getDate() - 1);
+        }
+        const checkOutNight = new Date(checkInAnchor);
+        checkOutNight.setDate(checkOutNight.getDate() + 1);
+        const checkInYmd = kioskLocalDateYmd(checkInAnchor);
+        const checkOutYmd = kioskLocalDateYmd(checkOutNight);
         const cloudbedsResponse = await fetch('/api/cloudbeds-checkin', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            firstName: formData.firstName,
-            lastName: formData.lastName,
+            firstName: formData.firstName.trim(),
+            lastName: formData.lastName.trim(),
             phoneNumber: formData.phoneNumber,
             roomName: roomIdentifier, // Cloudbeds room id from dropdown
             roomNameHint: selectedRoom?.roomName, // e.g. 308i — fallback if id shape differs in getRooms
             clcNumber: formData.clcNumber,
-            classType: formData.class,
-            email: `${formData.firstName.toLowerCase()}.${formData.lastName.toLowerCase()}@guest.com`,
+            classType: 'TYE',
+            email: buildGuestSyntheticEmail(formData.firstName, formData.lastName),
             // One night: Cloudbeds rejects startDate === endDate ("could not accommodate…")
-            checkInDate: todayYmd,
-            checkOutDate: tomorrowYmd,
+            checkInDate: checkInYmd,
+            checkOutDate: checkOutYmd,
             debug: captureDebugLog,
           }),
         });
@@ -292,6 +316,35 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
         </div>
 
         <div className="form-group">
+          <label>Check-in night *</label>
+          <p className="subtitle" style={{ marginTop: 0, marginBottom: '10px', fontSize: 'clamp(13px, 2vw, 15px)' }}>
+            First night of the stay (checkout is the following calendar day).
+          </p>
+          <div className="class-selector">
+            <button
+              type="button"
+              className={`class-button ${stayStartNight === 'yesterday' ? 'active' : ''}`}
+              onClick={() => setStayStartNight('yesterday')}
+            >
+              Yesterday
+              <span style={{ display: 'block', fontSize: '0.85em', opacity: 0.85, fontWeight: 400 }}>
+                {formatStayNightLabel(yesterdayDate)} ({yesterdayYmd})
+              </span>
+            </button>
+            <button
+              type="button"
+              className={`class-button ${stayStartNight === 'today' ? 'active' : ''}`}
+              onClick={() => setStayStartNight('today')}
+            >
+              Today
+              <span style={{ display: 'block', fontSize: '0.85em', opacity: 0.85, fontWeight: 400 }}>
+                {formatStayNightLabel(todayDate)} ({todayYmd})
+              </span>
+            </button>
+          </div>
+        </div>
+
+        <div className="form-group">
           <label htmlFor="roomNumber">Select Room Number *</label>
           {loadingRooms ? (
             <div style={{ padding: '12px', textAlign: 'center', color: '#666' }}>
@@ -325,26 +378,6 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
               ))}
             </select>
           )}
-        </div>
-
-        <div className="form-group">
-          <label>Class *</label>
-          <div className="class-selector">
-            <button
-              type="button"
-              className={`class-button ${formData.class === 'TYE' ? 'active' : ''}`}
-              onClick={() => handleChange('class', 'TYE')}
-            >
-              TYE
-            </button>
-            <button
-              type="button"
-              className={`class-button ${formData.class === 'MOW' ? 'active' : ''}`}
-              onClick={() => handleChange('class', 'MOW')}
-            >
-              MOW
-            </button>
-          </div>
         </div>
 
         <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', fontSize: 'clamp(14px, 2vw, 16px)', cursor: 'pointer' }}>

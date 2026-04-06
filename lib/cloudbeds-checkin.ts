@@ -3,6 +3,8 @@
  * so bulk can call this directly instead of fetching the app (avoids HTML/JSON errors on live).
  */
 
+import { buildGuestSyntheticEmail } from '@/lib/guest-email';
+
 function getLocalDateStr(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -19,7 +21,107 @@ function addOneCalendarDayYmd(ymd: string): string {
   return getLocalDateStr(dt);
 }
 
-/** Outstanding balance from invoice (preferred) or reservation header. */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Fields that reflect **amount still owed** after payments. Never use `grandTotal` / `total` here —
+ * they usually stay equal to the room total and caused repeated full CLC posts (one per loop round).
+ */
+const OUTSTANDING_BALANCE_KEYS = [
+  'balance',
+  'totalBalance',
+  'amountDue',
+  'remainingBalance',
+  'balanceDue',
+  'amountOwing',
+  'outstandingBalance',
+  'dueAmount',
+  'remainingAmount',
+] as const;
+
+/** Broader keys only for postReservation hint when folio APIs still return nothing. */
+const POST_RESERVATION_HINT_KEYS = [
+  ...OUTSTANDING_BALANCE_KEYS,
+  'grandTotal',
+  'total',
+  'subTotal',
+  'roomTotal',
+  'totalAmount',
+] as const;
+
+/**
+ * First meaningful outstanding amount on an object. If an outstanding key is present and is ~0, returns 0
+ * (folio cleared). If keys are absent, returns null.
+ */
+function pickOutstandingFromObject(obj: unknown): number | null {
+  if (obj == null || typeof obj !== 'object' || Array.isArray(obj)) return null;
+  const o = obj as Record<string, unknown>;
+  for (const k of OUTSTANDING_BALANCE_KEYS) {
+    const v = o[k];
+    if (v === undefined || v === null) continue;
+    const n = Number(v);
+    if (Number.isNaN(n)) continue;
+    if (n <= 0.01) return 0;
+    return n;
+  }
+  return null;
+}
+
+function pickHintAmountFromObject(obj: unknown): number | null {
+  if (obj == null || typeof obj !== 'object' || Array.isArray(obj)) return null;
+  const o = obj as Record<string, unknown>;
+  for (const k of POST_RESERVATION_HINT_KEYS) {
+    const v = o[k];
+    if (v === undefined || v === null) continue;
+    const n = Number(v);
+    if (!Number.isNaN(n) && n > 0.01) return n;
+  }
+  return null;
+}
+
+/** Collect nested objects Cloudbeds may put invoice / balance data under. */
+function collectBalanceScanRoots(data: unknown): unknown[] {
+  const roots: unknown[] = [];
+  if (data == null) return roots;
+  roots.push(data);
+  if (typeof data === 'object' && !Array.isArray(data)) {
+    const o = data as Record<string, unknown>;
+    for (const k of ['invoice', 'summary', 'totals', 'Invoice', 'Summary', 'balanceDetail', 'reservation']) {
+      if (o[k] != null && typeof o[k] === 'object') roots.push(o[k]);
+    }
+  }
+  if (Array.isArray(data) && data[0] != null && typeof data[0] === 'object') roots.push(data[0]);
+  return roots;
+}
+
+/** Walk roots in order; prefer first definitive outstanding (including 0). Never max() across roots — nested `totals.grandTotal` must not override top-level `balance`. */
+function firstOutstandingFromScanRoots(roots: unknown[]): number | null {
+  for (const r of roots) {
+    const n = pickOutstandingFromObject(r);
+    if (n !== null) return n;
+  }
+  return null;
+}
+
+function coalesceOutstandingTopLevel(data: unknown): number | null {
+  if (data == null || typeof data !== 'object' || Array.isArray(data)) return null;
+  const d = data as Record<string, unknown>;
+  for (const k of OUTSTANDING_BALANCE_KEYS) {
+    const v = d[k];
+    if (v === undefined || v === null) continue;
+    const n = Number(v);
+    if (Number.isNaN(n)) continue;
+    return n;
+  }
+  return null;
+}
+
+/**
+ * Outstanding balance from invoice (preferred) or getReservation.
+ * Handles nested invoice payloads and alternate field names (past-dated stays sometimes differ).
+ */
 async function readOutstandingBalance(
   apiV13: string,
   propertyID: string,
@@ -34,14 +136,10 @@ async function readOutstandingBalance(
     });
     const j = await r.json();
     const data = j.data ?? j;
-    const raw =
-      data?.balance ??
-      data?.totalBalance ??
-      data?.amountDue ??
-      data?.remainingBalance ??
-      data?.grandTotal;
-    const n = Number(raw);
-    if (!Number.isNaN(n) && n >= 0) return n;
+    const fromRoots = firstOutstandingFromScanRoots(collectBalanceScanRoots(data));
+    if (fromRoots !== null) return fromRoots;
+    const top = coalesceOutstandingTopLevel(data);
+    if (top !== null) return top;
   } catch {
     /* fall through */
   }
@@ -53,12 +151,48 @@ async function readOutstandingBalance(
     });
     const j = await r.json();
     const d = j.data ?? j;
-    const n = Number(d?.balance ?? d?.totalBalance ?? 0);
-    if (!Number.isNaN(n) && n >= 0) return n;
+    const resRoots = collectBalanceScanRoots(d);
+    const fromNested = firstOutstandingFromScanRoots(resRoots);
+    if (fromNested !== null) return fromNested;
+    const top = coalesceOutstandingTopLevel(d);
+    if (top !== null) return top;
   } catch {
     /* ignore */
   }
   return 0;
+}
+
+/** Poll invoice/folio until balance appears (postReservation is often async; past start dates can lag more). */
+async function readOutstandingBalanceWithPoll(
+  apiV13: string,
+  propertyID: string,
+  apiKey: string,
+  reservationID: string,
+  opts: { maxAttempts: number; delayMs: number },
+  log: (step: string, request?: unknown, response?: unknown, error?: string) => void
+): Promise<number> {
+  let last = 0;
+  for (let a = 0; a < opts.maxAttempts; a++) {
+    last = await readOutstandingBalance(apiV13, propertyID, apiKey, reservationID);
+    if (last > 0.01) {
+      if (a > 0) log('4_settleFolio_balance_poll_hit', { attempt: a + 1, balance: last });
+      return last;
+    }
+    if (a < opts.maxAttempts - 1) await sleep(opts.delayMs);
+  }
+  log('4_settleFolio_balance_poll_exhausted', { attempts: opts.maxAttempts, lastBalance: last });
+  return last;
+}
+
+/** Amount Cloudbeds echoed on postReservation when invoice APIs still return 0 (used once — avoids double payment on second settle). */
+function extractPostReservationAmountHint(reservationData: unknown): number | null {
+  if (reservationData == null || typeof reservationData !== 'object') return null;
+  const roots: unknown[] = [reservationData, (reservationData as any).data].filter(Boolean);
+  for (const r of roots) {
+    const n = pickHintAmountFromObject(r);
+    if (n != null) return n;
+  }
+  return null;
 }
 
 /** Ordered payment method `type` values for postPayment (must match getPaymentMethods `method`). */
@@ -140,6 +274,9 @@ async function postPaymentWithType(
 /**
  * Pay down folio until Cloudbeds reports no meaningful balance — required before checked_in when
  * property enforces "collect full amount prior to checking in".
+ *
+ * `amountDueHint` (from postReservation only, first settle): used when invoice still reads $0 so we
+ * still post CLC. Omit on later settles to avoid double-charging the same hint.
  */
 async function settleReservationFolio(
   apiV13: string,
@@ -147,16 +284,44 @@ async function settleReservationFolio(
   apiKey: string,
   reservationID: string,
   guestLabel: string,
-  log: (step: string, request?: unknown, response?: unknown, error?: string) => void
+  log: (step: string, request?: unknown, response?: unknown, error?: string) => void,
+  options?: { amountDueHint?: number | null }
 ): Promise<void> {
   const types = await resolvePaymentTypesToTry(apiV13, propertyID, apiKey);
-  log('4_settleFolio_start', { reservationID, types });
+  const hint =
+    options?.amountDueHint != null && Number(options.amountDueHint) > 0.01
+      ? Number(options.amountDueHint)
+      : null;
+  log('4_settleFolio_start', { reservationID, types, amountDueHint: hint });
 
-  for (let round = 0; round < 8; round++) {
-    const balance = await readOutstandingBalance(apiV13, propertyID, apiKey, reservationID);
+  /** If folio still shows the same dollars due after a successful post, Cloudbeds is likely exposing grandTotal-like fields as "due" — stop before duplicate CLC lines. */
+  let amountPostedSuccessfully: number | null = null;
+
+  for (let round = 0; round < 4; round++) {
+    let balance =
+      round === 0
+        ? await readOutstandingBalanceWithPoll(
+            apiV13,
+            propertyID,
+            apiKey,
+            reservationID,
+            { maxAttempts: 14, delayMs: 400 },
+            log
+          )
+        : await readOutstandingBalance(apiV13, propertyID, apiKey, reservationID);
+    if (balance <= 0.01 && hint != null && round === 0) {
+      log('4_settleFolio_using_postReservation_amount_hint', { amountDueHint: hint });
+      balance = hint;
+    }
     if (balance <= 0.01) {
       log('4_settleFolio_done', { round, balance });
       return;
+    }
+    if (amountPostedSuccessfully != null && Math.abs(balance - amountPostedSuccessfully) < 0.05) {
+      log('4_settleFolio_stale_same_due_after_payment', { balance, lastPostedAmount: amountPostedSuccessfully });
+      throw new Error(
+        'Automatic payment stopped: the folio still shows the same amount due after CLC was posted, which would create duplicate charges. In Cloudbeds, remove duplicate CLC lines on this reservation if needed, then finish from the dashboard or try again.'
+      );
     }
     let paidThisRound = false;
     for (const paymentType of types) {
@@ -179,6 +344,8 @@ async function settleReservationFolio(
       });
       if (r.ok) {
         paidThisRound = true;
+        amountPostedSuccessfully = balance;
+        await sleep(500);
         break;
       }
     }
@@ -401,6 +568,9 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     debugLog,
   } = params;
 
+  const guestFirstName = String(firstName).trim().replace(/\s+/g, ' ');
+  const guestLastName = String(lastName).trim().replace(/\s+/g, ' ');
+
   const log = (step: string, request?: unknown, response?: unknown, error?: string) => {
     debugLog?.push({ step, request, response, error });
   };
@@ -557,11 +727,14 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   reservationParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
   reservationParams.append('startDate', checkInDate);
   reservationParams.append('endDate', checkOutDate);
-  reservationParams.append('guestFirstName', firstName);
-  reservationParams.append('guestLastName', lastName);
+  reservationParams.append('guestFirstName', guestFirstName);
+  reservationParams.append('guestLastName', guestLastName);
   reservationParams.append('guestCountry', 'US');
   reservationParams.append('guestZip', '00000');
-  reservationParams.append('guestEmail', email || `${firstName.toLowerCase()}.${lastName.toLowerCase()}@guest.com`);
+  reservationParams.append(
+    'guestEmail',
+    (email != null && String(email).trim() !== '' ? String(email).trim() : buildGuestSyntheticEmail(guestFirstName, guestLastName))
+  );
   reservationParams.append('guestPhone', phoneNumber || '000-000-0000');
   reservationParams.append('paymentMethod', 'CLC');
   reservationParams.append('rooms[0][roomTypeID]', roomTypeIDStr);
@@ -590,8 +763,8 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       roomRateID: roomRateIDStr || undefined,
       startDate: checkInDate,
       endDate: checkOutDate,
-      guestFirstName: firstName,
-      guestLastName: lastName,
+      guestFirstName: guestFirstName,
+      guestLastName: guestLastName,
     },
   });
 
@@ -694,13 +867,15 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
 
   // Step 4: Clear folio balance using invoice balance (postReservation totals can differ from folio).
   // Properties that require "collect full amount prior to checking in" will reject checked_in until this succeeds.
+  const postReservationAmountHint = extractPostReservationAmountHint(reservationData);
   await settleReservationFolio(
     apiV13,
     CLOUDBEDS_PROPERTY_ID,
     CLOUDBEDS_API_KEY,
     String(reservationID),
-    `${firstName} ${lastName}`,
-    log
+    `${guestFirstName} ${guestLastName}`,
+    log,
+    { amountDueHint: postReservationAmountHint }
   );
 
   // Refresh reservation after payment (reservationRoomID may appear; room may show as assigned only now).
@@ -881,12 +1056,13 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   }
 
   // Folio can change after room assignment; settle again before checked_in (balance rule).
+  // Do not pass postReservation amount hint here — would risk double-posting the same total if folio still reads $0 briefly.
   await settleReservationFolio(
     apiV13,
     CLOUDBEDS_PROPERTY_ID,
     CLOUDBEDS_API_KEY,
     String(reservationID),
-    `${firstName} ${lastName}`,
+    `${guestFirstName} ${guestLastName}`,
     log
   );
 
