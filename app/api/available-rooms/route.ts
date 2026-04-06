@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getAvailablePlaceholdersByDate } from '@/lib/tye-placeholder-store';
 
 /**
  * Merge every `data[].rooms` array from getRooms — Cloudbeds returns one object per room type;
@@ -80,6 +81,47 @@ function getLocalDateStr(d: Date): string {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
+}
+
+/**
+ * Merges TYE placeholder rooms into the available-rooms list.
+ *
+ * Placeholder reservations are in "confirmed" status in Cloudbeds so they appear
+ * as upcoming arrivals and their rooms get filtered out of getRooms results. We
+ * re-add them here so guests can select a placeholder room at the kiosk.
+ * Each placeholder room is annotated with `placeholderReservationID` so the
+ * check-in flow can skip postReservation and go directly to assign-placeholder.
+ */
+async function mergePlaceholderRooms(
+  existingRooms: Array<{ roomID: string; roomName: string; roomTypeName: string }>,
+  forDate: string
+): Promise<Array<{ roomID: string; roomName: string; roomTypeName: string; placeholderReservationID?: string }>> {
+  try {
+    const placeholders = await getAvailablePlaceholdersByDate(forDate);
+    if (placeholders.length === 0) return existingRooms;
+
+    const existingIDs = new Set(existingRooms.map((r) => r.roomID));
+    const toAdd = placeholders
+      .filter((p) => !existingIDs.has(p.roomID))
+      .map((p) => ({
+        roomID: p.roomID,
+        roomName: p.roomName,
+        roomTypeName: p.roomTypeName,
+        placeholderReservationID: p.reservationID,
+      }));
+
+    // For rooms already in the list, annotate them with the placeholder ID.
+    const annotated = existingRooms.map((room) => {
+      const ph = placeholders.find((p) => p.roomID === room.roomID);
+      return ph ? { ...room, placeholderReservationID: ph.reservationID } : room;
+    });
+
+    return [...annotated, ...toAdd];
+  } catch (err) {
+    // Placeholder merge is non-fatal — return the original list unchanged.
+    console.warn('mergePlaceholderRooms error (non-fatal):', err);
+    return existingRooms;
+  }
 }
 
 export async function GET(request: NextRequest) {
@@ -193,9 +235,15 @@ export async function GET(request: NextRequest) {
     }
 
     if (availableRooms.length > 0) {
-      const rooms = availableRooms
+      let rooms = availableRooms
         .map(formatRoom)
         .filter((r: any) => r.roomID !== 'unknown' && !r.roomName.includes('(Remove BE)') && !r.roomTypeName.includes('(Remove BE)'));
+
+      // Merge TYE placeholder rooms back in. Placeholder reservations appear as "confirmed"
+      // arrivals in Cloudbeds so their rooms get filtered out above — but our app treats them
+      // as available walk-in slots that can be assigned to a real guest.
+      rooms = await mergePlaceholderRooms(rooms, today);
+
       return NextResponse.json({
         success: true,
         rooms,
@@ -223,10 +271,11 @@ export async function GET(request: NextRequest) {
       }
     } catch (_) {}
     if (rawUnassigned.length > 0) {
-      const rooms = rawUnassigned
+      let rooms = rawUnassigned
         .filter((room: any) => room && room.roomBlocked !== true)
         .map(formatRoom)
         .filter((r: any) => r.roomID !== 'unknown' && !r.roomName.includes('(Remove BE)') && !r.roomTypeName.includes('(Remove BE)'));
+      rooms = await mergePlaceholderRooms(rooms, today);
       return NextResponse.json({
         success: true,
         rooms,

@@ -24,6 +24,8 @@ interface Room {
   roomID: string;
   roomName: string;
   roomTypeName: string;
+  /** Present when the room has a pre-created TYE placeholder reservation. */
+  placeholderReservationID?: string;
 }
 
 /** Property-local calendar date from the kiosk (avoids UTC/server "tomorrow" drift on hosted APIs). */
@@ -158,6 +160,10 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
         checkOutNight.setDate(checkOutNight.getDate() + 1);
         const checkInYmd = kioskLocalDateYmd(checkInAnchor);
         const checkOutYmd = kioskLocalDateYmd(checkOutNight);
+        // If the selected room has a pre-created TYE placeholder reservation, pass its ID.
+        // The API will assign the placeholder to this guest instead of creating a new reservation.
+        const placeholderReservationID = selectedRoom?.placeholderReservationID;
+
         const cloudbedsResponse = await fetch('/api/cloudbeds-checkin', {
           method: 'POST',
           headers: {
@@ -175,6 +181,8 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
             // One night: Cloudbeds rejects startDate === endDate ("could not accommodate…")
             checkInDate: checkInYmd,
             checkOutDate: checkOutYmd,
+            // TYE placeholder path: skip postReservation and assign the existing booking
+            ...(placeholderReservationID ? { placeholderReservationID } : {}),
             debug: captureDebugLog,
           }),
         });
@@ -373,7 +381,7 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
               <option value="">-- Select a room --</option>
               {availableRooms.map((room) => (
                 <option key={room.roomID} value={room.roomID}>
-                  Room {room.roomName} ({room.roomTypeName})
+                  Room {room.roomName} ({room.roomTypeName}){room.placeholderReservationID ? ' ★' : ''}
                 </option>
               ))}
             </select>

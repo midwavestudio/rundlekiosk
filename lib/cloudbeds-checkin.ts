@@ -278,7 +278,7 @@ async function postPaymentWithType(
  * `amountDueHint` (from postReservation only, first settle): used when invoice still reads $0 so we
  * still post CLC. Omit on later settles to avoid double-charging the same hint.
  */
-async function settleReservationFolio(
+export async function settleReservationFolio(
   apiV13: string,
   propertyID: string,
   apiKey: string,

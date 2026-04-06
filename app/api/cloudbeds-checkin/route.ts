@@ -5,7 +5,21 @@ export async function POST(request: NextRequest) {
   let debugLog: Array<{ step: string; request?: unknown; response?: unknown; error?: string }> | undefined;
   try {
     const body = await request.json();
-    const { firstName, lastName, phoneNumber, roomName, roomNameHint, clcNumber, classType, email, reservationID: existingReservationID, checkInDate: bodyCheckIn, checkOutDate: bodyCheckOut, debug: enableDebug } = body;
+    const {
+      firstName,
+      lastName,
+      phoneNumber,
+      roomName,
+      roomNameHint,
+      clcNumber,
+      classType,
+      email,
+      reservationID: existingReservationID,
+      placeholderReservationID,
+      checkInDate: bodyCheckIn,
+      checkOutDate: bodyCheckOut,
+      debug: enableDebug,
+    } = body;
 
     console.log('Check-in API called with:', { firstName, lastName, roomName, clcNumber, classType });
     debugLog = enableDebug === true ? [] : undefined;
@@ -15,6 +29,47 @@ export async function POST(request: NextRequest) {
         { success: false, error: 'Missing required fields' },
         { status: 400 }
       );
+    }
+
+    // TYE Placeholder path — room was pre-created as a placeholder reservation.
+    // Delegate to assign-placeholder which updates the guest, posts payment, and checks in.
+    if (placeholderReservationID) {
+      const assignBody = {
+        placeholderReservationID,
+        firstName: String(firstName).trim(),
+        lastName: String(lastName).trim(),
+        phoneNumber,
+        clcNumber,
+        email,
+      };
+      const assignRes = await fetch(
+        `${getAppBaseUrl(request)}/api/assign-placeholder`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(assignBody),
+        }
+      );
+      const assignData = await assignRes.json();
+      if (!assignRes.ok || assignData.success !== true) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: assignData.error ?? 'Placeholder assignment failed',
+            debugTrail: assignData.debugTrail,
+          },
+          { status: assignRes.ok ? 500 : assignRes.status }
+        );
+      }
+      return NextResponse.json({
+        success: true,
+        reservationID: assignData.reservationID,
+        guestID: assignData.guestID,
+        roomName: assignData.roomName,
+        message: assignData.message,
+        placeholderAssigned: true,
+        debugTrail: enableDebug ? assignData.debugTrail : undefined,
+      });
     }
 
     // If reservationID is provided, update existing reservation (status-only path)
@@ -107,5 +162,11 @@ export async function POST(request: NextRequest) {
     if (debugLog && debugLog.length > 0) errResponse.debugTrail = debugLog;
     return NextResponse.json(errResponse, { status: 500 });
   }
+}
+
+/** Derive the app's base URL from the incoming request so internal fetch calls work in all environments. */
+function getAppBaseUrl(request: NextRequest): string {
+  const url = new URL(request.url);
+  return `${url.protocol}//${url.host}`;
 }
 
