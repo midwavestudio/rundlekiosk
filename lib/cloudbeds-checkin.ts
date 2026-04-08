@@ -541,6 +541,11 @@ export interface PerformCheckInParams {
   email?: string;
   checkInDate?: string;
   checkOutDate?: string;
+  /**
+   * When true: run the same room list + TYE rate + postReservation path as kiosk walk-in,
+   * then return without folio payment, room assignment, or check-in. Used for TYE placeholder bookings.
+   */
+  stopAfterReservationCreate?: boolean;
   /** If provided, request/response trail for each step is pushed here (for debugging room-assignment issues). */
   debugLog?: Array<{ step: string; request?: unknown; response?: unknown; error?: string }>;
 }
@@ -551,6 +556,9 @@ export interface PerformCheckInResult {
   reservationID: string;
   roomName: string;
   message: string;
+  /** Present when stopAfterReservationCreate completed (placeholder flow). */
+  roomTypeID?: string;
+  roomTypeName?: string;
 }
 
 export async function performCloudbedsCheckIn(params: PerformCheckInParams): Promise<PerformCheckInResult> {
@@ -565,6 +573,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     email,
     checkInDate: bodyCheckIn,
     checkOutDate: bodyCheckOut,
+    stopAfterReservationCreate,
     debugLog,
   } = params;
 
@@ -817,6 +826,19 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   const assignedRooms = reservationData.assigned || [];
   if (!reservationID) {
     throw new Error('No reservationID returned from Cloudbeds');
+  }
+
+  // TYE placeholders: identical postReservation to kiosk, but no payment / assign / check-in.
+  if (stopAfterReservationCreate === true) {
+    return {
+      success: true,
+      guestID,
+      reservationID: String(reservationID),
+      roomName: String(selectedRoomName ?? roomName),
+      message: 'TYE placeholder reservation created in Cloudbeds',
+      roomTypeID: roomTypeID != null ? String(roomTypeID) : undefined,
+      roomTypeName: roomTypeName || undefined,
+    };
   }
 
   log('3a_postReservation_room_status', {

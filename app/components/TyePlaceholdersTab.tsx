@@ -209,7 +209,16 @@ export default function TyePlaceholdersTab() {
       const res = await fetch('/api/admin/create-tye-placeholders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ roomIDs: Array.from(selectedRoomIDs).map(String) }),
+        body: JSON.stringify({
+          roomIDs: Array.from(selectedRoomIDs).map(String),
+          // Same as kiosk GuestCheckIn `roomNameHint` — helps Cloudbeds match the physical room.
+          roomHints: Object.fromEntries(
+            Array.from(selectedRoomIDs).map((id) => {
+              const room = allRooms.find((r) => String(r.roomID) === id);
+              return [id, room?.roomName ?? ''] as const;
+            }).filter(([, name]) => name.trim() !== '')
+          ),
+        }),
       });
       const raw = await res.text();
       let data: Record<string, any> = {};
