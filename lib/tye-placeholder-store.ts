@@ -113,14 +113,20 @@ export async function savePlaceholder(
 ): Promise<string> {
   const db = getDb();
   if (db) {
-    const ref = await db.collection(COLLECTION).add({
-      ...data,
-      createdAt: data.createdAt ?? new Date().toISOString(),
-    });
-    return ref.id;
+    try {
+      const ref = await db.collection(COLLECTION).add({
+        ...data,
+        createdAt: data.createdAt ?? new Date().toISOString(),
+      });
+      return ref.id;
+    } catch (err) {
+      console.error(
+        '[tye_placeholders] Firestore add failed — using in-memory store. Create Firestore DB in Firebase console if you need persistence.',
+        err
+      );
+    }
   }
 
-  // In-memory fallback
   const id = nextMemoryId();
   memoryStore.set(id, { ...data, id });
   return id;
@@ -132,11 +138,18 @@ export async function getPlaceholdersByDate(
 ): Promise<TyePlaceholder[]> {
   const db = getDb();
   if (db) {
-    const snap = await db
-      .collection(COLLECTION)
-      .where('forDate', '==', forDate)
-      .get();
-    return snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<TyePlaceholder, 'id'>) }));
+    try {
+      const snap = await db
+        .collection(COLLECTION)
+        .where('forDate', '==', forDate)
+        .get();
+      return snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<TyePlaceholder, 'id'>) }));
+    } catch (err) {
+      console.error(
+        '[tye_placeholders] Firestore query failed — using in-memory store only for this process.',
+        err
+      );
+    }
   }
 
   return Array.from(memoryStore.values()).filter((p) => p.forDate === forDate);
@@ -156,14 +169,21 @@ export async function getPlaceholderByReservationID(
 ): Promise<TyePlaceholder | null> {
   const db = getDb();
   if (db) {
-    const snap = await db
-      .collection(COLLECTION)
-      .where('reservationID', '==', reservationID)
-      .limit(1)
-      .get();
-    if (snap.empty) return null;
-    const doc = snap.docs[0];
-    return { id: doc.id, ...(doc.data() as Omit<TyePlaceholder, 'id'>) };
+    try {
+      const snap = await db
+        .collection(COLLECTION)
+        .where('reservationID', '==', reservationID)
+        .limit(1)
+        .get();
+      if (snap.empty) {
+        /* may exist only in memory */
+      } else {
+        const doc = snap.docs[0];
+        return { id: doc.id, ...(doc.data() as Omit<TyePlaceholder, 'id'>) };
+      }
+    } catch (err) {
+      console.error('[tye_placeholders] Firestore getPlaceholderByReservationID failed:', err);
+    }
   }
 
   for (const p of memoryStore.values()) {
@@ -179,8 +199,12 @@ export async function updatePlaceholder(
 ): Promise<void> {
   const db = getDb();
   if (db) {
-    await db.collection(COLLECTION).doc(id).update(updates as Record<string, unknown>);
-    return;
+    try {
+      await db.collection(COLLECTION).doc(id).update(updates as Record<string, unknown>);
+      return;
+    } catch (err) {
+      console.error('[tye_placeholders] Firestore update failed, merging in-memory if present:', err);
+    }
   }
 
   const existing = memoryStore.get(id);
