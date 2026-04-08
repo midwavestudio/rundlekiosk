@@ -62,9 +62,6 @@ export async function POST(request: NextRequest) {
     // Fetch full room list once so we have roomTypeID / roomTypeName for each roomID.
     const roomMeta = await fetchRoomMeta(apiV13, CLOUDBEDS_PROPERTY_ID, CLOUDBEDS_API_KEY);
 
-    // Fetch the TYE rate plan ID once.
-    const tyeRatePlanID = await resolveTyeRatePlanID(apiV13, CLOUDBEDS_PROPERTY_ID, CLOUDBEDS_API_KEY, todayStr, tomorrowStr);
-
     const summary: Record<string, {
       created: string[];
       skipped: string[];
@@ -76,53 +73,77 @@ export async function POST(request: NextRequest) {
       summary[forDate] = { created: [], skipped: [], failed: [] };
 
       for (const roomID of roomIDs) {
+        const rid = String(roomID).trim();
         // Skip if a non-cancelled placeholder already exists for this room + date.
-        const alreadyExists = await placeholderExistsForRoom(roomID, forDate);
+        const alreadyExists = await placeholderExistsForRoom(rid, forDate);
         if (alreadyExists) {
-          summary[forDate].skipped.push(roomID);
+          summary[forDate].skipped.push(rid);
           continue;
         }
 
-        const meta = roomMeta.get(String(roomID));
+        let meta = roomMeta.get(rid);
+        if (!meta) {
+          for (const [, m] of roomMeta) {
+            if (String(m.roomName).trim() === rid) {
+              meta = m;
+              break;
+            }
+          }
+        }
         const roomTypeID = meta?.roomTypeID ?? '';
         const roomTypeName = meta?.roomTypeName ?? 'Standard Room';
         const roomName = meta?.roomName ?? roomID;
 
         if (!roomTypeID) {
-          summary[forDate].failed.push({ roomID, error: 'Room not found in Cloudbeds getRooms' });
+          summary[forDate].failed.push({ roomID: rid, error: 'Room not found in Cloudbeds getRooms' });
           continue;
         }
+
+        // Same as performCloudbedsCheckIn: rate must match room type; rooms[0][roomRateID] expects rateID when present.
+        const roomRateIDStr = await resolveTyeRoomRateStr(
+          apiV13,
+          CLOUDBEDS_PROPERTY_ID,
+          CLOUDBEDS_API_KEY,
+          roomTypeID,
+          forDate,
+          checkOutDate
+        );
 
         try {
           const reservationID = await createPlaceholderReservation({
             apiV13,
             headers,
             propertyID: CLOUDBEDS_PROPERTY_ID,
-            roomID,
+            roomID: String(meta?.roomID ?? rid),
             roomTypeID,
             roomName,
             forDate,
             checkOutDate,
-            tyeRatePlanID,
+            roomRateIDStr,
           });
 
-          const docID = await savePlaceholder({
-            reservationID,
-            roomID,
-            roomName,
-            roomTypeID,
-            roomTypeName,
-            forDate,
-            checkOutDate,
-            status: 'available',
-            createdAt: new Date().toISOString(),
-          });
+          try {
+            const docID = await savePlaceholder({
+              reservationID,
+              roomID: String(meta?.roomID ?? rid),
+              roomName,
+              roomTypeID,
+              roomTypeName,
+              forDate,
+              checkOutDate,
+              status: 'available',
+              createdAt: new Date().toISOString(),
+            });
+            console.log(`TYE placeholder created: room ${roomName} date ${forDate} reservationID ${reservationID} docID ${docID}`);
+          } catch (storeErr: any) {
+            // Reservation exists in Cloudbeds — still count success; kiosk can use Cloudbeds as source of truth.
+            console.error('savePlaceholder failed (reservation exists in Cloudbeds):', storeErr);
+          }
 
-          summary[forDate].created.push(roomID);
-          console.log(`TYE placeholder created: room ${roomName} date ${forDate} reservationID ${reservationID} docID ${docID}`);
+          summary[forDate].created.push(rid);
         } catch (err: any) {
-          summary[forDate].failed.push({ roomID, error: err?.message ?? 'Unknown error' });
-          console.error(`Failed to create placeholder for room ${roomID} on ${forDate}:`, err);
+          summary[forDate].failed.push({ roomID: rid, error: err?.message ?? 'Unknown error' });
+          console.error(`Failed to create placeholder for room ${rid} on ${forDate}:`, err);
         }
       }
     }
@@ -221,33 +242,54 @@ async function fetchRoomMeta(
 }
 
 /**
- * Resolve the TYE rate plan ID. Looks for a rate plan whose name includes "TYE" or
- * has ID 227753 (the known TYE plan at Rundle Suites). Falls back to the first available plan.
+ * Same TYE rate resolution as lib/cloudbeds-checkin performCloudbedsCheckIn — Cloudbeds expects
+ * rooms[0][roomRateID] to be the rate line id (rateID), not only the rate plan id.
  */
-async function resolveTyeRatePlanID(
+async function resolveTyeRoomRateStr(
   apiV13: string,
   propertyID: string,
   apiKey: string,
+  roomTypeID: string,
   startDate: string,
   endDate: string
-): Promise<string | null> {
+): Promise<string> {
   try {
     const url = `${apiV13}/getRatePlans?propertyID=${encodeURIComponent(propertyID)}&startDate=${startDate}&endDate=${endDate}`;
     const res = await fetch(url, {
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     });
-    if (!res.ok) return '227753';
-    const data = await res.json();
-    const plans: any[] = Array.isArray(data.data) ? data.data : [];
-    const tye = plans.find(
-      (p: any) =>
-        String(p.ratePlanID ?? p.id ?? '') === '227753' ||
-        String(p.ratePlanName ?? p.name ?? '').toLowerCase().includes('tye')
-    );
-    if (tye) return String(tye.ratePlanID ?? tye.id);
-    if (plans.length > 0) return String(plans[0].ratePlanID ?? plans[0].id ?? '');
-  } catch { /* ignore */ }
-  return '227753';
+    if (!res.ok) return '';
+    const ratesData = await res.json();
+    const rates = ratesData.data || ratesData.rates || ratesData || [];
+    const arr = Array.isArray(rates) ? rates : [];
+    const roomTypeStr = String(roomTypeID);
+    const roomTypeNum = Number(roomTypeID);
+    const allRatesForRoomType = arr.filter((rate: any) => {
+      const rtID = rate.roomTypeID ?? rate.room_type_id ?? rate.roomType_id;
+      return String(rtID) === roomTypeStr || Number(rtID) === roomTypeNum;
+    });
+    const tyeRate = allRatesForRoomType.find((rate: any) => {
+      const planID = String(rate.ratePlanID ?? rate.rate_plan_id ?? rate.ratePlan_id ?? '');
+      const planName = String(rate.ratePlanName ?? rate.name ?? '').toLowerCase();
+      return planID === '227753' || Number(planID) === 227753 || planName.includes('tye');
+    });
+    let rateID: string | number | null = null;
+    let ratePlanID: string | number | null = null;
+    if (tyeRate) {
+      rateID = tyeRate.rateID ?? tyeRate.rate_id ?? tyeRate.id;
+      ratePlanID = tyeRate.ratePlanID ?? tyeRate.rate_plan_id ?? tyeRate.ratePlan_id ?? 227753;
+    } else if (allRatesForRoomType.length > 0) {
+      const available = allRatesForRoomType.filter(
+        (rate: any) => (rate.roomsAvailable == null || rate.roomsAvailable > 0) && !rate.roomBlocked
+      );
+      const fallback = available[0] ?? allRatesForRoomType[0];
+      rateID = fallback.rateID ?? fallback.rate_id ?? fallback.id;
+      ratePlanID = fallback.ratePlanID ?? fallback.rate_plan_id ?? fallback.ratePlan_id;
+    }
+    return rateID != null ? String(rateID) : ratePlanID != null ? String(ratePlanID) : '';
+  } catch {
+    return '';
+  }
 }
 
 interface CreatePlaceholderParams {
@@ -259,7 +301,7 @@ interface CreatePlaceholderParams {
   roomName: string;
   forDate: string;
   checkOutDate: string;
-  tyeRatePlanID: string | null;
+  roomRateIDStr: string;
 }
 
 /**
@@ -284,13 +326,15 @@ async function createPlaceholderReservation(p: CreatePlaceholderParams): Promise
   params.append('rooms[0][roomTypeID]', p.roomTypeID);
   params.append('rooms[0][roomID]', p.roomID);
   params.append('rooms[0][quantity]', '1');
-  if (p.tyeRatePlanID) {
-    params.append('rooms[0][roomRateID]', p.tyeRatePlanID);
+  if (p.roomRateIDStr) {
+    params.append('rooms[0][roomRateID]', p.roomRateIDStr);
   }
   params.append('adults[0][roomTypeID]', p.roomTypeID);
   params.append('adults[0][quantity]', '1');
+  params.append('adults[0][roomID]', p.roomID);
   params.append('children[0][roomTypeID]', p.roomTypeID);
   params.append('children[0][quantity]', '0');
+  params.append('children[0][roomID]', p.roomID);
 
   // TYE source code keeps Cloudbeds reports consistent.
   params.append('sourceID', 's-945658-1');

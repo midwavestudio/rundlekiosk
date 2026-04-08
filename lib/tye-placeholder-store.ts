@@ -209,7 +209,7 @@ export async function placeholderExistsForRoom(
   const all = await getPlaceholdersByDate(forDate);
   return all.some(
     (p) =>
-      p.roomID === roomID &&
+      String(p.roomID) === String(roomID) &&
       p.status !== 'cancelled'
   );
 }

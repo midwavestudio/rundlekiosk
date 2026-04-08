@@ -131,16 +131,16 @@ export default function TyePlaceholdersTab() {
   const todayPlaceholders = placeholders.filter((p) => p.forDate === today);
   const tomorrowPlaceholders = placeholders.filter((p) => p.forDate === tomorrow);
 
-  /** Room IDs that already have a placeholder for today. */
+  /** Room IDs that already have a placeholder for today (always string keys). */
   const alreadyBlockedTodayIDs = new Set(
     todayPlaceholders
       .filter((p) => p.status !== 'cancelled')
-      .map((p) => p.roomID)
+      .map((p) => String(p.roomID))
   );
   const alreadyBlockedTomorrowIDs = new Set(
     tomorrowPlaceholders
       .filter((p) => p.status !== 'cancelled')
-      .map((p) => p.roomID)
+      .map((p) => String(p.roomID))
   );
 
   const filteredRooms = allRooms.filter((r) => {
@@ -163,17 +163,18 @@ export default function TyePlaceholdersTab() {
   const totalSelected = selectedRoomIDs.size;
   const allFilteredSelected =
     filteredRooms.length > 0 &&
-    filteredRooms.every((r) => selectedRoomIDs.has(r.roomID));
+    filteredRooms.every((r) => selectedRoomIDs.has(String(r.roomID)));
 
   // ---------------------------------------------------------------------------
   // Handlers
   // ---------------------------------------------------------------------------
 
   const toggleRoom = (roomID: string) => {
+    const key = String(roomID);
     setSelectedRoomIDs((prev) => {
       const next = new Set(prev);
-      if (next.has(roomID)) next.delete(roomID);
-      else next.add(roomID);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
     setError('');
@@ -184,13 +185,13 @@ export default function TyePlaceholdersTab() {
     if (allFilteredSelected) {
       setSelectedRoomIDs((prev) => {
         const next = new Set(prev);
-        filteredRooms.forEach((r) => next.delete(r.roomID));
+        filteredRooms.forEach((r) => next.delete(String(r.roomID)));
         return next;
       });
     } else {
       setSelectedRoomIDs((prev) => {
         const next = new Set(prev);
-        filteredRooms.forEach((r) => next.add(r.roomID));
+        filteredRooms.forEach((r) => next.add(String(r.roomID)));
         return next;
       });
     }
@@ -208,21 +209,62 @@ export default function TyePlaceholdersTab() {
       const res = await fetch('/api/admin/create-tye-placeholders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ roomIDs: Array.from(selectedRoomIDs) }),
+        body: JSON.stringify({ roomIDs: Array.from(selectedRoomIDs).map(String) }),
       });
-      const data = await res.json();
-      if (data.success || data.totalCreated > 0) {
-        setStatusMessage(
-          `Done — blocked ${data.totalCreated} room(s) as TYE placeholders.` +
-            (data.totalSkipped > 0 ? ` ${data.totalSkipped} already existed.` : '') +
-            (data.totalFailed > 0 ? ` ${data.totalFailed} failed.` : '')
+      const raw = await res.text();
+      let data: Record<string, any> = {};
+      try {
+        data = raw ? JSON.parse(raw) : {};
+      } catch {
+        setError(raw.slice(0, 200) || `Invalid response (${res.status})`);
+        return;
+      }
+
+      if (!res.ok) {
+        setError(
+          typeof data.error === 'string'
+            ? data.error
+            : `Request failed (${res.status}). Check Cloudbeds credentials on the server.`
         );
+        return;
+      }
+
+      const failedDetails: string[] = [];
+      if (data.summary && typeof data.summary === 'object') {
+        for (const [, day] of Object.entries(data.summary) as [string, any][]) {
+          if (day?.failed?.length) {
+            for (const f of day.failed) {
+              failedDetails.push(`Room ${f.roomID}: ${f.error}`);
+            }
+          }
+        }
+      }
+
+      if ((data.totalCreated ?? 0) > 0) {
+        setStatusMessage(
+          `Done — created ${data.totalCreated} placeholder reservation(s) in Cloudbeds.` +
+            (data.totalSkipped > 0 ? ` Skipped ${data.totalSkipped} (already blocked).` : '') +
+            (data.totalFailed > 0 ? ` ${data.totalFailed} could not be created.` : '')
+        );
+        if (failedDetails.length > 0) {
+          setError(failedDetails.slice(0, 5).join(' · ') + (failedDetails.length > 5 ? ' …' : ''));
+        } else {
+          setError('');
+        }
         setSelectedRoomIDs(new Set());
+        await Promise.all([fetchSummary(), fetchRooms()]);
+      } else if ((data.totalFailed ?? 0) > 0 || failedDetails.length > 0) {
+        setError(
+          failedDetails.length > 0
+            ? failedDetails.join(' · ')
+            : data.error ?? 'No reservations were created. See server logs or verify Cloudbeds API access.'
+        );
+      } else if ((data.totalSkipped ?? 0) > 0) {
+        setStatusMessage(`All selected rooms were already blocked (${data.totalSkipped}). Nothing new to create.`);
         await Promise.all([fetchSummary(), fetchRooms()]);
       } else {
         setError(
-          data.error ??
-            `Created ${data.totalCreated ?? 0}, failed ${data.totalFailed ?? 0}. Check Cloudbeds credentials.`
+          data.error ?? 'No reservations were created. Verify CLOUDBEDS_API_KEY and property settings.'
         );
       }
     } catch (err: any) {
@@ -254,31 +296,6 @@ export default function TyePlaceholdersTab() {
     } finally {
       setSyncing(false);
     }
-  };
-
-  // ---------------------------------------------------------------------------
-  // Render helpers
-  // ---------------------------------------------------------------------------
-
-  const blockedBadge = (roomID: string) => {
-    const blockedToday = alreadyBlockedTodayIDs.has(roomID);
-    const blockedTomorrow = alreadyBlockedTomorrowIDs.has(roomID);
-    if (!blockedToday && !blockedTomorrow) return null;
-    const label = blockedToday && blockedTomorrow ? 'Today + Tomorrow' : blockedToday ? 'Today' : 'Tomorrow';
-    return (
-      <span style={{
-        fontSize: '10px',
-        fontWeight: 700,
-        padding: '2px 7px',
-        borderRadius: '10px',
-        background: '#dcfce7',
-        color: '#15803d',
-        marginLeft: '6px',
-        whiteSpace: 'nowrap',
-      }}>
-        TYE {label}
-      </span>
-    );
   };
 
   // ---------------------------------------------------------------------------
@@ -364,6 +381,7 @@ export default function TyePlaceholdersTab() {
           </div>
 
           <button
+            type="button"
             onClick={toggleSelectAll}
             disabled={isLoading || filteredRooms.length === 0}
             style={{
@@ -394,6 +412,7 @@ export default function TyePlaceholdersTab() {
           </div>
 
           <button
+            type="button"
             onClick={handleCreate}
             disabled={creating || totalSelected === 0}
             style={{
@@ -411,9 +430,9 @@ export default function TyePlaceholdersTab() {
             }}
           >
             {creating
-              ? 'Blocking rooms…'
+              ? 'Creating in Cloudbeds…'
               : totalSelected > 0
-              ? `Block ${totalSelected} Room${totalSelected !== 1 ? 's' : ''} as TYE`
+              ? 'Block for TYE'
               : 'Select rooms to block'}
           </button>
         </div>
@@ -436,16 +455,18 @@ export default function TyePlaceholdersTab() {
                 </div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
                   {rooms.map((room) => {
-                    const selected = selectedRoomIDs.has(room.roomID);
-                    const blockedToday = alreadyBlockedTodayIDs.has(room.roomID);
-                    const blockedTomorrow = alreadyBlockedTomorrowIDs.has(room.roomID);
+                    const rid = String(room.roomID);
+                    const selected = selectedRoomIDs.has(rid);
+                    const blockedToday = alreadyBlockedTodayIDs.has(rid);
+                    const blockedTomorrow = alreadyBlockedTomorrowIDs.has(rid);
                     const fullyBlocked = blockedToday && blockedTomorrow;
 
                     return (
                       <button
-                        key={room.roomID}
-                        onClick={() => toggleRoom(room.roomID)}
-                        title={fullyBlocked ? 'Already blocked for today and tomorrow' : `Room ID: ${room.roomID}`}
+                        type="button"
+                        key={rid}
+                        onClick={() => toggleRoom(rid)}
+                        title={fullyBlocked ? 'Already blocked for today and tomorrow' : `Room ID: ${rid}`}
                         style={{
                           position: 'relative',
                           padding: '10px 14px',
@@ -530,6 +551,7 @@ export default function TyePlaceholdersTab() {
       {/* Sync button */}
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '32px' }}>
         <button
+          type="button"
           onClick={handleSync}
           disabled={syncing}
           style={{
