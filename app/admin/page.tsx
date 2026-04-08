@@ -1,43 +1,16 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { initializeApp } from 'firebase/app';
-import {
-  getAuth,
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  signOut,
-  onAuthStateChanged,
-  User,
-  Auth,
-  setPersistence,
-  browserLocalPersistence,
-} from 'firebase/auth';
+import { useState, useEffect, useRef } from 'react';
+import type { User, Auth } from 'firebase/auth';
 import Dashboard from '../components/Dashboard';
 
-// Firebase configuration
-const firebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY || '',
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN || '',
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || '',
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET || '',
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || '',
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID || '',
-};
-
-// Initialize Firebase
-let app: ReturnType<typeof initializeApp> | undefined;
-let auth: Auth | null = null;
-
-try {
-  app = initializeApp(firebaseConfig);
-  auth = getAuth(app);
-} catch (error) {
-  console.error('Firebase initialization error:', error);
-  auth = null;
-}
-
+/**
+ * Firebase client SDK must not run at module scope — Next.js pre-renders this page on the
+ * server where browser-only APIs are missing, which caused TypeError: e[o] is not a function
+ * during page generation. We lazy-import firebase/* only inside useEffect (client-only).
+ */
 export default function AdminPage() {
+  const authRef = useRef<Auth | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -47,30 +20,67 @@ export default function AdminPage() {
   const [initializing, setInitializing] = useState(true);
 
   useEffect(() => {
-    if (!auth) {
-      setInitializing(false);
-      setError('Firebase is not properly configured. Please check your environment variables.');
-      return;
-    }
+    let unsubscribe: (() => void) | undefined;
+    let cancelled = false;
 
-    // Set persistence to LOCAL (stays logged in)
-    const currentAuth = auth; // Capture for TypeScript
-    setPersistence(currentAuth, browserLocalPersistence).then(() => {
-      const unsubscribe = onAuthStateChanged(currentAuth, (user) => {
-        setUser(user);
-        setInitializing(false);
-      });
+    (async () => {
+      try {
+        const { initializeApp, getApps, getApp } = await import('firebase/app');
+        const {
+          getAuth,
+          onAuthStateChanged,
+          setPersistence,
+          browserLocalPersistence,
+        } = await import('firebase/auth');
 
-      return () => unsubscribe();
-    }).catch((error) => {
-      console.error('Auth persistence error:', error);
-      setInitializing(false);
-    });
+        const firebaseConfig = {
+          apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY || '',
+          authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN || '',
+          projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || '',
+          storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET || '',
+          messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || '',
+          appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID || '',
+        };
+
+        if (!firebaseConfig.apiKey || !firebaseConfig.projectId) {
+          if (!cancelled) {
+            setError('Firebase is not properly configured. Please check your environment variables.');
+            setInitializing(false);
+          }
+          return;
+        }
+
+        const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        authRef.current = auth;
+
+        await setPersistence(auth, browserLocalPersistence);
+
+        unsubscribe = onAuthStateChanged(auth, (nextUser) => {
+          if (!cancelled) {
+            setUser(nextUser);
+            setInitializing(false);
+          }
+        });
+      } catch (err) {
+        console.error('Firebase initialization error:', err);
+        if (!cancelled) {
+          setError('Firebase failed to initialize. Please check your environment variables.');
+          setInitializing(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
+    const auth = authRef.current;
     if (!auth) {
       setError('Firebase is not properly configured. Please check your environment variables.');
       return;
@@ -80,23 +90,24 @@ export default function AdminPage() {
     setError('');
 
     try {
+      const { signInWithEmailAndPassword, createUserWithEmailAndPassword } = await import(
+        'firebase/auth'
+      );
       if (isSignUp) {
-        // Create new account
         await createUserWithEmailAndPassword(auth, email, password);
       } else {
-        // Sign in
         await signInWithEmailAndPassword(auth, email, password);
       }
-    } catch (err: any) {
-      // User-friendly error messages
-      let errorMessage = err.message;
-      if (err.code === 'auth/email-already-in-use') {
+    } catch (err: unknown) {
+      const e = err as { code?: string; message?: string };
+      let errorMessage = e.message ?? 'Sign-in failed';
+      if (e.code === 'auth/email-already-in-use') {
         errorMessage = 'This email is already registered. Try signing in instead.';
-      } else if (err.code === 'auth/weak-password') {
+      } else if (e.code === 'auth/weak-password') {
         errorMessage = 'Password should be at least 6 characters.';
-      } else if (err.code === 'auth/user-not-found') {
+      } else if (e.code === 'auth/user-not-found') {
         errorMessage = 'No account found with this email. Try creating an account.';
-      } else if (err.code === 'auth/wrong-password') {
+      } else if (e.code === 'auth/wrong-password') {
         errorMessage = 'Incorrect password. Please try again.';
       }
       setError(errorMessage);
@@ -106,16 +117,17 @@ export default function AdminPage() {
   };
 
   const handleLogout = async () => {
+    const auth = authRef.current;
     if (!auth) return;
-    
+
     try {
+      const { signOut } = await import('firebase/auth');
       await signOut(auth);
-    } catch (err: any) {
+    } catch (err) {
       console.error('Logout error:', err);
     }
   };
 
-  // Show loading while checking auth state
   if (initializing) {
     return (
       <div className="container">
@@ -128,7 +140,6 @@ export default function AdminPage() {
     );
   }
 
-  // Show dashboard if logged in
   if (user) {
     return <Dashboard user={user} onLogout={handleLogout} />;
   }
@@ -185,6 +196,7 @@ export default function AdminPage() {
 
       <div style={{ textAlign: 'center', marginTop: '20px' }}>
         <button
+          type="button"
           onClick={() => {
             setIsSignUp(!isSignUp);
             setError('');
@@ -202,22 +214,24 @@ export default function AdminPage() {
         </button>
       </div>
 
-      <div style={{ 
-        textAlign: 'center', 
-        marginTop: '30px', 
-        padding: '15px',
-        background: '#f5f5f5',
-        borderRadius: '8px',
-        fontSize: '14px',
-        color: '#666'
-      }}>
+      <div
+        style={{
+          textAlign: 'center',
+          marginTop: '30px',
+          padding: '15px',
+          background: '#f5f5f5',
+          borderRadius: '8px',
+          fontSize: '14px',
+          color: '#666',
+        }}
+      >
         <p style={{ margin: 0 }}>
-          <strong>Guest Kiosk:</strong> <a href="/" style={{ color: '#667eea' }}>Go to Guest Check-In/Out</a>
+          <strong>Guest Kiosk:</strong>{' '}
+          <a href="/" style={{ color: '#667eea' }}>
+            Go to Guest Check-In/Out
+          </a>
         </p>
       </div>
     </div>
   );
 }
-
-
-

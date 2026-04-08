@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { User } from 'firebase/auth';
+import type { User } from 'firebase/auth';
 import ArrivalsTab from './ArrivalsTab';
 import DeparturesTab from './DeparturesTab';
 import CheckInModal from './CheckInModal';

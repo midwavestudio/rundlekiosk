@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAvailablePlaceholdersByDate } from '@/lib/tye-placeholder-store';
 
+export const dynamic = 'force-dynamic';
+
 /**
  * Merge every `data[].rooms` array from getRooms — Cloudbeds returns one object per room type;
  * using only `data[0].rooms` hides all other types (e.g. only Queen + first type showed in the dropdown).

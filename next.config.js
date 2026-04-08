@@ -1,23 +1,10 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  // API routes will be in /app/api
-  async rewrites() {
-    return [
-      {
-        source: '/api/:path*',
-        destination: '/api/:path*',
-      },
-    ];
+  experimental: {
+    // Next 14: keep firebase-admin as Node external (avoids bundling issues with Admin SDK).
+    serverComponentsExternalPackages: ['firebase-admin'],
   },
 };
 
 module.exports = nextConfig;
-
-
-
-
-
-
-
-

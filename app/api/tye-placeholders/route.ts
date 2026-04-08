@@ -4,6 +4,8 @@ import {
   getPlaceholdersByDate,
 } from '@/lib/tye-placeholder-store';
 
+export const dynamic = 'force-dynamic';
+
 function localDateYmd(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
