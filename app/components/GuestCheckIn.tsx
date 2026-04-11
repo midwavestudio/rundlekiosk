@@ -59,13 +59,8 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
   const [loading, setLoading] = useState(false);
   const [availableRooms, setAvailableRooms] = useState<Room[]>([]);
   const [loadingRooms, setLoadingRooms] = useState(true);
-  const [captureDebugLog, setCaptureDebugLog] = useState(false);
   /** First night of stay: yesterday (late check-in) or tonight (default). */
   const [stayStartNight, setStayStartNight] = useState<'yesterday' | 'today'>('today');
-  const [debugTrailForDeveloper, setDebugTrailForDeveloper] = useState<{
-    requestRoom: string;
-    response: any;
-  } | null>(null);
 
   // Fetch available rooms on component mount
   useEffect(() => {
@@ -186,7 +181,6 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
             checkOutDate: checkOutYmd,
             // TYE placeholder path: skip postReservation and assign the existing booking
             ...(placeholderReservationID ? { placeholderReservationID } : {}),
-            debug: captureDebugLog,
           }),
         });
 
@@ -200,10 +194,6 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
               ? 'Invalid response from check-in service'
               : `Check-in request failed (${cloudbedsResponse.status})`
           );
-        }
-
-        if (captureDebugLog && cloudbedsResult.debugTrail) {
-          setDebugTrailForDeveloper({ requestRoom: roomIdentifier, response: cloudbedsResult });
         }
 
         if (!cloudbedsResponse.ok || cloudbedsResult.success !== true) {
@@ -402,15 +392,6 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
           )}
         </div>
 
-        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', fontSize: 'clamp(14px, 2vw, 16px)', cursor: 'pointer' }}>
-          <input
-            type="checkbox"
-            checked={captureDebugLog}
-            onChange={(e) => setCaptureDebugLog(e.target.checked)}
-          />
-          Capture response log for developer (use when room assignment is wrong)
-        </label>
-
         <button type="submit" className="submit-button" disabled={loading || loadingRooms || availableRooms.length === 0}>
           {loading ? (
             <>
@@ -422,37 +403,6 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
           )}
         </button>
       </form>
-
-      {debugTrailForDeveloper && (
-        <div style={{ marginTop: '16px', padding: '12px', background: '#f5f5f5', borderRadius: '8px', border: '1px solid #ddd' }}>
-          <p style={{ margin: '0 0 8px 0', fontWeight: 600 }}>Response log for developer</p>
-          <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#555' }}>
-            Copy the text below and send it to your developer so they can see what Cloudbeds returned.
-          </p>
-          <textarea
-            readOnly
-            value={JSON.stringify(debugTrailForDeveloper, null, 2)}
-            style={{ width: '100%', minHeight: '200px', fontFamily: 'monospace', fontSize: '12px', padding: '8px', boxSizing: 'border-box' }}
-          />
-          <button
-            type="button"
-            onClick={() => {
-              navigator.clipboard.writeText(JSON.stringify(debugTrailForDeveloper, null, 2));
-              alert('Copied to clipboard. Send this to your developer.');
-            }}
-            style={{ marginTop: '8px', padding: '8px 16px', cursor: 'pointer' }}
-          >
-            Copy to clipboard
-          </button>
-          <button
-            type="button"
-            onClick={() => setDebugTrailForDeveloper(null)}
-            style={{ marginTop: '8px', marginLeft: '8px', padding: '8px 16px', cursor: 'pointer' }}
-          >
-            Dismiss
-          </button>
-        </div>
-      )}
 
       <div className="kiosk-footer">
         <p>All fields marked with * are required</p>
