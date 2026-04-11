@@ -1,6 +1,27 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { performCloudbedsCheckIn } from '@/lib/cloudbeds-checkin';
 
+/** Structured admin-facing error log for check-in failures. Visible in server logs / hosting dashboard. */
+function logCheckInFailure(context: {
+  guest?: string;
+  room?: string;
+  reservationID?: string;
+  error: string;
+  debugTrail?: unknown;
+}) {
+  console.error(
+    '[CHECK-IN FAILURE] Review required:',
+    JSON.stringify({
+      timestamp: new Date().toISOString(),
+      guest: context.guest ?? 'unknown',
+      room: context.room ?? 'unknown',
+      reservationID: context.reservationID ?? 'none',
+      error: context.error,
+      debugTrail: context.debugTrail ?? [],
+    }, null, 2)
+  );
+}
+
 export async function POST(request: NextRequest) {
   let debugLog: Array<{ step: string; request?: unknown; response?: unknown; error?: string }> | undefined;
   try {
@@ -52,10 +73,18 @@ export async function POST(request: NextRequest) {
       );
       const assignData = await assignRes.json();
       if (!assignRes.ok || assignData.success !== true) {
+        const assignErr = assignData.error ?? 'Placeholder assignment failed';
+        logCheckInFailure({
+          guest: `${firstName} ${lastName}`,
+          room: roomName,
+          reservationID: placeholderReservationID,
+          error: assignErr,
+          debugTrail: assignData.debugTrail,
+        });
         return NextResponse.json(
           {
             success: false,
-            error: assignData.error ?? 'Placeholder assignment failed',
+            error: assignErr,
             debugTrail: assignData.debugTrail,
           },
           { status: assignRes.ok ? 500 : assignRes.status }
@@ -68,6 +97,7 @@ export async function POST(request: NextRequest) {
         roomName: assignData.roomName,
         message: assignData.message,
         placeholderAssigned: true,
+        ...(assignData.reservationStatus ? { reservationStatus: assignData.reservationStatus } : {}),
         debugTrail: enableDebug ? assignData.debugTrail : undefined,
       });
     }
@@ -106,7 +136,14 @@ export async function POST(request: NextRequest) {
 
       if (!checkInResponse.ok) {
         const errorData = await checkInResponse.json().catch(() => ({}));
-        console.error('Cloudbeds check-in failed:', errorData);
+        const errMsg = errorData?.message ?? `HTTP ${checkInResponse.status}`;
+        logCheckInFailure({
+          guest: `${firstName} ${lastName}`,
+          room: roomName,
+          reservationID: existingReservationID,
+          error: `putReservation status=checked_in failed: ${errMsg}`,
+          debugTrail: errorData,
+        });
         throw new Error('Failed to check in guest in Cloudbeds');
       }
 
@@ -140,6 +177,7 @@ export async function POST(request: NextRequest) {
         roomName: result.roomName,
         message: result.message,
       };
+      if (result.reservationStatus) response.reservationStatus = result.reservationStatus;
       if (debugLog && debugLog.length > 0) response.debugTrail = debugLog;
       return NextResponse.json(response);
     } catch (createError: any) {
@@ -153,10 +191,14 @@ export async function POST(request: NextRequest) {
     }
 
   } catch (error: any) {
-    console.error('Cloudbeds check-in error:', error);
+    const errMsg = error.message || 'Failed to check in to Cloudbeds';
+    logCheckInFailure({
+      error: errMsg,
+      debugTrail: debugLog,
+    });
     const errResponse: Record<string, unknown> = {
       success: false,
-      error: error.message || 'Failed to check in to Cloudbeds',
+      error: errMsg,
       details: error.toString(),
     };
     if (debugLog && debugLog.length > 0) errResponse.debugTrail = debugLog;

@@ -15,6 +15,15 @@ body {
   padding: 20px;
 }
 
+/* Login / narrow cards stay centered; full-page apps must opt in to full width (body flex otherwise shrink-wraps children). */
+body > .admin-dashboard-shell {
+  flex: 1 1 100%;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  align-self: stretch;
+}
+
 /* iPad optimizations */
 @media screen and (min-width: 768px) {
   body {

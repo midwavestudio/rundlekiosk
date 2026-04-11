@@ -271,6 +271,18 @@ async function postPaymentWithType(
   return { ok, data: paymentResult, raw: paymentText };
 }
 
+export type SettleReservationFolioOptions = {
+  /** From postReservation only, first settle: invoice still reads $0 — use hint once to avoid double-charging. */
+  amountDueHint?: number | null;
+  /**
+   * TYE placeholder assign: after a successful postPayment, getReservationInvoiceInformation often
+   * still returns the same "due" (stale total vs balance). The strict duplicate guard would abort the
+   * whole assign flow even though guest/room updates never run. When true: poll longer, then exit
+   * successfully if payment succeeded — do not throw for stale invoice reads.
+   */
+  trustStaleInvoiceAfterSuccessfulPayment?: boolean;
+};
+
 /**
  * Pay down folio until Cloudbeds reports no meaningful balance — required before checked_in when
  * property enforces "collect full amount prior to checking in".
@@ -285,7 +297,7 @@ export async function settleReservationFolio(
   reservationID: string,
   guestLabel: string,
   log: (step: string, request?: unknown, response?: unknown, error?: string) => void,
-  options?: { amountDueHint?: number | null }
+  options?: SettleReservationFolioOptions
 ): Promise<void> {
   const types = await resolvePaymentTypesToTry(apiV13, propertyID, apiKey);
   const hint =
@@ -319,6 +331,21 @@ export async function settleReservationFolio(
     }
     if (amountPostedSuccessfully != null && Math.abs(balance - amountPostedSuccessfully) < 0.05) {
       log('4_settleFolio_stale_same_due_after_payment', { balance, lastPostedAmount: amountPostedSuccessfully });
+      if (options?.trustStaleInvoiceAfterSuccessfulPayment) {
+        for (let p = 0; p < 15; p++) {
+          await sleep(400);
+          const b = await readOutstandingBalance(apiV13, propertyID, apiKey, reservationID);
+          if (b <= 0.02) {
+            log('4_settleFolio_stale_resolved_after_poll', { attempts: p + 1, balance: b });
+            return;
+          }
+        }
+        log('4_settleFolio_trust_post_exit_stale_invoice', {
+          balance,
+          note: 'postPayment succeeded; invoice still echoes prior due — continuing assign flow',
+        });
+        return;
+      }
       throw new Error(
         'Automatic payment stopped: the folio still shows the same amount due after CLC was posted, which would create duplicate charges. In Cloudbeds, remove duplicate CLC lines on this reservation if needed, then finish from the dashboard or try again.'
       );
@@ -357,6 +384,16 @@ export async function settleReservationFolio(
 
   const finalBal = await readOutstandingBalance(apiV13, propertyID, apiKey, reservationID);
   if (finalBal > 0.01) {
+    if (
+      options?.trustStaleInvoiceAfterSuccessfulPayment &&
+      amountPostedSuccessfully != null
+    ) {
+      log('4_settleFolio_trust_exit_despite_final_invoice', {
+        finalBal,
+        lastPostedAmount: amountPostedSuccessfully,
+      });
+      return;
+    }
     throw new Error(
       `There is a remaining balance on this reservation (${finalBal.toFixed(2)}). Payment could not be posted automatically — check Cloudbeds payment methods (CLC/cash) or contact support.`
     );
@@ -559,6 +596,8 @@ export interface PerformCheckInResult {
   /** Present when stopAfterReservationCreate completed (placeholder flow). */
   roomTypeID?: string;
   roomTypeName?: string;
+  /** When the physical room was not bookable but an unassigned reservation was created and paid (stay confirmed, not checked in). */
+  reservationStatus?: 'checked_in' | 'confirmed';
 }
 
 export async function performCloudbedsCheckIn(params: PerformCheckInParams): Promise<PerformCheckInResult> {
@@ -731,92 +770,108 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   const roomTypeIDStr = String(roomTypeID ?? '');
   const roomRateIDStr = rateID != null ? String(rateID) : ratePlanID != null ? String(ratePlanID) : '';
 
-  // Step 3: Create reservation
-  const reservationParams = new URLSearchParams();
-  reservationParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
-  reservationParams.append('startDate', checkInDate);
-  reservationParams.append('endDate', checkOutDate);
-  reservationParams.append('guestFirstName', guestFirstName);
-  reservationParams.append('guestLastName', guestLastName);
-  reservationParams.append('guestCountry', 'US');
-  reservationParams.append('guestZip', '00000');
-  reservationParams.append(
-    'guestEmail',
-    (email != null && String(email).trim() !== '' ? String(email).trim() : buildGuestSyntheticEmail(guestFirstName, guestLastName))
-  );
-  reservationParams.append('guestPhone', phoneNumber || '000-000-0000');
-  reservationParams.append('paymentMethod', 'CLC');
-  reservationParams.append('rooms[0][roomTypeID]', roomTypeIDStr);
-  reservationParams.append('rooms[0][quantity]', '1');
-  if (roomRateIDStr) reservationParams.append('rooms[0][roomRateID]', roomRateIDStr);
-  reservationParams.append('adults[0][roomTypeID]', roomTypeIDStr);
-  reservationParams.append('adults[0][quantity]', '1');
-  reservationParams.append('children[0][roomTypeID]', roomTypeIDStr);
-  reservationParams.append('children[0][quantity]', '0');
-  reservationParams.append('sourceID', 's-945658-1');
   // Prefer stay-window room id from getRooms(startDate,endDate); Cloudbeds uses that inventory for the booking dates.
   const roomIdForCreate = roomIdForStayPeriod ?? actualRoomID;
-  // Book a specific physical room when allowed (MyBookings / property settings). Reduces unassigned + postRoomAssign needs.
-  if (process.env.CLOUDBEDS_SKIP_POST_RESERVATION_ROOM_ID !== '1' && roomIdForCreate != null) {
-    const rid = String(roomIdForCreate);
-    reservationParams.append('rooms[0][roomID]', rid);
-    reservationParams.append('adults[0][roomID]', rid);
-    reservationParams.append('children[0][roomID]', rid);
-  }
+  const canAttachPhysicalRoomToReservation =
+    process.env.CLOUDBEDS_SKIP_POST_RESERVATION_ROOM_ID !== '1' && roomIdForCreate != null;
 
-  log('3_postReservation_request', {
-    url: `${apiV13}/postReservation`,
-    body: {
-      roomTypeID: roomTypeIDStr,
-      roomID: roomIdForCreate != null ? String(roomIdForCreate) : undefined,
-      roomRateID: roomRateIDStr || undefined,
-      startDate: checkInDate,
-      endDate: checkOutDate,
-      guestFirstName: guestFirstName,
-      guestLastName: guestLastName,
-    },
-  });
-
-  const reservationResponse = await fetch(`${apiV13}/postReservation`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: reservationParams.toString(),
-  });
-
-  const responseText = await reservationResponse.text();
-  log('3_postReservation_response', {
-    status: reservationResponse.status,
-    body: (() => {
-      try {
-        return JSON.parse(responseText);
-      } catch {
-        return responseText;
-      }
-    })(),
-  });
-  if (!reservationResponse.ok) {
-    let errorData: any = {};
-    try {
-      errorData = JSON.parse(responseText);
-    } catch {
-      errorData = { message: responseText };
-    }
-    throw new Error(
-      errorData.message || responseText || 'Failed to create reservation in Cloudbeds'
+  const buildReservationParams = (attachPhysicalRoom: boolean): URLSearchParams => {
+    const reservationParams = new URLSearchParams();
+    reservationParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+    reservationParams.append('startDate', checkInDate);
+    reservationParams.append('endDate', checkOutDate);
+    reservationParams.append('guestFirstName', guestFirstName);
+    reservationParams.append('guestLastName', guestLastName);
+    reservationParams.append('guestCountry', 'US');
+    reservationParams.append('guestZip', '00000');
+    reservationParams.append(
+      'guestEmail',
+      (email != null && String(email).trim() !== '' ? String(email).trim() : buildGuestSyntheticEmail(guestFirstName, guestLastName))
     );
-  }
+    reservationParams.append('guestPhone', phoneNumber || '000-000-0000');
+    reservationParams.append('paymentMethod', 'CLC');
+    reservationParams.append('rooms[0][roomTypeID]', roomTypeIDStr);
+    reservationParams.append('rooms[0][quantity]', '1');
+    if (roomRateIDStr) reservationParams.append('rooms[0][roomRateID]', roomRateIDStr);
+    reservationParams.append('adults[0][roomTypeID]', roomTypeIDStr);
+    reservationParams.append('adults[0][quantity]', '1');
+    reservationParams.append('children[0][roomTypeID]', roomTypeIDStr);
+    reservationParams.append('children[0][quantity]', '0');
+    reservationParams.append('sourceID', 's-945658-1');
+    if (attachPhysicalRoom && roomIdForCreate != null) {
+      const rid = String(roomIdForCreate);
+      reservationParams.append('rooms[0][roomID]', rid);
+      reservationParams.append('adults[0][roomID]', rid);
+      reservationParams.append('children[0][roomID]', rid);
+    }
+    return reservationParams;
+  };
 
+  // Step 3: Create reservation — try with a specific room first; if Cloudbeds rejects (e.g. prior guest still in-house),
+  // retry without a physical room ID so inventory can still be booked as confirmed + paid; staff assigns the room later.
   let reservationData: any = {};
-  try {
-    reservationData = JSON.parse(responseText);
-  } catch {
-    throw new Error(`Invalid response from Cloudbeds: ${responseText}`);
-  }
-  if (!reservationData.success) {
-    throw new Error(reservationData.message || 'Reservation creation failed');
+  let confirmedPayOnly = false;
+
+  const runPostReservation = async (attachPhysicalRoom: boolean): Promise<{ ok: boolean; text: string; data: any }> => {
+    const reservationParams = buildReservationParams(attachPhysicalRoom);
+    log('3_postReservation_request', {
+      url: `${apiV13}/postReservation`,
+      body: {
+        roomTypeID: roomTypeIDStr,
+        roomID: attachPhysicalRoom && roomIdForCreate != null ? String(roomIdForCreate) : undefined,
+        roomRateID: roomRateIDStr || undefined,
+        startDate: checkInDate,
+        endDate: checkOutDate,
+        guestFirstName: guestFirstName,
+        guestLastName: guestLastName,
+        attachPhysicalRoom,
+      },
+    });
+    const reservationResponse = await fetch(`${apiV13}/postReservation`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: reservationParams.toString(),
+    });
+    const responseText = await reservationResponse.text();
+    let parsed: any = {};
+    try {
+      parsed = JSON.parse(responseText);
+    } catch {
+      parsed = { success: false, message: responseText };
+    }
+    log('3_postReservation_response', {
+      status: reservationResponse.status,
+      attachPhysicalRoom,
+      body: parsed,
+    });
+    const ok = reservationResponse.ok && parsed.success === true;
+    return { ok, text: responseText, data: parsed };
+  };
+
+  const first = await runPostReservation(canAttachPhysicalRoomToReservation);
+  if (first.ok) {
+    reservationData = first.data;
+  } else if (canAttachPhysicalRoomToReservation) {
+    const second = await runPostReservation(false);
+    if (!second.ok) {
+      const msg =
+        second.data?.message ||
+        first.data?.message ||
+        first.text ||
+        'Failed to create reservation in Cloudbeds';
+      throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
+    }
+    reservationData = second.data;
+    confirmedPayOnly = true;
+    log('3_postReservation_fallback_no_physical_room', {
+      note: 'Physical room was not available for postReservation; created unassigned reservation for payment as confirmed',
+    });
+  } else {
+    const msg = first.data?.message || first.text || 'Failed to create reservation in Cloudbeds';
+    throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
   }
 
   const reservationID = reservationData.data?.reservationID || reservationData.reservationID;
@@ -838,6 +893,29 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       message: 'TYE placeholder reservation created in Cloudbeds',
       roomTypeID: roomTypeID != null ? String(roomTypeID) : undefined,
       roomTypeName: roomTypeName || undefined,
+    };
+  }
+
+  // Physical room was not bookable for these dates, but an unassigned reservation was created: collect payment and leave status confirmed (no check-in / room assign).
+  if (confirmedPayOnly) {
+    const postReservationAmountHint = extractPostReservationAmountHint(reservationData);
+    await settleReservationFolio(
+      apiV13,
+      CLOUDBEDS_PROPERTY_ID,
+      CLOUDBEDS_API_KEY,
+      String(reservationID),
+      `${guestFirstName} ${guestLastName}`,
+      log,
+      { amountDueHint: postReservationAmountHint }
+    );
+    return {
+      success: true,
+      guestID,
+      reservationID: String(reservationID),
+      roomName: String(selectedRoomName ?? roomName),
+      message:
+        'Reservation is confirmed and paid. The selected room is not available to check into yet; staff can assign it in Cloudbeds when the prior guest departs.',
+      reservationStatus: 'confirmed',
     };
   }
 
@@ -1181,5 +1259,6 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     reservationID: String(reservationID),
     roomName,
     message: 'Guest successfully checked in to Cloudbeds',
+    reservationStatus: 'checked_in',
   };
 }

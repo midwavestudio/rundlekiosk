@@ -77,12 +77,146 @@ async function fetchAllRoomsPages(
   return merged;
 }
 
+/**
+ * Rooms actually free for checkIn→checkOut (Cloudbeds inventory). This is the authoritative
+ * source for walk-in / block selection — unlike "all getRooms minus checked_in", which misses
+ * occupied rooms when assignments live under different API fields or statuses.
+ */
+async function fetchAllUnassignedRooms(
+  apiV13: string,
+  propertyID: string,
+  headers: HeadersInit,
+  checkIn: string,
+  checkOut: string
+): Promise<any[]> {
+  const merged: any[] = [];
+  const seen = new Set<string>();
+  const pageSize = 500;
+  let pageNumber = 1;
+  const maxPages = 50;
+
+  for (;;) {
+    const url = `${apiV13}/getRoomsUnassigned?propertyID=${encodeURIComponent(propertyID)}&checkIn=${encodeURIComponent(checkIn)}&checkOut=${encodeURIComponent(checkOut)}&pageNumber=${pageNumber}&pageSize=${pageSize}`;
+    const res = await fetch(url, { method: 'GET', headers });
+    if (!res.ok) {
+      if (pageNumber === 1) {
+        console.warn('getRoomsUnassigned failed:', res.status, await res.text().catch(() => ''));
+      }
+      break;
+    }
+    const roomsData = await res.json();
+    const batch = parseAllRoomsFromGetRoomsJson(roomsData);
+    if (batch.length === 0) break;
+
+    let newCount = 0;
+    for (const room of batch) {
+      const id = String(room?.roomID ?? room?.id ?? '');
+      const key = id || `${room?.roomName ?? ''}-${room?.roomTypeID ?? ''}`;
+      if (key && !seen.has(key)) {
+        seen.add(key);
+        merged.push(room);
+        newCount += 1;
+      }
+    }
+    if (newCount === 0) break;
+    if (batch.length < pageSize) break;
+    pageNumber += 1;
+    if (pageNumber > maxPages) break;
+  }
+  return merged;
+}
+
 /** Returns YYYY-MM-DD in server local time (not UTC). */
 function getLocalDateStr(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
+}
+
+/** Cloudbeds list responses vary: data[], data.reservations, or top-level array. */
+function extractReservationList(j: any): any[] {
+  if (!j) return [];
+  if (Array.isArray(j.data)) return j.data;
+  if (Array.isArray(j.data?.reservations)) return j.data.reservations;
+  if (Array.isArray(j.data?.data)) return j.data.data;
+  if (Array.isArray(j.reservations)) return j.reservations;
+  if (Array.isArray(j)) return j;
+  return [];
+}
+
+/**
+ * All checked-in reservations can span many pages — a single fetch misses most in-house guests,
+ * so occupied rooms incorrectly appear as "available".
+ */
+/** List endpoint may put room lines under `rooms`, `assigned`, or top-level — merge like cloudbeds-checkout. */
+function mergeReservationRoomRows(reservation: any): any[] {
+  const out: any[] = [];
+  const seen = new Set<string>();
+  for (const key of ['assigned', 'rooms'] as const) {
+    const arr = reservation?.[key];
+    if (!Array.isArray(arr)) continue;
+    for (const r of arr) {
+      if (!r || typeof r !== 'object') continue;
+      const id = `${r.subReservationID ?? ''}|${r.roomID ?? ''}|${r.reservationRoomID ?? ''}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push(r);
+    }
+  }
+  return out;
+}
+
+async function fetchOccupiedRoomKeysFromCheckedIn(
+  apiV13: string,
+  propertyID: string,
+  headers: HeadersInit,
+  referenceDateYmd: string
+): Promise<{ ids: Set<string>; names: Set<string> }> {
+  const occupiedRoomIDs = new Set<string>();
+  /** Lowercased trimmed display names — Cloudbeds sometimes varies casing/spacing. */
+  const occupiedRoomNames = new Set<string>();
+
+  const normName = (s: string) => s.trim().toLowerCase();
+
+  const addFromReservation = (res: any) => {
+    for (const r of mergeReservationRoomRows(res)) {
+      if (r.roomID) occupiedRoomIDs.add(String(r.roomID).trim());
+      if (r.roomName) occupiedRoomNames.add(normName(String(r.roomName)));
+      const rn = r.roomNumber ?? r.room_number;
+      if (rn != null && String(rn).trim() !== '') occupiedRoomNames.add(normName(String(rn)));
+    }
+    if (res.roomID) occupiedRoomIDs.add(String(res.roomID).trim());
+    if (res.roomName) occupiedRoomNames.add(normName(String(res.roomName)));
+  };
+
+  let pageNumber = 1;
+  const pageSize = 500;
+  const maxPages = 50;
+
+  for (;;) {
+    const url = `${apiV13}/getReservations?propertyID=${encodeURIComponent(propertyID)}&status=checked_in&pageNumber=${pageNumber}&pageSize=${pageSize}`;
+    const res = await fetch(url, { method: 'GET', headers });
+    if (!res.ok) {
+      if (pageNumber === 1) console.warn('getReservations checked_in failed:', res.status);
+      break;
+    }
+    const j = await res.json();
+    const list: any[] = extractReservationList(j);
+    if (list.length === 0) break;
+
+    const staying = list.filter((r: any) => {
+      const out = r.endDate ?? r.checkOutDate;
+      return out && String(out) >= referenceDateYmd;
+    });
+    staying.forEach(addFromReservation);
+
+    if (list.length < pageSize) break;
+    pageNumber += 1;
+    if (pageNumber > maxPages) break;
+  }
+
+  return { ids: occupiedRoomIDs, names: occupiedRoomNames };
 }
 
 /**
@@ -174,15 +308,49 @@ export async function GET(request: NextRequest) {
       };
     }
 
-    // PRIMARY: getRooms + filter by reservations — shows ALL rooms that are not occupied today
+    // PRIMARY: getRoomsUnassigned(checkIn, checkOut) — Cloudbeds inventory for this night only.
+    // This excludes occupied rooms and booked inventory correctly; the old "getRooms minus
+    // checked_in" path missed many in-house assignments.
     let apiError: string | null = null;
+    const headers: HeadersInit = {
+      Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
+      'Content-Type': 'application/json',
+    };
+
+    let unassignedRooms: any[] = [];
+    try {
+      unassignedRooms = await fetchAllUnassignedRooms(
+        apiV13,
+        CLOUDBEDS_PROPERTY_ID,
+        headers,
+        today,
+        tomorrow
+      );
+      console.log('getRoomsUnassigned (primary):', unassignedRooms.length, 'for', today, '→', tomorrow);
+    } catch (e: any) {
+      apiError = e?.message ?? 'getRoomsUnassigned failed';
+      console.warn(apiError);
+    }
+
+    if (unassignedRooms.length > 0) {
+      let rooms = unassignedRooms
+        .filter((room: any) => room && room.roomBlocked !== true)
+        .map(formatRoom)
+        .filter((r: any) => r.roomID !== 'unknown' && !r.roomName.includes('(Remove BE)') && !r.roomTypeName.includes('(Remove BE)'));
+      rooms = await mergePlaceholderRooms(rooms, today);
+      return NextResponse.json({
+        success: true,
+        rooms,
+        count: rooms.length,
+        method: 'getRoomsUnassigned',
+        checkIn: today,
+        checkOut: tomorrow,
+      });
+    }
+
+    // FALLBACK: full getRooms minus checked-in room assignments (when unassigned is empty or unavailable)
     let availableRooms: any[] = [];
     try {
-      const headers: HeadersInit = {
-        Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
-        'Content-Type': 'application/json',
-      };
-      // Default getRooms pageSize is 20 — fetch all pages (see fetchAllRoomsPages).
       let allRooms = await fetchAllRoomsPages(apiV13, CLOUDBEDS_PROPERTY_ID, headers);
       if (allRooms.length === 0) {
         const legacyBase = `${baseUrl.replace(/\/$/, '')}/v1.2`;
@@ -191,46 +359,30 @@ export async function GET(request: NextRequest) {
       if (allRooms.length === 0) {
         apiError = 'getRooms returned no rooms';
       } else {
-        const occupiedRoomIDs = new Set<string>();
-        const occupiedRoomNames = new Set<string>();
+        let occupiedRoomIDs = new Set<string>();
+        let occupiedRoomNames = new Set<string>();
         try {
-          const [arrivalsRes, checkedInRes] = await Promise.all([
-            fetch(`${apiV13}/getReservations?propertyID=${CLOUDBEDS_PROPERTY_ID}&checkInFrom=${today}&checkInTo=${today}`, {
-              headers,
-            }),
-            fetch(`${apiV13}/getReservations?propertyID=${CLOUDBEDS_PROPERTY_ID}&status=checked_in`, {
-              headers,
-            }),
-          ]);
-          const addFromRes = (res: any) => {
-            if (res.rooms?.length) res.rooms.forEach((r: any) => {
-              if (r.roomID) occupiedRoomIDs.add(String(r.roomID));
-              if (r.roomName) occupiedRoomNames.add(r.roomName);
-            });
-            if (res.roomID) occupiedRoomIDs.add(String(res.roomID));
-            if (res.roomName) occupiedRoomNames.add(res.roomName);
-          };
-          if (arrivalsRes.ok) {
-            const j = await arrivalsRes.json();
-            (j.data ?? j ?? []).forEach(addFromRes);
-          }
-          if (checkedInRes.ok) {
-            const j = await checkedInRes.json();
-            const staying = (j.data ?? j ?? []).filter((r: any) => {
-              const out = r.endDate ?? r.checkOutDate;
-              return out && out > today;
-            });
-            staying.forEach(addFromRes);
-          }
-        } catch (_) {}
+          const occ = await fetchOccupiedRoomKeysFromCheckedIn(
+            apiV13,
+            CLOUDBEDS_PROPERTY_ID,
+            headers,
+            today
+          );
+          occupiedRoomIDs = occ.ids;
+          occupiedRoomNames = occ.names;
+        } catch (e) {
+          console.warn('fetchOccupiedRoomKeysFromCheckedIn:', e);
+        }
         availableRooms = allRooms.filter((room: any) => {
-          const id = (room.roomID ?? room.id)?.toString();
-          const name = room.roomName ?? room.name;
-          // Only treat explicit blocked flag; omitting dates on getRooms can leave roomBlocked unset for some types.
+          const id = (room.roomID ?? room.id)?.toString().trim();
+          const name = String(room.roomName ?? room.name ?? '').trim();
+          const nameLc = name.toLowerCase();
           const blocked = room.roomBlocked === true;
-          return !blocked && !occupiedRoomIDs.has(id) && !occupiedRoomNames.has(name);
+          const idTaken = occupiedRoomIDs.has(id);
+          const nameTaken = name && occupiedRoomNames.has(nameLc);
+          return !blocked && !idTaken && !nameTaken;
         });
-        console.log('getRooms + filter: total', allRooms.length, 'available', availableRooms.length);
+        console.log('getRooms + checked_in filter (fallback): total', allRooms.length, 'available', availableRooms.length);
       }
     } catch (e: any) {
       apiError = e?.message ?? 'Unknown error';
@@ -241,9 +393,6 @@ export async function GET(request: NextRequest) {
         .map(formatRoom)
         .filter((r: any) => r.roomID !== 'unknown' && !r.roomName.includes('(Remove BE)') && !r.roomTypeName.includes('(Remove BE)'));
 
-      // Merge TYE placeholder rooms back in. Placeholder reservations appear as "confirmed"
-      // arrivals in Cloudbeds so their rooms get filtered out above — but our app treats them
-      // as available walk-in slots that can be assigned to a real guest.
       rooms = await mergePlaceholderRooms(rooms, today);
 
       return NextResponse.json({
@@ -251,38 +400,6 @@ export async function GET(request: NextRequest) {
         rooms,
         count: rooms.length,
         method: 'getRooms_with_filtering',
-        checkIn: today,
-        checkOut: tomorrow,
-      });
-    }
-
-    // FALLBACK: getRoomsUnassigned when getRooms+filter returned no rooms
-    let rawUnassigned: any[] = [];
-    try {
-      const unassignedUrl = `${apiV13}/getRoomsUnassigned?propertyID=${CLOUDBEDS_PROPERTY_ID}&checkIn=${today}&checkOut=${tomorrow}&pageSize=500`;
-      const unassignedResponse = await fetch(unassignedUrl, {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-      });
-      if (unassignedResponse.ok) {
-        const data = await unassignedResponse.json();
-        rawUnassigned = parseAllRoomsFromGetRoomsJson(data);
-      }
-    } catch (_) {}
-    if (rawUnassigned.length > 0) {
-      let rooms = rawUnassigned
-        .filter((room: any) => room && room.roomBlocked !== true)
-        .map(formatRoom)
-        .filter((r: any) => r.roomID !== 'unknown' && !r.roomName.includes('(Remove BE)') && !r.roomTypeName.includes('(Remove BE)'));
-      rooms = await mergePlaceholderRooms(rooms, today);
-      return NextResponse.json({
-        success: true,
-        rooms,
-        count: rooms.length,
-        method: 'getRoomsUnassigned',
         checkIn: today,
         checkOut: tomorrow,
       });

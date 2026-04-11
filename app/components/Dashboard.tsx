@@ -30,21 +30,32 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
     setShowCheckOutModal(true);
   };
 
+  const wideGuestTab = activeTab === 'arrivals' || activeTab === 'departures';
+
   return (
     <>
-      <div style={{
-        minHeight: '100vh',
-        background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-        padding: 'clamp(15px, 3vw, 40px)'
-      }}>
+      {/* `body` is `display:flex; justify-content:center` in globals.css — without width:100% this shell shrink-wraps to ~login width. */}
+      <div
+        className="admin-dashboard-shell"
+        style={{
+          width: '100%',
+          maxWidth: '100%',
+          minWidth: 0,
+          minHeight: '100vh',
+          background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+          padding: wideGuestTab ? '8px 12px' : 'clamp(15px, 3vw, 40px)',
+          boxSizing: 'border-box',
+        }}
+      >
         <div style={{
-          maxWidth: '1400px',
+          maxWidth: wideGuestTab ? 'min(1920px, 100%)' : '1400px',
+          width: '100%',
           margin: '0 auto',
           background: 'white',
           borderRadius: '20px',
           overflow: 'hidden',
           boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3)',
-          height: 'calc(100vh - 30px)',
+          height: wideGuestTab ? 'calc(100vh - 16px)' : 'calc(100vh - 30px)',
           display: 'flex',
           flexDirection: 'column'
         }}>
@@ -102,37 +113,33 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
                   transition: 'all 0.3s'
                 }}
               >
-                {tab === 'bulk-checkin' ? 'Bulk Check-In' : tab === 'tye-placeholders' ? 'TYE Placeholders' : tab}
+                {tab === 'bulk-checkin' ? 'Bulk Check-In' : tab === 'tye-placeholders' ? 'Blocks' : tab}
               </button>
             ))}
           </div>
 
           {/* Content */}
           <div style={{ 
-            padding: 'clamp(20px, 3vw, 40px)', 
+            padding: wideGuestTab ? '12px 16px 16px' : 'clamp(20px, 3vw, 40px)', 
             flex: 1,
-            overflowY: 'auto'
+            minHeight: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: wideGuestTab ? 'hidden' : 'auto',
+            overflowY: wideGuestTab ? 'hidden' : 'auto',
           }}>
             {activeTab === 'dashboard' && (
               <DashboardTab />
             )}
           {activeTab === 'arrivals' && (
-            <ArrivalsTab 
-              onCheckIn={handleCheckIn} 
-              onDelete={() => {
-                // Refresh data after delete
-                window.location.reload();
-              }}
-            />
+            <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+              <ArrivalsTab onCheckIn={handleCheckIn} />
+            </div>
           )}
           {activeTab === 'departures' && (
-            <DeparturesTab 
-              onCheckOut={handleCheckOut}
-              onDelete={() => {
-                // Refresh data after delete
-                window.location.reload();
-              }}
-            />
+            <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+              <DeparturesTab onCheckOut={handleCheckOut} />
+            </div>
           )}
           {activeTab === 'bulk-checkin' && (
             <BulkCheckInTab />

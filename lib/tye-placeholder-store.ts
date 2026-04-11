@@ -240,17 +240,20 @@ export async function placeholderExistsForRoom(
   );
 }
 
+/** Return all placeholders for the given check-in dates (deduped). */
+export async function getPlaceholdersForDates(dates: string[]): Promise<TyePlaceholder[]> {
+  const uniq = [...new Set(dates.filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)))];
+  if (uniq.length === 0) return [];
+  const lists = await Promise.all(uniq.map((d) => getPlaceholdersByDate(d)));
+  return lists.flat();
+}
+
 /** Return all placeholders for today and tomorrow. */
 export async function getPlaceholdersForTodayAndTomorrow(): Promise<TyePlaceholder[]> {
   const now = new Date();
   const today = localDateYmd(now);
   const tomorrow = localDateYmd(new Date(now.getTime() + 24 * 60 * 60 * 1000));
-
-  const [todayList, tomorrowList] = await Promise.all([
-    getPlaceholdersByDate(today),
-    getPlaceholdersByDate(tomorrow),
-  ]);
-  return [...todayList, ...tomorrowList];
+  return getPlaceholdersForDates([today, tomorrow]);
 }
 
 // ---------------------------------------------------------------------------

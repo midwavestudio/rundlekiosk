@@ -9,6 +9,7 @@ interface CheckOutModalProps {
 
 export default function CheckOutModal({ reservation, onClose }: CheckOutModalProps) {
   const [step, setStep] = useState<'confirm' | 'processing' | 'success'>('confirm');
+  const [isSameDay, setIsSameDay] = useState(false);
 
   const handleCheckOut = async () => {
     setStep('processing');
@@ -37,6 +38,9 @@ export default function CheckOutModal({ reservation, onClose }: CheckOutModalPro
         const cloudbedsResult = await cloudbedsResponse.json();
         if (!cloudbedsResult.success && !cloudbedsResult.mockMode) {
           throw new Error(cloudbedsResult.error || 'Cloudbeds check-out failed');
+        }
+        if (cloudbedsResult.isSameDay) {
+          setIsSameDay(true);
         }
       }
 
@@ -227,8 +231,8 @@ export default function CheckOutModal({ reservation, onClose }: CheckOutModalPro
               <h3 style={{ marginBottom: '12px' }}>Processing Check-Out...</h3>
               <div style={{ color: '#666', fontSize: '14px' }}>
                 <div>✓ Updating Cloudbeds PMS</div>
+                <div>✓ Releasing room assignment</div>
                 {reservation.isBNSFCrew && <div>✓ Syncing with CLC Portal</div>}
-                <div>✓ Clearing room status</div>
                 <div>✓ Logging transaction</div>
               </div>
             </div>
@@ -245,6 +249,19 @@ export default function CheckOutModal({ reservation, onClose }: CheckOutModalPro
                 <div style={{ marginBottom: '8px' }}>
                   {reservation.guestName} has been checked out from Room {reservation.roomNumber}
                 </div>
+                {isSameDay && (
+                  <div style={{
+                    padding: '12px',
+                    background: '#d1fae5',
+                    border: '1px solid #6ee7b7',
+                    borderRadius: '8px',
+                    marginTop: '16px',
+                    fontSize: '14px',
+                    color: '#065f46'
+                  }}>
+                    Room {reservation.roomNumber} has been unassigned and is now available for a new check-in today.
+                  </div>
+                )}
                 {reservation.isBNSFCrew && (
                   <div style={{
                     padding: '12px',

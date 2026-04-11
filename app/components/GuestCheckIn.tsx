@@ -53,6 +53,8 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
     roomNumber: '',
   });
   const [success, setSuccess] = useState(false);
+  /** When Cloudbeds could not book the physical room but created a paid confirmed stay (prior guest still in room). */
+  const [successIsConfirmedOnly, setSuccessIsConfirmedOnly] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [availableRooms, setAvailableRooms] = useState<Room[]>([]);
@@ -135,6 +137,7 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
     setError('');
 
     try {
+      let reservationConfirmedOnly = false;
       // Add timestamp (trim names for storage consistency with API)
       const checkInData: GuestData = {
         ...formData,
@@ -214,17 +217,21 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
         }
 
         console.log('Cloudbeds check-in successful:', cloudbedsResult);
+        reservationConfirmedOnly = cloudbedsResult.reservationStatus === 'confirmed';
+        setSuccessIsConfirmedOnly(reservationConfirmedOnly);
         checkInData.cloudbedsGuestID = cloudbedsResult.guestID as string | undefined;
         checkInData.cloudbedsReservationID = cloudbedsResult.reservationID as string | undefined;
       } catch (cloudbedsError: any) {
         throw cloudbedsError;
       }
 
-      // Save to localStorage (best effort — storage quota or privacy mode must not undo a successful check-in)
+      // Save to localStorage only for actual kiosk check-in — confirmed-only stays live in Cloudbeds until staff assigns the room.
       try {
-        const existingGuests = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
-        existingGuests.push(checkInData);
-        localStorage.setItem('checkedInGuests', JSON.stringify(existingGuests));
+        if (!reservationConfirmedOnly) {
+          const existingGuests = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
+          existingGuests.push(checkInData);
+          localStorage.setItem('checkedInGuests', JSON.stringify(existingGuests));
+        }
       } catch (storageErr) {
         console.warn('Could not save guest to local storage (check-in still completed):', storageErr);
       }
@@ -251,7 +258,14 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
     return (
       <div className="kiosk-container">
         <div className="success-screen">
-          <h1 className="animated-message">Enjoy your stay!</h1>
+          <h1 className="animated-message">
+            {successIsConfirmedOnly ? 'Reservation confirmed' : 'Enjoy your stay!'}
+          </h1>
+          {successIsConfirmedOnly && (
+            <p style={{ marginTop: '16px', maxWidth: '420px', marginLeft: 'auto', marginRight: 'auto', fontSize: 'clamp(15px, 2.5vw, 18px)', lineHeight: 1.5, opacity: 0.95 }}>
+              Your stay is paid and confirmed. The front desk will assign your room when it is available.
+            </p>
+          )}
         </div>
       </div>
     );

@@ -10,8 +10,9 @@ import { savePlaceholder, placeholderExistsForRoom } from '@/lib/tye-placeholder
  * postReservation body — then stops before payment or check-in (`stopAfterReservationCreate`).
  *
  * Body (JSON):
- *   roomIDs   string[]   Cloudbeds room IDs to create placeholders for
- *   dates?    string[]   YYYY-MM-DD dates (defaults to today + tomorrow)
+ *   roomIDs    string[]            Room name/IDs — can be display names (e.g. "301") or Cloudbeds numeric IDs.
+ *   dates?     string[]            YYYY-MM-DD dates (defaults to today only)
+ *   roomHints? Record<string,str>  roomName → numeric Cloudbeds roomID (or vice versa) for matching
  */
 export async function POST(request: NextRequest) {
   try {
@@ -26,7 +27,6 @@ export async function POST(request: NextRequest) {
     const { roomIDs, dates: requestedDates, roomHints } = body as {
       roomIDs: string[];
       dates?: string[];
-      /** roomID → display name (optional), same role as kiosk `roomNameHint` */
       roomHints?: Record<string, string>;
     };
 
@@ -39,9 +39,8 @@ export async function POST(request: NextRequest) {
 
     const now = new Date();
     const todayStr = localDateYmd(now);
-    const tomorrowStr = localDateYmd(new Date(now.getTime() + 24 * 60 * 60 * 1000));
     const dates: string[] =
-      requestedDates && requestedDates.length > 0 ? requestedDates : [todayStr, tomorrowStr];
+      requestedDates && requestedDates.length > 0 ? requestedDates : [todayStr];
 
     const summary: Record<
       string,
@@ -52,27 +51,30 @@ export async function POST(request: NextRequest) {
       const checkOutDate = addOneDay(forDate);
       summary[forDate] = { created: [], skipped: [], failed: [] };
 
-      for (const roomID of roomIDs) {
-        const rid = String(roomID).trim();
+      for (const roomEntry of roomIDs) {
+        const rid = String(roomEntry).trim();
+        // The hint may be a numeric Cloudbeds roomID when the primary key is the display name.
+        const hint =
+          roomHints && typeof roomHints[rid] === 'string' && roomHints[rid].trim() !== ''
+            ? roomHints[rid].trim()
+            : undefined;
 
-        const alreadyExists = await placeholderExistsForRoom(rid, forDate);
-        if (alreadyExists) {
+        // Check "already exists" by both the name and the numeric ID hint so we don't create dupes.
+        const alreadyByName = await placeholderExistsForRoom(rid, forDate);
+        const alreadyByID = hint ? await placeholderExistsForRoom(hint, forDate) : false;
+        if (alreadyByName || alreadyByID) {
           summary[forDate].skipped.push(rid);
           continue;
         }
 
         try {
-          const hint =
-            roomHints && typeof roomHints[rid] === 'string' && roomHints[rid].trim() !== ''
-              ? roomHints[rid].trim()
-              : undefined;
-
           const result = await performCloudbedsCheckIn({
             firstName: 'TYE',
-            lastName: 'Placeholder',
+            lastName: 'Block',
             phoneNumber: '000-000-0000',
             email: 'tye-placeholder@rundlesuites.internal',
             classType: 'TYE',
+            // Use the display name as the primary room key; numeric ID as hint for matching.
             roomName: rid,
             roomNameHint: hint,
             checkInDate: forDate,
@@ -80,10 +82,14 @@ export async function POST(request: NextRequest) {
             stopAfterReservationCreate: true,
           });
 
+          // Store the confirmed Cloudbeds numeric roomID from the hint (if available)
+          // so the Blocks UI can match ✓ badges correctly by roomID.
+          const storedRoomID = hint ?? rid;
+
           try {
             await savePlaceholder({
               reservationID: result.reservationID,
-              roomID: rid,
+              roomID: storedRoomID,
               roomName: result.roomName,
               roomTypeID: result.roomTypeID ?? '',
               roomTypeName: result.roomTypeName ?? 'Standard Room',
@@ -91,6 +97,7 @@ export async function POST(request: NextRequest) {
               checkOutDate,
               status: 'available',
               createdAt: new Date().toISOString(),
+              ...(result.guestID ? { placeholderGuestID: result.guestID } : {}),
             });
           } catch (storeErr: unknown) {
             console.error('savePlaceholder failed (reservation exists in Cloudbeds):', storeErr);
@@ -98,7 +105,7 @@ export async function POST(request: NextRequest) {
 
           summary[forDate].created.push(rid);
           console.log(
-            `TYE placeholder via performCloudbedsCheckIn: room ${result.roomName} date ${forDate} reservationID ${result.reservationID}`
+            `TYE placeholder via performCloudbedsCheckIn: room ${result.roomName} (id=${storedRoomID}) date ${forDate} reservationID ${result.reservationID}`
           );
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : 'Unknown error';

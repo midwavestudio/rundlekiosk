@@ -42,6 +42,7 @@ export default function GuestCheckOut({ onBack }: GuestCheckOutProps) {
   const [selectedGuest, setSelectedGuest] = useState<CloudbedsGuest | null>(null);
   const [success, setSuccess] = useState(false);
   const [daysStayed, setDaysStayed] = useState<number | null>(null);
+  const [isSameDay, setIsSameDay] = useState(false);
   const [loading, setLoading] = useState(false);
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState('');
@@ -106,7 +107,13 @@ export default function GuestCheckOut({ onBack }: GuestCheckOutProps) {
       });
 
       const text = await res.text();
-      let data: { success?: boolean; error?: string; message?: string; daysStayed?: number } = {};
+      let data: {
+        success?: boolean;
+        error?: string;
+        message?: string;
+        daysStayed?: number;
+        isSameDay?: boolean;
+      } = {};
       try {
         data = JSON.parse(text);
       } catch {
@@ -118,6 +125,7 @@ export default function GuestCheckOut({ onBack }: GuestCheckOutProps) {
       }
 
       setDaysStayed(typeof data.daysStayed === 'number' ? data.daysStayed : null);
+      setIsSameDay(data.isSameDay === true);
 
       // Also clean up any matching localStorage record so it doesn't linger
       try {
@@ -152,11 +160,17 @@ export default function GuestCheckOut({ onBack }: GuestCheckOutProps) {
       <div className="kiosk-container">
         <div className="success-screen">
           <h1 className="animated-message">Thank you for staying with us!</h1>
-          {daysStayed != null && daysStayed > 0 && (
+          {isSameDay ? (
             <p className="subtitle" style={{ marginTop: '1rem' }}>
-              Your stay was {daysStayed} day{daysStayed === 1 ? '' : 's'} (based on your check-in and
-              check-out time).
+              Your room has been released. We hope to see you again soon!
             </p>
+          ) : (
+            daysStayed != null && daysStayed > 0 && (
+              <p className="subtitle" style={{ marginTop: '1rem' }}>
+                Your stay was {daysStayed} day{daysStayed === 1 ? '' : 's'} (based on your check-in and
+                check-out time).
+              </p>
+            )
           )}
         </div>
       </div>
