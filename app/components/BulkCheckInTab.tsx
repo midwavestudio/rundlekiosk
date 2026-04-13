@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { ADMIN_GRADIENT } from '../lib/adminTheme';
 
 interface BulkCheckInTabProps {
   // No props needed for now
@@ -225,7 +226,7 @@ export default function BulkCheckInTab({}: BulkCheckInTabProps) {
           onClick={handleUpload}
           disabled={!file || processing}
           style={{
-            background: file && !processing ? 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' : '#ccc',
+            background: file && !processing ? ADMIN_GRADIENT : '#ccc',
             color: 'white',
             padding: '12px 30px',
             borderRadius: '8px',

@@ -134,6 +134,28 @@ export async function savePlaceholder(
   return id;
 }
 
+/**
+ * Admin TYE block creation: persist to Firestore when configured, or throw — no silent fallback to
+ * memory when Firestore fails (avoids marking a block "created" without a durable record while a
+ * Cloudbeds reservation still exists). When Firebase is not configured, uses the same in-memory store as dev.
+ */
+export async function saveTyeBlockPlaceholderOrThrow(
+  data: Omit<TyePlaceholder, 'id'>
+): Promise<string> {
+  const db = getDb();
+  if (db) {
+    const ref = await db.collection(COLLECTION).add({
+      ...data,
+      createdAt: data.createdAt ?? new Date().toISOString(),
+    });
+    return ref.id;
+  }
+
+  const id = nextMemoryId();
+  memoryStore.set(id, { ...data, id });
+  return id;
+}
+
 /** Return all placeholders for a specific check-in date, regardless of status. */
 export async function getPlaceholdersByDate(
   forDate: string

@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import type { User } from 'firebase/auth';
+import { ADMIN_ACCENT, ADMIN_GRADIENT } from '../lib/adminTheme';
 import ArrivalsTab from './ArrivalsTab';
 import DeparturesTab from './DeparturesTab';
 import CheckInModal from './CheckInModal';
@@ -42,7 +43,7 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
           maxWidth: '100%',
           minWidth: 0,
           minHeight: '100vh',
-          background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+          background: ADMIN_GRADIENT,
           padding: wideGuestTab ? '8px 12px' : 'clamp(15px, 3vw, 40px)',
           boxSizing: 'border-box',
         }}
@@ -61,7 +62,7 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
         }}>
           {/* Header */}
           <div style={{
-            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+            background: ADMIN_GRADIENT,
             padding: '20px 30px',
             color: 'white',
             display: 'flex',
@@ -104,8 +105,8 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
                   padding: '15px 25px',
                   background: 'transparent',
                   border: 'none',
-                  borderBottom: activeTab === tab ? '3px solid #667eea' : '3px solid transparent',
-                  color: activeTab === tab ? '#667eea' : '#666',
+                  borderBottom: activeTab === tab ? `3px solid ${ADMIN_ACCENT}` : '3px solid transparent',
+                  color: activeTab === tab ? ADMIN_ACCENT : '#666',
                   fontWeight: activeTab === tab ? '600' : '400',
                   cursor: 'pointer',
                   textTransform: 'capitalize',

@@ -1,4 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
+import {
+  mergeReservationRoomRows,
+  pickActiveRoom,
+  unwrapReservationFromGetReservation,
+} from '@/lib/cloudbeds-rate-preserve';
 
 /** Structured admin-facing error log for checkout failures. Visible in server logs / hosting dashboard. */
 function logCheckOutFailure(context: {
@@ -34,8 +39,9 @@ function logCheckOutFailure(context: {
  *   4. putReservation status=checked_out (reservation + guest data remain intact).
  *
  * Normal checkout path (multi-day stay):
- *   1. putReservation with checkoutDate only (do not send rooms[] — that re-runs availability and
- *      often returns "could not accommodate your request" per Cloudbeds).
+ *   1. putReservation with checkoutDate (plus optional rooms[0][roomRateID]/ratePlanID from
+ *      getReservation when present — avoids repricing to base rate; do not send full rooms[] with
+ *      room changes — that re-runs availability and often fails).
  *   2. postRoomCheckOut, then putReservation status=checked_out if needed.
  *
  * Additional notes:
@@ -145,31 +151,6 @@ function normalizeYmd(value: unknown): string | undefined {
   return undefined;
 }
 
-/**
- * getReservation JSON shape varies: data may be the reservation, nested data.data, or data[0].
- * Without unwrapping, startDate/assigned are missing → wrong same-day detection and no room rows.
- */
-function unwrapReservationFromGetReservation(resData: any): any | null {
-  if (!resData || resData.success === false) return null;
-  const raw = resData.data;
-  if (raw == null) return null;
-  if (Array.isArray(raw)) return raw[0] ?? null;
-  if (typeof raw !== 'object') return null;
-  const nested = (raw as any).data ?? (raw as any).reservation;
-  if (
-    nested &&
-    typeof nested === 'object' &&
-    !Array.isArray(nested) &&
-    ((nested as any).reservationID != null ||
-      (nested as any).startDate != null ||
-      (nested as any).assigned != null ||
-      (nested as any).rooms != null)
-  ) {
-    return nested;
-  }
-  return raw as any;
-}
-
 function reservationScheduledCheckoutYmd(res: any): string | undefined {
   if (!res || typeof res !== 'object') return undefined;
   return normalizeYmd(
@@ -182,31 +163,6 @@ function clampCheckoutDate(startYmd: string | undefined, requestedYmd: string): 
   if (!startYmd || !/^\d{4}-\d{2}-\d{2}$/.test(startYmd)) return requestedYmd;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(requestedYmd)) return requestedYmd;
   return requestedYmd < startYmd ? startYmd : requestedYmd;
-}
-
-/** getReservation uses `assigned`; getReservations list may use `rooms` — merge for lookup. */
-function mergeReservationRoomRows(reservation: any): any[] {
-  const out: any[] = [];
-  const seen = new Set<string>();
-  for (const key of ['assigned', 'rooms'] as const) {
-    const arr = reservation?.[key];
-    if (!Array.isArray(arr)) continue;
-    for (const r of arr) {
-      if (!r || typeof r !== 'object') continue;
-      const id = `${r.subReservationID ?? ''}|${r.roomID ?? ''}|${r.reservationRoomID ?? ''}`;
-      if (seen.has(id)) continue;
-      seen.add(id);
-      out.push(r);
-    }
-  }
-  return out;
-}
-
-function pickActiveRoom(rooms: any[]): any | null {
-  if (rooms.length === 0) return null;
-  const inHouse = rooms.find((r: any) => r?.roomStatus === 'in_house');
-  if (inHouse) return inHouse;
-  return rooms[0];
 }
 
 function decodeHtmlEntities(s: string): string {
@@ -298,6 +254,7 @@ async function unassignRoom(
 
   // ── Step A: Reset to confirmed so Cloudbeds allows the room to be unassigned ──
   // A checked_in reservation cannot have its room unassigned directly.
+  // Send ONLY status — no rooms[] fields, which would trigger repricing.
   const resetToConfirmed = await putForm(putUrl, apiKey, {
     propertyID,
     reservationID,
@@ -433,21 +390,26 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      // Step C: Finalize checkout — Cloudbeds requires checkout date set BEFORE status=checked_out
-      // (same as multi-day path). After unassign the reservation sits on "confirmed"; without
-      // updating checkoutDate first, putReservation status=checked_out often no-ops or fails,
-      // leaving the reservation stuck on confirmed.
-      const dateFirst = await putForm(putUrl, CLOUDBEDS_API_KEY, {
-        propertyID: CLOUDBEDS_PROPERTY_ID,
-        reservationID: String(reservationID),
-        checkoutDate,
-      });
-      log.push({ step: 'sameday_putReservation_checkoutDate', ok: dateFirst.ok, data: dateFirst.data });
-      const dateOk =
-        dateFirst.ok ||
-        /already|no change|same date/i.test(dateFirst.data?.message ?? dateFirst.raw ?? '');
-      if (!dateOk) {
-        log.push({ step: 'sameday_checkoutDate_note', note: 'Proceeding to status anyway; date call may be redundant' });
+      // Step C: Finalize checkout.
+      // After unassign the reservation sits on "confirmed". For same-day stays the reservation's
+      // endDate is already today (since startDate === checkoutDate), so we should NOT send
+      // checkoutDate — that would reprice to base rate.  Go straight to status=checked_out.
+      // Only add checkoutDate if it isn't already on the reservation.
+      const schedOutSameDay = reservationScheduledCheckoutYmd(reservationRecord);
+      const sameDayDateAlreadyCorrect = !!schedOutSameDay && schedOutSameDay === checkoutDate;
+
+      if (!sameDayDateAlreadyCorrect) {
+        const dateFirst = await putForm(putUrl, CLOUDBEDS_API_KEY, {
+          propertyID: CLOUDBEDS_PROPERTY_ID,
+          reservationID: String(reservationID),
+          checkoutDate,
+        });
+        log.push({ step: 'sameday_putReservation_checkoutDate', ok: dateFirst.ok, data: dateFirst.data });
+        if (!dateFirst.ok) {
+          log.push({ step: 'sameday_checkoutDate_note', note: 'Date put failed — proceeding to status anyway' });
+        }
+      } else {
+        log.push({ step: 'sameday_checkoutDate_already_correct', schedOutSameDay, note: 'Skipping date put to avoid repricing' });
       }
 
       const statusPut = await putForm(putUrl, CLOUDBEDS_API_KEY, {
@@ -460,7 +422,7 @@ export async function POST(request: NextRequest) {
         checkoutSucceeded = true;
       } else {
         lastMessage = decodeHtmlEntities(statusPut.data?.message ?? statusPut.raw ?? '');
-        // Single call with both fields (some properties accept this when split calls fail)
+        // Fallback: combined call (some accounts accept this when sequential calls fail)
         const combined = await putForm(putUrl, CLOUDBEDS_API_KEY, {
           propertyID: CLOUDBEDS_PROPERTY_ID,
           reservationID: String(reservationID),
@@ -472,7 +434,6 @@ export async function POST(request: NextRequest) {
           checkoutSucceeded = true;
         } else {
           lastMessage = decodeHtmlEntities(combined.data?.message ?? combined.raw ?? lastMessage);
-          // Last resort: date-only then status-only again (ordering / replication lag)
           if (!checkoutSucceeded && /check.?out date|prior to checking/i.test(lastMessage)) {
             log.push({ step: 'sameday_fallback_resequence', note: lastMessage });
             await putForm(putUrl, CLOUDBEDS_API_KEY, {
@@ -500,45 +461,46 @@ export async function POST(request: NextRequest) {
       }
     } else {
       // ── NORMAL MULTI-DAY PATH ──
+      //
+      // IMPORTANT — putReservation with `checkoutDate` recalculates daily rates for the new stay
+      // window and can change TYE to base rate.  Only send it when the date on the reservation
+      // differs from what we want to check out at.  If Cloudbeds already has the right date,
+      // skip entirely and go straight to postRoomCheckOut / status=checked_out.
 
-      // 1) REQUIRED FIRST: update checkout date
-      let dateUpdated = false;
+      const schedOut = reservationScheduledCheckoutYmd(reservationRecord);
+      const dateAlreadyCorrect = !!schedOut && schedOut === checkoutDate;
+      let dateUpdated = dateAlreadyCorrect;
 
-      const topLevelDate = await putForm(putUrl, CLOUDBEDS_API_KEY, {
-        propertyID: CLOUDBEDS_PROPERTY_ID,
-        reservationID: String(reservationID),
-        checkoutDate,
-      });
-      log.push({ step: 'putReservation_checkoutDate_only', ok: topLevelDate.ok, data: topLevelDate.data });
-      if (topLevelDate.ok) {
-        dateUpdated = true;
-      } else {
-        lastMessage = topLevelDate.data?.message ?? topLevelDate.raw ?? '';
-        const alreadySet =
-          /already/i.test(lastMessage) ||
-          /no change/i.test(lastMessage) ||
-          /same date/i.test(lastMessage);
-        if (alreadySet) {
-          dateUpdated = true;
-          log.push({ step: 'putReservation_alreadySet', note: lastMessage });
-        }
+      if (dateAlreadyCorrect) {
+        log.push({ step: 'checkout_date_already_correct', schedOut, note: 'Skipping putReservation checkoutDate to avoid repricing' });
       }
 
-      // If Cloudbeds already has this checkout date on the reservation, skip the put (top-level
-      // can fail while the stay is still valid to check out).
-      if (!dateUpdated && reservationRecord) {
-        const schedOut = reservationScheduledCheckoutYmd(reservationRecord);
-        if (schedOut && schedOut === checkoutDate) {
+      if (!dateUpdated) {
+        // Date needs changing — must tell Cloudbeds the new checkout date.
+        const topLevelDate = await putForm(putUrl, CLOUDBEDS_API_KEY, {
+          propertyID: CLOUDBEDS_PROPERTY_ID,
+          reservationID: String(reservationID),
+          checkoutDate,
+        });
+        log.push({ step: 'putReservation_checkoutDate_only', ok: topLevelDate.ok, data: topLevelDate.data });
+        if (topLevelDate.ok) {
           dateUpdated = true;
-          log.push({ step: 'checkout_date_already_on_reservation', schedOut });
+        } else {
+          lastMessage = topLevelDate.data?.message ?? topLevelDate.raw ?? '';
+          const alreadySet =
+            /already/i.test(lastMessage) ||
+            /no change/i.test(lastMessage) ||
+            /same date/i.test(lastMessage);
+          if (alreadySet) {
+            dateUpdated = true;
+            log.push({ step: 'putReservation_alreadySet', note: lastMessage });
+          }
         }
       }
-
-      // Do NOT use putReservation with rooms[] here — it re-runs availability and often returns
-      // "could not accommodate your request" (same as check-in; see lib/cloudbeds-checkin.ts).
 
       let multiDayFinishedViaCombinedPut = false;
       if (!dateUpdated) {
+        // Last resort: combined call (some Cloudbeds accounts only accept this)
         const combinedOut = await putForm(putUrl, CLOUDBEDS_API_KEY, {
           propertyID: CLOUDBEDS_PROPERTY_ID,
           reservationID: String(reservationID),
@@ -563,7 +525,7 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      // 2) Room checkout (after date is set) — skip if combined put already checked the guest out
+      // 2) Room checkout via postRoomCheckOut (preferred — does not reprice)
       if (!multiDayFinishedViaCombinedPut && (roomID || subReservationID)) {
         const roomOut = await postForm(`${apiBase}/postRoomCheckOut`, CLOUDBEDS_API_KEY, {
           propertyID: CLOUDBEDS_PROPERTY_ID,
@@ -579,7 +541,7 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      // 3) Ensure reservation status is checked_out
+      // 3) Fallback: status-only put (no rooms[], no checkoutDate — does not reprice)
       if (!checkoutSucceeded) {
         const statusPut = await putForm(putUrl, CLOUDBEDS_API_KEY, {
           propertyID: CLOUDBEDS_PROPERTY_ID,

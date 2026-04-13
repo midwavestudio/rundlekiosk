@@ -1,4 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
+import {
+  unwrapReservationFromGetReservation,
+} from '@/lib/cloudbeds-rate-preserve';
 
 /**
  * POST /api/unassign-room
@@ -102,12 +105,15 @@ export async function POST(request: NextRequest) {
     // Resolve reservationRoomID — use provided value or fetch from Cloudbeds
     let reservationRoomID = bodyReservationRoomID?.trim() || null;
     let subReservationID = bodySubReservationID?.trim() || null;
+    /** Set when we fetched getReservation — used to preserve rate on status=confirmed. */
+    let reservationUnwrapped: any = null;
 
     if (!reservationRoomID) {
       const resData = await getReservationDetails(apiBase, CLOUDBEDS_PROPERTY_ID, CLOUDBEDS_API_KEY, reservationID);
       log.push({ step: 'getReservation', success: resData?.success === true });
 
-      const reservationRecord = resData?.data ?? null;
+      const reservationRecord = unwrapReservationFromGetReservation(resData) ?? resData?.data ?? null;
+      reservationUnwrapped = reservationRecord;
       reservationRoomID = extractReservationRoomID(reservationRecord);
 
       // Also resolve subReservationID if not provided
@@ -140,6 +146,7 @@ export async function POST(request: NextRequest) {
 
     // Step 1: Reset reservation to confirmed so Cloudbeds allows room to be unassigned.
     // A checked_in reservation cannot have its room removed directly.
+    // Send ONLY status — no rooms[] fields, which would trigger repricing.
     const confirmParams = new URLSearchParams();
     confirmParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
     confirmParams.append('reservationID', reservationID);

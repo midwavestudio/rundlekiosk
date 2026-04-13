@@ -1,6 +1,14 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import {
+  ADMIN_ACCENT,
+  ADMIN_GRADIENT,
+  ADMIN_TINT_BG,
+  ADMIN_TINT_BORDER,
+  ADMIN_TINT_SOLID,
+  ADMIN_TINT_TEXT,
+} from '../lib/adminTheme';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -49,11 +57,29 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 const STATUS_LABELS: Record<string, string> = {
-  available: 'Available',
+  available: 'Avail.',
   assigned: 'Assigned',
-  externally_modified: 'Modified externally',
-  cancelled: 'Cancelled',
+  externally_modified: 'External',
+  cancelled: 'Cancel.',
 };
+
+function normalizeRoomTypeName(name: string): string {
+  return name.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/** Room classes omitted from the Blocks picker (matches Cloudbeds labels; casing-insensitive). */
+function isExcludedFromBlockPicker(roomTypeName: string): boolean {
+  const n = normalizeRoomTypeName(roomTypeName);
+  return (
+    n === 'queen' ||
+    n === 'interior queen' ||
+    n === 'interior single king' ||
+    n === 'interior double queen' ||
+    n === 'conference room' ||
+    n.startsWith('copper suite') ||
+    n.startsWith('silver suite')
+  );
+}
 
 function localYmd(d: Date): string {
   const y = d.getFullYear();
@@ -79,11 +105,11 @@ function formatDateHeading(ymd: string, today: string, tomorrow: string): string
   }
 }
 
-function buildDateQuery(selectedDates: string[]): string {
+function buildDateQuery(forDate: string): string {
+  if (!forDate.trim()) return '';
   const params = new URLSearchParams();
-  for (const d of selectedDates) params.append('date', d);
-  const qs = params.toString();
-  return qs ? `?${qs}` : '';
+  params.append('date', forDate);
+  return `?${params.toString()}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -101,17 +127,20 @@ export default function TyePlaceholdersTab() {
   const [selectedRoomIDs, setSelectedRoomIDs] = useState<Set<string>>(new Set());
   const [roomFilter, setRoomFilter] = useState('');
 
-  /** YYYY-MM-DD dates for which to create placeholders (default: today once server date is known). */
+  /** Single YYYY-MM-DD date for blocks (default: today once server date is known). */
   const initialClientToday = useRef(localYmd(new Date()));
-  const [selectedDates, setSelectedDates] = useState<string[]>(() => [initialClientToday.current]);
+  const [selectedBlockDate, setSelectedBlockDate] = useState<string>(() => initialClientToday.current);
   const serverTodaySynced = useRef(false);
-  const [customDateInput, setCustomDateInput] = useState('');
 
   // Action state
   const [creating, setCreating] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState('');
   const [statusMessage, setStatusMessage] = useState('');
+  /** Per-room/date failures from the last Block action (API summary.failed). */
+  const [blockFailures, setBlockFailures] = useState<
+    Array<{ date: string; room: string; error: string }>
+  >([]);
 
   // ---------------------------------------------------------------------------
   // Data fetching
@@ -122,7 +151,7 @@ export default function TyePlaceholdersTab() {
     try {
       // POST runs a Cloudbeds sync first so deleted / cancelled reservations clear stale checkmarks.
       const res = await fetch(
-        `/api/admin/sync-tye-placeholders${buildDateQuery(selectedDates)}`,
+        `/api/admin/sync-tye-placeholders${buildDateQuery(selectedBlockDate)}`,
         { method: 'POST' }
       );
       const data = await res.json();
@@ -133,16 +162,13 @@ export default function TyePlaceholdersTab() {
     } finally {
       setLoadingSummary(false);
     }
-  }, [selectedDates]);
+  }, [selectedBlockDate]);
 
   /**
-   * Earliest selected block date drives availability: same rules as the kiosk
+   * Selected block date drives availability: same rules as the kiosk
    * (/api/available-rooms) — rooms that are checked-in / in-house are excluded.
    */
-  const availabilityDate = useMemo(() => {
-    if (selectedDates.length === 0) return initialClientToday.current;
-    return [...selectedDates].sort()[0];
-  }, [selectedDates]);
+  const availabilityDate = selectedBlockDate.trim() || initialClientToday.current;
 
   const fetchRooms = useCallback(async () => {
     setLoadingRooms(true);
@@ -170,12 +196,9 @@ export default function TyePlaceholdersTab() {
 
   useEffect(() => {
     if (!summary?.today || serverTodaySynced.current) return;
-    setSelectedDates((prev) => {
-      if (prev.length === 1 && prev[0] === initialClientToday.current) {
-        return [summary.today];
-      }
-      return prev;
-    });
+    setSelectedBlockDate((prev) =>
+      prev === initialClientToday.current ? summary.today : prev
+    );
     serverTodaySynced.current = true;
   }, [summary?.today]);
 
@@ -211,16 +234,21 @@ export default function TyePlaceholdersTab() {
     return [...s].sort();
   }, [placeholders]);
 
-  /** Today / tomorrow, selected creation dates, and any date that already has placeholder rows. */
+  /** Today / tomorrow, selected block date, and any date that already has placeholder rows. */
   const tableSectionDates = useMemo(() => {
     const s = new Set<string>(placeholderDatesSorted);
     if (today) s.add(today);
     if (tomorrow) s.add(tomorrow);
-    for (const d of selectedDates) s.add(d);
+    if (selectedBlockDate.trim()) s.add(selectedBlockDate.trim());
     return [...s].sort();
-  }, [placeholderDatesSorted, today, tomorrow, selectedDates]);
+  }, [placeholderDatesSorted, today, tomorrow, selectedBlockDate]);
 
-  const filteredRooms = allRooms.filter((r) => {
+  const eligibleRooms = useMemo(
+    () => allRooms.filter((r) => !isExcludedFromBlockPicker(r.roomTypeName)),
+    [allRooms]
+  );
+
+  const filteredRooms = eligibleRooms.filter((r) => {
     if (!roomFilter.trim()) return true;
     const q = roomFilter.toLowerCase();
     return (
@@ -308,32 +336,9 @@ export default function TyePlaceholdersTab() {
     setStatusMessage('');
   };
 
-  const toggleCreateDate = (ymd: string) => {
-    setSelectedDates((prev) => {
-      const has = prev.includes(ymd);
-      if (has && prev.length === 1) return prev;
-      if (has) return prev.filter((x) => x !== ymd);
-      return [...prev, ymd].sort();
-    });
-    setError('');
-    setStatusMessage('');
-  };
-
-  const addCustomCreateDate = () => {
-    const v = customDateInput.trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) {
-      setError('Pick a valid date.');
-      return;
-    }
-    setSelectedDates((prev) => (prev.includes(v) ? prev : [...prev, v].sort()));
-    setCustomDateInput('');
-    setError('');
-    setStatusMessage('');
-  };
-
   const handleCreate = async () => {
-    if (selectedDates.length === 0) {
-      setError('Select at least one date.');
+    if (!selectedBlockDate.trim()) {
+      setError('Select a date to block.');
       return;
     }
     if (selectedRoomIDs.size === 0) {
@@ -343,6 +348,7 @@ export default function TyePlaceholdersTab() {
     setCreating(true);
     setStatusMessage('');
     setError('');
+    setBlockFailures([]);
     try {
       // performCloudbedsCheckIn matches rooms by name (not by numeric ID).
       // We send roomNames as the primary key so the create API can find each room
@@ -358,7 +364,7 @@ export default function TyePlaceholdersTab() {
         body: JSON.stringify({
           // Primary: room names (what performCloudbedsCheckIn uses to find rooms)
           roomIDs: selectedRoomEntries.map((e) => e.roomName),
-          dates: [...selectedDates].sort(),
+          dates: [selectedBlockDate.trim()],
           // Secondary: numeric room IDs as hints for room matching
           roomHints: Object.fromEntries(
             selectedRoomEntries.map((e) => [e.roomName, e.roomID] as const)
@@ -383,16 +389,21 @@ export default function TyePlaceholdersTab() {
         return;
       }
 
-      const failedDetails: string[] = [];
+      const failedRows: Array<{ date: string; room: string; error: string }> = [];
       if (data.summary && typeof data.summary === 'object') {
-        for (const [, day] of Object.entries(data.summary) as [string, any][]) {
+        for (const [dateStr, day] of Object.entries(data.summary) as [string, any][]) {
           if (day?.failed?.length) {
             for (const f of day.failed) {
-              failedDetails.push(`Room ${f.roomID}: ${f.error}`);
+              failedRows.push({
+                date: dateStr,
+                room: String(f.roomID),
+                error: String(f.error ?? 'Unknown error'),
+              });
             }
           }
         }
       }
+      setBlockFailures(failedRows);
 
       if ((data.totalCreated ?? 0) > 0) {
         setStatusMessage(
@@ -400,17 +411,14 @@ export default function TyePlaceholdersTab() {
             (data.totalSkipped > 0 ? ` Skipped ${data.totalSkipped} (already blocked).` : '') +
             (data.totalFailed > 0 ? ` ${data.totalFailed} could not be created.` : '')
         );
-        if (failedDetails.length > 0) {
-          setError(failedDetails.slice(0, 5).join(' · ') + (failedDetails.length > 5 ? ' …' : ''));
-        } else {
-          setError('');
+        if (failedRows.length === 0) {
+          setSelectedRoomIDs(new Set());
         }
-        setSelectedRoomIDs(new Set());
         await Promise.all([fetchSummary(), fetchRooms()]);
-      } else if ((data.totalFailed ?? 0) > 0 || failedDetails.length > 0) {
+      } else if ((data.totalFailed ?? 0) > 0 || failedRows.length > 0) {
         setError(
-          failedDetails.length > 0
-            ? failedDetails.join(' · ')
+          failedRows.length > 0
+            ? ''
             : data.error ?? 'No reservations were created. See server logs or verify Cloudbeds API access.'
         );
       } else if ((data.totalSkipped ?? 0) > 0) {
@@ -432,9 +440,10 @@ export default function TyePlaceholdersTab() {
     setSyncing(true);
     setStatusMessage('');
     setError('');
+    setBlockFailures([]);
     try {
       const res = await fetch(
-        `/api/admin/sync-tye-placeholders${buildDateQuery(selectedDates)}`,
+        `/api/admin/sync-tye-placeholders${buildDateQuery(selectedBlockDate)}`,
         { method: 'POST' }
       );
       const data = await res.json();
@@ -470,67 +479,80 @@ export default function TyePlaceholdersTab() {
 
   const isLoading = loadingSummary || loadingRooms;
 
-  const canCreate = !creating && totalSelected > 0 && selectedDates.length > 0;
+  const canCreate = !creating && totalSelected > 0 && selectedBlockDate.trim().length > 0;
 
-  const GRAD = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
-  const CARD = { background: '#fff', borderRadius: '14px', boxShadow: '0 2px 12px rgba(102,126,234,0.10)', border: '1px solid #e5e7eb' };
+  const setBlockDate = (ymd: string) => {
+    setSelectedBlockDate(ymd);
+    setError('');
+    setStatusMessage('');
+  };
+
+  const CARD = {
+    background: '#fff',
+    borderRadius: '14px',
+    boxShadow: '0 2px 12px rgba(139,111,71,0.12)',
+    border: '1px solid #e5e7eb',
+  };
 
   return (
     <div style={{ fontFamily: 'inherit' }}>
-      {/* ── Page header ─────────────────────────────────────────── */}
+      {/* ── Page header (compact) ───────────────────────────────── */}
       <div style={{
-        background: GRAD,
-        borderRadius: '14px',
-        padding: '18px 24px',
-        marginBottom: '20px',
+        background: ADMIN_GRADIENT,
+        borderRadius: '10px',
+        padding: '8px 14px',
+        marginBottom: '10px',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
         flexWrap: 'wrap',
-        gap: '12px',
-        boxShadow: '0 4px 20px rgba(102,126,234,0.3)',
+        gap: '8px',
+        boxShadow: '0 2px 10px rgba(91, 71, 45, 0.22)',
       }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: '22px', fontWeight: 800, color: '#fff', letterSpacing: '-0.3px' }}>TYE Blocks</h2>
-          <p style={{ margin: '4px 0 0', color: 'rgba(255,255,255,0.8)', fontSize: '13px' }}>
-            Create placeholder reservations · default date is <strong>today</strong>
-          </p>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' }}>
+          <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 800, color: '#fff', letterSpacing: '-0.2px' }}>TYE Blocks</h2>
+          <span style={{ color: 'rgba(255,255,255,0.85)', fontSize: '12px' }}>
+            Placeholders · default <strong>today</strong>
+          </span>
         </div>
         <button
           type="button"
           onClick={handleSync}
           disabled={syncing}
           style={{
-            padding: '9px 20px',
+            padding: '6px 12px',
             background: syncing ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.18)',
             color: '#fff',
-            border: '1.5px solid rgba(255,255,255,0.5)',
-            borderRadius: '9px',
+            border: '1px solid rgba(255,255,255,0.45)',
+            borderRadius: '8px',
             cursor: syncing ? 'not-allowed' : 'pointer',
             fontWeight: 700,
-            fontSize: '14px',
+            fontSize: '12px',
             backdropFilter: 'blur(4px)',
             transition: 'background 0.15s',
           }}
         >
-          {syncing ? '↻ Syncing…' : '↻ Sync with Cloudbeds'}
+          {syncing ? '↻ Sync…' : '↻ Sync'}
         </button>
       </div>
 
-      {/* ── Status chips ────────────────────────────────────────── */}
-      <div style={{ display: 'flex', gap: '10px', marginBottom: '18px', flexWrap: 'wrap' }}>
+      {/* ── Status chips (compact) ─────────────────────────────── */}
+      <div style={{ display: 'flex', gap: '6px', marginBottom: '12px', flexWrap: 'wrap', alignItems: 'stretch' }}>
         {Object.entries(counts).map(([status, count]) => (
           <div key={status} style={{
-            padding: '10px 18px',
-            borderRadius: '12px',
+            padding: '4px 10px',
+            borderRadius: '8px',
             background: '#fff',
-            border: `2px solid ${STATUS_COLORS[status] ?? '#e5e7eb'}20`,
-            minWidth: '100px',
+            border: `1px solid ${STATUS_COLORS[status] ?? '#e5e7eb'}40`,
+            minWidth: '0',
             textAlign: 'center',
-            boxShadow: `0 2px 8px ${STATUS_COLORS[status] ?? '#e5e7eb'}25`,
+            boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
           }}>
-            <div style={{ fontSize: '28px', fontWeight: 800, color: STATUS_COLORS[status], lineHeight: 1 }}>{count}</div>
-            <div style={{ fontSize: '11px', fontWeight: 600, color: '#6b7280', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{STATUS_LABELS[status] ?? status}</div>
+            <span style={{ fontSize: '18px', fontWeight: 800, color: STATUS_COLORS[status], lineHeight: 1 }}>{count}</span>
+            <span style={{ fontSize: '10px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>{STATUS_LABELS[status] ?? status}</span>
           </div>
         ))}
       </div>
@@ -546,6 +568,31 @@ export default function TyePlaceholdersTab() {
           {statusMessage}
         </div>
       )}
+      {blockFailures.length > 0 && (
+        <div
+          role="alert"
+          style={{
+            padding: '14px 18px',
+            background: '#fff7ed',
+            border: '2px solid #ea580c',
+            borderRadius: '10px',
+            marginBottom: '14px',
+          }}
+        >
+          <div style={{ fontWeight: 800, color: '#9a3412', marginBottom: '10px', fontSize: '15px' }}>
+            Block could not be created for {blockFailures.length}{' '}
+            {blockFailures.length === 1 ? 'room / date' : 'rooms / dates'}:
+          </div>
+          <ul style={{ margin: 0, paddingLeft: '22px', color: '#7c2d12', fontSize: '14px', lineHeight: 1.55 }}>
+            {blockFailures.map((f, i) => (
+              <li key={`${f.date}-${f.room}-${i}`}>
+                <strong>Room {f.room}</strong> — date <strong>{f.date}</strong>
+                <div style={{ marginTop: '2px', fontWeight: 500 }}>{f.error}</div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* ── Main layout: control panel + room grid side-by-side ─── */}
       <div style={{ display: 'flex', gap: '18px', alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: '28px' }}>
@@ -555,8 +602,8 @@ export default function TyePlaceholdersTab() {
 
           {/* Date selector */}
           <div style={{ ...CARD, overflow: 'hidden' }}>
-            <div style={{ background: GRAD, padding: '10px 16px' }}>
-              <span style={{ fontWeight: 700, fontSize: '12px', color: '#fff', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Dates to block</span>
+            <div style={{ background: ADMIN_GRADIENT, padding: '10px 16px' }}>
+              <span style={{ fontWeight: 700, fontSize: '12px', color: '#fff', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Date to block</span>
             </div>
             <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
               {[
@@ -565,11 +612,12 @@ export default function TyePlaceholdersTab() {
               ].map(({ label, ymd }) => (
                 <label key={label} style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: ymd ? 'pointer' : 'default', userSelect: 'none' }}>
                   <input
-                    type="checkbox"
-                    checked={ymd ? selectedDates.includes(ymd) : false}
-                    onChange={() => ymd && toggleCreateDate(ymd)}
+                    type="radio"
+                    name="tye-block-date"
+                    checked={!!ymd && selectedBlockDate === ymd}
+                    onChange={() => ymd && setBlockDate(ymd)}
                     disabled={!ymd}
-                    style={{ width: '17px', height: '17px', cursor: 'pointer', accentColor: '#667eea' }}
+                    style={{ width: '17px', height: '17px', cursor: ymd ? 'pointer' : 'default', accentColor: ADMIN_ACCENT }}
                   />
                   <span style={{ fontSize: '14px', fontWeight: 600, color: '#374151' }}>{label}</span>
                   {ymd && <span style={{ fontSize: '12px', color: '#9ca3af', marginLeft: 'auto', fontVariantNumeric: 'tabular-nums' }}>{ymd}</span>}
@@ -577,39 +625,21 @@ export default function TyePlaceholdersTab() {
               ))}
 
               <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: '10px' }}>
-                <div style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '7px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Other date</div>
-                <div style={{ display: 'flex', gap: '6px' }}>
-                  <input
-                    type="date"
-                    value={customDateInput}
-                    onChange={(e) => setCustomDateInput(e.target.value)}
-                    style={{ flex: 1, padding: '7px 9px', border: '1.5px solid #d1d5db', borderRadius: '8px', fontSize: '13px', fontFamily: 'inherit', outline: 'none' }}
-                  />
-                  <button
-                    type="button"
-                    onClick={addCustomCreateDate}
-                    disabled={!customDateInput.trim()}
-                    style={{
-                      padding: '7px 12px',
-                      background: customDateInput.trim() ? GRAD : '#e5e7eb',
-                      color: customDateInput.trim() ? 'white' : '#9ca3af',
-                      border: 'none',
-                      borderRadius: '8px',
-                      cursor: customDateInput.trim() ? 'pointer' : 'not-allowed',
-                      fontWeight: 700,
-                      fontSize: '13px',
-                    }}
-                  >
-                    Add
-                  </button>
-                </div>
+                <div style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '7px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Pick a date</div>
+                <input
+                  type="date"
+                  value={selectedBlockDate}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v) setBlockDate(v);
+                  }}
+                  style={{ width: '100%', padding: '7px 9px', border: '1.5px solid #d1d5db', borderRadius: '8px', fontSize: '13px', fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }}
+                />
               </div>
 
-              {selectedDates.length > 0 && (
-                <div style={{ marginTop: '10px', padding: '8px 12px', background: '#eef2ff', borderRadius: '8px', fontSize: '12px', color: '#4338ca', fontWeight: 600 }}>
-                  Selected: {[...selectedDates].sort().join(', ')}
-                </div>
-              )}
+              <div style={{ marginTop: '4px', padding: '8px 12px', background: ADMIN_TINT_SOLID, borderRadius: '8px', fontSize: '12px', color: ADMIN_TINT_TEXT, fontWeight: 600 }}>
+                Blocking: {selectedBlockDate}
+              </div>
             </div>
           </div>
 
@@ -620,14 +650,14 @@ export default function TyePlaceholdersTab() {
             disabled={!canCreate}
             style={{
               padding: '13px 20px',
-              background: canCreate ? GRAD : '#e5e7eb',
+              background: canCreate ? ADMIN_GRADIENT : '#e5e7eb',
               color: canCreate ? 'white' : '#9ca3af',
               border: 'none',
               borderRadius: '12px',
               cursor: canCreate ? 'pointer' : 'not-allowed',
               fontWeight: 800,
               fontSize: '15px',
-              boxShadow: canCreate ? '0 4px 14px rgba(102,126,234,0.45)' : 'none',
+              boxShadow: canCreate ? '0 4px 14px rgba(139, 111, 71, 0.4)' : 'none',
               transition: 'all 0.2s',
               textAlign: 'center',
               letterSpacing: '-0.2px',
@@ -636,7 +666,7 @@ export default function TyePlaceholdersTab() {
             {creating
               ? '⏳ Creating…'
               : canCreate
-              ? `Block ${totalSelected} room${totalSelected === 1 ? '' : 's'}${selectedDates.length > 1 ? ` × ${selectedDates.length} dates` : ''}`
+              ? `Block ${totalSelected} room${totalSelected === 1 ? '' : 's'} · ${selectedBlockDate}`
               : 'Select rooms below'}
           </button>
 
@@ -644,7 +674,7 @@ export default function TyePlaceholdersTab() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: '7px', padding: '12px 14px', ...CARD }}>
             <div style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: '#9ca3af', marginBottom: '2px' }}>Legend</div>
             {[
-              { bg: '#eef2ff', border: '#667eea', label: 'Selected for blocking' },
+              { bg: ADMIN_TINT_SOLID, border: ADMIN_TINT_BORDER, label: 'Selected for blocking' },
               { bg: '#f0fdf4', border: '#22c55e', label: 'Already blocked' },
             ].map(({ bg, border, label }) => (
               <div key={label} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: '#374151' }}>
@@ -659,12 +689,12 @@ export default function TyePlaceholdersTab() {
         <div style={{ flex: '1 1 0', minWidth: '320px' }}>
           <div style={{ ...CARD, overflow: 'hidden' }}>
             {/* Grid header */}
-            <div style={{ background: GRAD, padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
+            <div style={{ background: ADMIN_GRADIENT, padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
               <span style={{ fontSize: '12px', fontWeight: 700, color: 'rgba(255,255,255,0.9)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
                 Available rooms · {availabilityDate}
               </span>
               <span style={{ fontSize: '13px', color: 'rgba(255,255,255,0.85)', fontWeight: 600 }}>
-                {isLoading ? 'Loading…' : <><strong style={{ color: '#fff' }}>{totalSelected}</strong> / {allRooms.length} selected</>}
+                {isLoading ? 'Loading…' : <><strong style={{ color: '#fff' }}>{totalSelected}</strong> / {eligibleRooms.length} selected</>}
               </span>
             </div>
 
@@ -683,9 +713,9 @@ export default function TyePlaceholdersTab() {
                 disabled={isLoading || filteredRooms.length === 0}
                 style={{
                   padding: '8px 16px',
-                  background: allFilteredSelected ? '#fef2f2' : '#eef2ff',
-                  color: allFilteredSelected ? '#dc2626' : '#4f46e5',
-                  border: `1.5px solid ${allFilteredSelected ? '#fca5a5' : '#c7d2fe'}`,
+                  background: allFilteredSelected ? '#fef2f2' : ADMIN_TINT_SOLID,
+                  color: allFilteredSelected ? '#dc2626' : ADMIN_TINT_TEXT,
+                  border: `1.5px solid ${allFilteredSelected ? '#fca5a5' : ADMIN_TINT_BORDER}`,
                   borderRadius: '8px',
                   cursor: isLoading || filteredRooms.length === 0 ? 'not-allowed' : 'pointer',
                   fontWeight: 700,
@@ -703,7 +733,11 @@ export default function TyePlaceholdersTab() {
                 <div style={{ textAlign: 'center', color: '#9ca3af', padding: '48px 0', fontSize: '14px' }}>Loading rooms from Cloudbeds…</div>
               ) : filteredRooms.length === 0 ? (
                 <div style={{ textAlign: 'center', color: '#9ca3af', padding: '48px 0', fontSize: '14px' }}>
-                  {allRooms.length === 0 ? 'No available rooms found in Cloudbeds.' : 'No rooms match the filter.'}
+                  {allRooms.length === 0
+                    ? 'No available rooms found in Cloudbeds.'
+                    : eligibleRooms.length === 0
+                      ? 'No rooms to show — these room classes are not used for blocks here.'
+                      : 'No rooms match the filter.'}
                 </div>
               ) : (
                 roomsByTypeSections.map(({ typeName, rooms }) => (
@@ -726,7 +760,7 @@ export default function TyePlaceholdersTab() {
                         height: '3px',
                         width: '18px',
                         borderRadius: '2px',
-                        background: GRAD,
+                        background: ADMIN_GRADIENT,
                         flexShrink: 0,
                       }} />
                       <span style={{
@@ -752,10 +786,16 @@ export default function TyePlaceholdersTab() {
                       {rooms.map((room) => {
                         const rid = String(room.roomID);
                         const selected = selectedRoomIDs.has(rid);
-                        const blockedOnSelected = selectedDates.filter((d) => blockedByDate.get(d)?.has(rid));
+                        const blockedOnSelected =
+                          selectedBlockDate && blockedByDate.get(selectedBlockDate)?.has(rid)
+                            ? [selectedBlockDate]
+                            : [];
                         const anyBlockedOnSelected = blockedOnSelected.length > 0;
-                        const allBlockedOnSelected = selectedDates.length > 0 && selectedDates.every((d) => blockedByDate.get(d)?.has(rid));
-                        const tooltip = blockedOnSelected.length > 0 ? `Already blocked on: ${blockedOnSelected.join(', ')}` : `Room ${room.roomName}`;
+                        const allBlockedOnSelected =
+                          !!selectedBlockDate && !!blockedByDate.get(selectedBlockDate)?.has(rid);
+                        const tooltip = anyBlockedOnSelected
+                          ? `Already blocked on: ${selectedBlockDate}`
+                          : `Room ${room.roomName}`;
                         return (
                           <button
                             type="button"
@@ -769,24 +809,24 @@ export default function TyePlaceholdersTab() {
                               boxSizing: 'border-box',
                               padding: '8px 6px',
                               border: selected
-                                ? '2.5px solid #667eea'
+                                ? `2.5px solid ${ADMIN_ACCENT}`
                                 : allBlockedOnSelected
                                 ? '2.5px solid #22c55e'
                                 : '2px solid #e5e7eb',
                               borderRadius: '10px',
                               background: selected
-                                ? 'linear-gradient(135deg,#eef2ff,#e0e7ff)'
+                                ? ADMIN_TINT_BG
                                 : allBlockedOnSelected
                                 ? 'linear-gradient(135deg,#f0fdf4,#dcfce7)'
                                 : '#fff',
-                              color: selected ? '#4f46e5' : allBlockedOnSelected ? '#15803d' : '#374151',
+                              color: selected ? ADMIN_TINT_TEXT : allBlockedOnSelected ? '#15803d' : '#374151',
                               cursor: 'pointer',
                               fontWeight: 800,
                               fontSize: '15px',
                               textAlign: 'center',
                               transition: 'all 0.12s',
                               boxShadow: selected
-                                ? '0 0 0 3px rgba(102,126,234,0.2), 0 2px 6px rgba(102,126,234,0.2)'
+                                ? '0 0 0 3px rgba(139,111,71,0.2), 0 2px 6px rgba(139,111,71,0.18)'
                                 : '0 1px 3px rgba(0,0,0,0.06)',
                             }}
                           >
@@ -804,7 +844,7 @@ export default function TyePlaceholdersTab() {
                               <span style={{
                                 position: 'absolute', top: '-6px', right: '-6px',
                                 width: '18px', height: '18px', borderRadius: '50%',
-                                background: GRAD, border: '2px solid #fff',
+                                background: ADMIN_GRADIENT, border: '2px solid #fff',
                                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                                 fontSize: '10px', color: 'white', fontWeight: 900,
                               }}>★</span>
@@ -831,7 +871,7 @@ export default function TyePlaceholdersTab() {
         const label = formatDateHeading(forDate, today, tomorrow);
         return (
           <div key={forDate} style={{ marginBottom: '18px' }}>
-            <h4 style={{ margin: '0 0 8px', fontSize: '13px', fontWeight: 700, color: '#667eea', textTransform: 'uppercase', letterSpacing: '0.07em' }}>{label}</h4>
+            <h4 style={{ margin: '0 0 8px', fontSize: '13px', fontWeight: 700, color: ADMIN_ACCENT, textTransform: 'uppercase', letterSpacing: '0.07em' }}>{label}</h4>
             {list.length === 0 ? (
               <p style={{ color: '#9ca3af', fontStyle: 'italic', fontSize: '13px', margin: 0 }}>No blocks for this date.</p>
             ) : (

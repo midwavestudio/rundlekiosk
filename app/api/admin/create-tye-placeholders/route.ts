@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { performCloudbedsCheckIn } from '@/lib/cloudbeds-checkin';
-import { savePlaceholder, placeholderExistsForRoom } from '@/lib/tye-placeholder-store';
+import { cancelTyeBlockReservationInCloudbeds, performCloudbedsCheckIn } from '@/lib/cloudbeds-checkin';
+import { placeholderExistsForRoom, saveTyeBlockPlaceholderOrThrow } from '@/lib/tye-placeholder-store';
 
 /**
  * POST /api/admin/create-tye-placeholders
@@ -67,6 +67,7 @@ export async function POST(request: NextRequest) {
           continue;
         }
 
+        let pendingCloudbedsReservationId: string | null = null;
         try {
           const result = await performCloudbedsCheckIn({
             firstName: 'TYE',
@@ -82,34 +83,48 @@ export async function POST(request: NextRequest) {
             stopAfterReservationCreate: true,
           });
 
+          pendingCloudbedsReservationId = result.reservationID;
+
           // Store the confirmed Cloudbeds numeric roomID from the hint (if available)
           // so the Blocks UI can match ✓ badges correctly by roomID.
           const storedRoomID = hint ?? rid;
 
-          try {
-            await savePlaceholder({
-              reservationID: result.reservationID,
-              roomID: storedRoomID,
-              roomName: result.roomName,
-              roomTypeID: result.roomTypeID ?? '',
-              roomTypeName: result.roomTypeName ?? 'Standard Room',
-              forDate,
-              checkOutDate,
-              status: 'available',
-              createdAt: new Date().toISOString(),
-              ...(result.guestID ? { placeholderGuestID: result.guestID } : {}),
-            });
-          } catch (storeErr: unknown) {
-            console.error('savePlaceholder failed (reservation exists in Cloudbeds):', storeErr);
-          }
+          await saveTyeBlockPlaceholderOrThrow({
+            reservationID: result.reservationID,
+            roomID: storedRoomID,
+            roomName: result.roomName,
+            roomTypeID: result.roomTypeID ?? '',
+            roomTypeName: result.roomTypeName ?? 'Standard Room',
+            forDate,
+            checkOutDate,
+            status: 'available',
+            createdAt: new Date().toISOString(),
+            ...(result.guestID ? { placeholderGuestID: result.guestID } : {}),
+          });
+
+          pendingCloudbedsReservationId = null;
 
           summary[forDate].created.push(rid);
           console.log(
             `TYE placeholder via performCloudbedsCheckIn: room ${result.roomName} (id=${storedRoomID}) date ${forDate} reservationID ${result.reservationID}`
           );
         } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : 'Unknown error';
-          summary[forDate].failed.push({ roomID: rid, error: message });
+          let cancelledInCloudbeds = false;
+          if (pendingCloudbedsReservationId) {
+            cancelledInCloudbeds = await cancelTyeBlockReservationInCloudbeds(pendingCloudbedsReservationId);
+            if (!cancelledInCloudbeds) {
+              console.error(
+                `[create-tye-placeholders] Could not cancel Cloudbeds reservation ${pendingCloudbedsReservationId} after failure — remove it manually in Cloudbeds if needed.`
+              );
+            }
+          }
+          let failMsg = err instanceof Error ? err.message : 'Unknown error';
+          if (pendingCloudbedsReservationId) {
+            failMsg = cancelledInCloudbeds
+              ? `${failMsg} (The provisional Cloudbeds reservation for this room was cancelled.)`
+              : `${failMsg} (Could not automatically cancel Cloudbeds reservation ${pendingCloudbedsReservationId} — cancel it in Cloudbeds if it still appears.)`;
+          }
+          summary[forDate].failed.push({ roomID: rid, error: failMsg });
           console.error(`Failed to create placeholder for room ${rid} on ${forDate}:`, err);
         }
       }

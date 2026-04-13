@@ -520,6 +520,50 @@ function findRoomByKey(rooms: any[], roomKey: string): any | undefined {
   });
 }
 
+/** Raw rows from GET getRatePlans (v1.2 base URL). */
+async function fetchCloudbedsRatePlansRows(
+  apiV12Base: string,
+  propertyID: string,
+  apiKey: string,
+  startDate: string,
+  endDate: string
+): Promise<any[]> {
+  const ratesUrl = `${apiV12Base}/getRatePlans?propertyID=${propertyID}&startDate=${startDate}&endDate=${endDate}`;
+  try {
+    const ratesResponse = await fetch(ratesUrl, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    });
+    if (!ratesResponse.ok) return [];
+    const ratesData = await ratesResponse.json();
+    return ratesData.data || ratesData.rates || ratesData || [];
+  } catch {
+    return [];
+  }
+}
+
+/** Rates for one room type + the TYE row (plan 227753 or name contains "tye"). */
+function findTyeRateForRoomType(rates: any[], roomTypeID: string | number | null): {
+  allRatesForRoomType: any[];
+  tyeRate: any | undefined;
+} {
+  const roomTypeStr = String(roomTypeID);
+  const roomTypeNum = Number(roomTypeID);
+  const allRatesForRoomType = rates.filter((rate: any) => {
+    const rtID = rate.roomTypeID ?? rate.room_type_id ?? rate.roomType_id;
+    return String(rtID) === roomTypeStr || Number(rtID) === roomTypeNum;
+  });
+  const tyeRate = allRatesForRoomType.find((rate: any) => {
+    const planID = String(rate.ratePlanID ?? rate.rate_plan_id ?? rate.ratePlan_id ?? '');
+    const planName = String(rate.ratePlanName ?? rate.name ?? '').toLowerCase();
+    return planID === '227753' || Number(planID) === 227753 || planName.includes('tye');
+  });
+  return { allRatesForRoomType, tyeRate };
+}
+
+const TYE_RATE_LOOKUP_FAILED_MSG =
+  'TYE rate plan was not found for this room type in Cloudbeds.';
+
 /** Identifies the unassigned room *line* on the reservation for postRoomAssign (not the physical room id from getRooms). */
 function extractReservationRoomLineId(root: any): string | null {
   const data = root?.data;
@@ -564,6 +608,142 @@ function reservationAlreadyHasPhysicalRoom(root: any): boolean {
     }
   }
   return false;
+}
+
+/** All physical room IDs Cloudbeds reports on the reservation (assigned lines + guest rooms). */
+function extractAssignedRoomIdsFromGetReservationRoot(root: any): string[] {
+  const ids: string[] = [];
+  const d = root?.data ?? root;
+  const assigned = d?.assigned;
+  if (Array.isArray(assigned)) {
+    for (const a of assigned) {
+      if (a?.roomID != null && String(a.roomID).trim() !== '') ids.push(String(a.roomID));
+    }
+  }
+  const gl = d?.guestList;
+  if (gl && typeof gl === 'object') {
+    for (const g of Object.values(gl) as any[]) {
+      if (g?.roomID != null && String(g.roomID).trim() !== '') ids.push(String(g.roomID));
+      const rms = g?.rooms;
+      if (Array.isArray(rms)) {
+        for (const r of rms) {
+          if (r?.roomID != null && String(r.roomID).trim() !== '') ids.push(String(r.roomID));
+        }
+      }
+    }
+  }
+  return [...new Set(ids.map((x) => String(x)))];
+}
+
+async function getReservationAssignedRoomIds(
+  apiV13: string,
+  propertyID: string,
+  apiKey: string,
+  reservationID: string
+): Promise<string[]> {
+  const url = `${apiV13}/getReservation?propertyID=${encodeURIComponent(propertyID)}&reservationID=${encodeURIComponent(reservationID)}`;
+  const res = await fetch(url, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+  });
+  const text = await res.text();
+  let parsed: any = {};
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  if (!res.ok || !parsed?.success) return [];
+  return extractAssignedRoomIdsFromGetReservationRoot(parsed);
+}
+
+async function cancelCloudbedsReservation(
+  apiV13: string,
+  propertyID: string,
+  apiKey: string,
+  reservationID: string
+): Promise<boolean> {
+  try {
+    const p = new URLSearchParams();
+    p.append('propertyID', propertyID);
+    p.append('reservationID', String(reservationID));
+    p.append('status', 'cancelled');
+    const r = await fetch(`${apiV13}/putReservation`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: p.toString(),
+    });
+    const text = await r.text();
+    let parsed: any = {};
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = {};
+    }
+    return r.ok && parsed.success === true;
+  } catch (e) {
+    console.error('[cloudbeds-checkin] cancelCloudbedsReservation failed:', e);
+    return false;
+  }
+}
+
+/**
+ * TYE blocks must land on the requested physical room. Poll getReservation until the expected
+ * room ID appears, another room appears (mismatch → fail), or attempts exhaust.
+ */
+async function verifyPlaceholderReservationRoomOrCancel(
+  apiV13: string,
+  propertyID: string,
+  apiKey: string,
+  reservationID: string,
+  expectedRoomId: string,
+  roomLabel: string,
+  checkInDate: string,
+  log: (step: string, request?: unknown, response?: unknown, error?: string) => void
+): Promise<void> {
+  const expected = String(expectedRoomId).trim();
+  if (!expected) {
+    await cancelCloudbedsReservation(apiV13, propertyID, apiKey, reservationID);
+    throw new Error(
+      `Could not determine a physical room ID for "${roomLabel}" — no TYE block was created.`
+    );
+  }
+
+  const matchesExpected = (got: string) => {
+    const a = String(got).trim();
+    const b = expected;
+    if (a === b) return true;
+    const na = Number(a);
+    const nb = Number(b);
+    return !Number.isNaN(na) && !Number.isNaN(nb) && na === nb;
+  };
+
+  const maxAttempts = 6;
+  const delayMs = 450;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const ids = await getReservationAssignedRoomIds(apiV13, propertyID, apiKey, reservationID);
+    log('tye_verify_room_poll', { attempt: attempt + 1, reservationID, expected, assignedRoomIds: ids });
+
+    if (ids.some((id) => matchesExpected(id))) {
+      return;
+    }
+    if (ids.length > 0) {
+      await cancelCloudbedsReservation(apiV13, propertyID, apiKey, reservationID);
+      throw new Error(
+        `Room "${roomLabel}" was not available for ${checkInDate} — Cloudbeds assigned a different room (${ids.join(', ')}). The draft reservation was cancelled; no block was saved.`
+      );
+    }
+    if (attempt < maxAttempts - 1) await sleep(delayMs);
+  }
+
+  await cancelCloudbedsReservation(apiV13, propertyID, apiKey, reservationID);
+  throw new Error(
+    `Room "${roomLabel}" could not be confirmed on the reservation for ${checkInDate} (no physical room on the booking after creation). The draft reservation was cancelled; no block was saved.`
+  );
 }
 
 export interface PerformCheckInParams {
@@ -725,46 +905,60 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     log('1b_getRooms_stay_dates_error', undefined, undefined, e?.message);
   }
 
-  // Step 2: Get rate (prefer TYE)
+  // Step 2: Get rate — TYE for kiosk (classType TYE). Past start dates often omit TYE from getRatePlans;
+  // resolve TYE from today's calendar when missing so yesterday matches walk-in today.
+  const wantTye = String(classType ?? '').toUpperCase() === 'TYE';
   let rateID: string | number | null = null;
   let ratePlanID: string | number | null = null;
   try {
-    const ratesUrl = `${CLOUDBEDS_API_URL}/getRatePlans?propertyID=${CLOUDBEDS_PROPERTY_ID}&startDate=${checkInDate}&endDate=${checkOutDate}`;
-    const ratesResponse = await fetch(ratesUrl, {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-    });
-    if (ratesResponse.ok) {
-      const ratesData = await ratesResponse.json();
-      const rates = ratesData.data || ratesData.rates || ratesData || [];
-      const roomTypeStr = String(roomTypeID);
-      const roomTypeNum = Number(roomTypeID);
-      const allRatesForRoomType = rates.filter((rate: any) => {
-        const rtID = rate.roomTypeID ?? rate.room_type_id ?? rate.roomType_id;
-        return String(rtID) === roomTypeStr || Number(rtID) === roomTypeNum;
-      });
-      const tyeRate = allRatesForRoomType.find((rate: any) => {
-        const planID = String(rate.ratePlanID ?? rate.rate_plan_id ?? rate.ratePlan_id ?? '');
-        const planName = String(rate.ratePlanName ?? rate.name ?? '').toLowerCase();
-        return planID === '227753' || Number(planID) === 227753 || planName.includes('tye');
-      });
-      if (tyeRate) {
-        rateID = tyeRate.rateID ?? tyeRate.rate_id ?? tyeRate.id;
-        ratePlanID = tyeRate.ratePlanID ?? tyeRate.rate_plan_id ?? tyeRate.ratePlan_id ?? 227753;
-      } else if (allRatesForRoomType.length > 0) {
-        const available = allRatesForRoomType.filter(
-          (rate: any) => (rate.roomsAvailable == null || rate.roomsAvailable > 0) && !rate.roomBlocked
+    const stayRates = await fetchCloudbedsRatePlansRows(
+      CLOUDBEDS_API_URL,
+      CLOUDBEDS_PROPERTY_ID,
+      CLOUDBEDS_API_KEY,
+      checkInDate,
+      checkOutDate
+    );
+    let { allRatesForRoomType, tyeRate } = findTyeRateForRoomType(stayRates, roomTypeID);
+
+    if (!tyeRate && wantTye) {
+      const anchorStart = getLocalDateStr(new Date());
+      const anchorEnd = addOneCalendarDayYmd(anchorStart);
+      const sameWindowAsStay = anchorStart === checkInDate && anchorEnd === checkOutDate;
+      if (!sameWindowAsStay) {
+        log('2_getRatePlans_tye_anchor_window', {
+          stayWindow: { checkInDate, checkOutDate },
+          anchorWindow: { anchorStart, anchorEnd },
+          note: 'TYE not in stay-window rate list — using current calendar to resolve same TYE plan as walk-in today',
+        });
+        const anchorRates = await fetchCloudbedsRatePlansRows(
+          CLOUDBEDS_API_URL,
+          CLOUDBEDS_PROPERTY_ID,
+          CLOUDBEDS_API_KEY,
+          anchorStart,
+          anchorEnd
         );
-        const fallback = available[0] ?? allRatesForRoomType[0];
-        rateID = fallback.rateID ?? fallback.rate_id ?? fallback.id;
-        ratePlanID = fallback.ratePlanID ?? fallback.rate_plan_id ?? fallback.ratePlan_id;
+        tyeRate = findTyeRateForRoomType(anchorRates, roomTypeID).tyeRate;
       }
     }
-  } catch (_) {
-    // continue without rate
+
+    if (tyeRate) {
+      rateID = tyeRate.rateID ?? tyeRate.rate_id ?? tyeRate.id;
+      ratePlanID = tyeRate.ratePlanID ?? tyeRate.rate_plan_id ?? tyeRate.ratePlan_id ?? 227753;
+    } else if (wantTye) {
+      throw new Error(TYE_RATE_LOOKUP_FAILED_MSG);
+    } else if (allRatesForRoomType.length > 0) {
+      const available = allRatesForRoomType.filter(
+        (rate: any) => (rate.roomsAvailable == null || rate.roomsAvailable > 0) && !rate.roomBlocked
+      );
+      const fallback = available[0] ?? allRatesForRoomType[0];
+      rateID = fallback.rateID ?? fallback.rate_id ?? fallback.id;
+      ratePlanID = fallback.ratePlanID ?? fallback.rate_plan_id ?? fallback.ratePlan_id;
+    }
+  } catch (e: unknown) {
+    if (e instanceof Error && e.message === TYE_RATE_LOOKUP_FAILED_MSG) {
+      throw e;
+    }
+    // Non-TYE or transient errors: proceed without rate (legacy behavior)
   }
 
   const roomTypeIDStr = String(roomTypeID ?? '');
@@ -851,10 +1045,18 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     return { ok, text: responseText, data: parsed };
   };
 
+  if (stopAfterReservationCreate && (!canAttachPhysicalRoomToReservation || roomIdForCreate == null)) {
+    throw new Error(
+      'TYE block requires a bookable physical room ID from Cloudbeds. Unset CLOUDBEDS_SKIP_POST_RESERVATION_ROOM_ID if it is set to 1, or ensure getRooms returns this room for the stay dates.'
+    );
+  }
+
   const first = await runPostReservation(canAttachPhysicalRoomToReservation);
   if (first.ok) {
     reservationData = first.data;
-  } else if (canAttachPhysicalRoomToReservation) {
+  } else if (canAttachPhysicalRoomToReservation && !stopAfterReservationCreate) {
+    // Walk-in / kiosk: if the specific room cannot be booked, fall back to room-type-only reservation.
+    // TYE blocks (stopAfterReservationCreate): never do this — it creates a booking on the wrong room or unassigned.
     const second = await runPostReservation(false);
     if (!second.ok) {
       const msg =
@@ -870,7 +1072,12 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       note: 'Physical room was not available for postReservation; created unassigned reservation for payment as confirmed',
     });
   } else {
-    const msg = first.data?.message || first.text || 'Failed to create reservation in Cloudbeds';
+    const msg =
+      first.data?.message ||
+      first.text ||
+      (stopAfterReservationCreate
+        ? `Room "${selectedRoomName ?? roomName}" is not available for ${checkInDate} (Cloudbeds could not book that specific room).`
+        : 'Failed to create reservation in Cloudbeds');
     throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
   }
 
@@ -885,6 +1092,17 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
 
   // TYE placeholders: identical postReservation to kiosk, but no payment / assign / check-in.
   if (stopAfterReservationCreate === true) {
+    const expectedPhysicalRoomId = String(roomIdForStayPeriod ?? actualRoomID ?? '').trim();
+    await verifyPlaceholderReservationRoomOrCancel(
+      apiV13,
+      CLOUDBEDS_PROPERTY_ID,
+      CLOUDBEDS_API_KEY,
+      String(reservationID),
+      expectedPhysicalRoomId,
+      String(selectedRoomName ?? roomName),
+      checkInDate,
+      log
+    );
     return {
       success: true,
       guestID,
@@ -1261,4 +1479,18 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     message: 'Guest successfully checked in to Cloudbeds',
     reservationStatus: 'checked_in',
   };
+}
+
+/**
+ * Cancel a Cloudbeds reservation (e.g. when the local TYE placeholder could not be saved after
+ * postReservation succeeded). Uses the same API base URL resolution as performCloudbedsCheckIn.
+ */
+export async function cancelTyeBlockReservationInCloudbeds(reservationID: string): Promise<boolean> {
+  const CLOUDBEDS_API_KEY = process.env.CLOUDBEDS_API_KEY;
+  const CLOUDBEDS_PROPERTY_ID = process.env.CLOUDBEDS_PROPERTY_ID;
+  const CLOUDBEDS_API_URL = process.env.CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.2';
+  const baseUrl = (CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.2').replace(/\/v1\.\d+\/?$/, '');
+  const apiV13 = `${baseUrl.replace(/\/$/, '')}/v1.3`;
+  if (!CLOUDBEDS_API_KEY || !CLOUDBEDS_PROPERTY_ID) return false;
+  return cancelCloudbedsReservation(apiV13, CLOUDBEDS_PROPERTY_ID, CLOUDBEDS_API_KEY, reservationID);
 }

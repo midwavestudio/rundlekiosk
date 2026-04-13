@@ -203,7 +203,7 @@ export default function AdminPage() {
           }}
           style={{
             background: 'transparent',
-            color: '#667eea',
+            color: '#8B6F47',
             textDecoration: 'underline',
             padding: '10px',
           }}
@@ -227,7 +227,7 @@ export default function AdminPage() {
       >
         <p style={{ margin: 0 }}>
           <strong>Guest Kiosk:</strong>{' '}
-          <a href="/" style={{ color: '#667eea' }}>
+          <a href="/" style={{ color: '#8B6F47' }}>
             Go to Guest Check-In/Out
           </a>
         </p>

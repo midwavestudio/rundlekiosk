@@ -110,13 +110,13 @@ input {
 
 input:focus {
   outline: none;
-  border-color: #667eea;
+  border-color: #8B6F47;
 }
 
 button {
   width: 100%;
   padding: 14px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #8B6F47 0%, #A0826D 100%);
   color: white;
   border: none;
   border-radius: 8px;
@@ -128,7 +128,7 @@ button {
 
 button:hover {
   transform: translateY(-2px);
-  box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+  box-shadow: 0 5px 15px rgba(139, 111, 71, 0.4);
 }
 
 button:active {
@@ -167,7 +167,7 @@ button:disabled {
 }
 
 .user-info strong {
-  color: #667eea;
+  color: #8B6F47;
 }
 
 .api-status {
@@ -206,7 +206,7 @@ button:disabled {
   width: 16px;
   height: 16px;
   border: 3px solid #f3f3f3;
-  border-top: 3px solid #667eea;
+  border-top: 3px solid #8B6F47;
   border-radius: 50%;
   animation: spin 1s linear infinite;
   margin-left: 8px;
