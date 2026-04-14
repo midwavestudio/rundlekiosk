@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { displayRoomNumberLabel } from '@/lib/room-display';
 
 interface CheckInModalProps {
   reservation: any;
@@ -193,7 +194,7 @@ export default function CheckInModal({ reservation, onClose }: CheckInModalProps
                 textAlign: 'center'
               }}>
                 <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#10b981', marginBottom: '8px' }}>
-                  Room {selectedRoom}
+                  {displayRoomNumberLabel(selectedRoom)}
                 </div>
                 <div style={{ fontSize: '14px', color: '#666' }}>Assigned</div>
               </div>
@@ -308,7 +309,7 @@ export default function CheckInModal({ reservation, onClose }: CheckInModalProps
                 Check-In Complete!
               </h3>
               <div style={{ color: '#666', marginBottom: '24px' }}>
-                <div style={{ marginBottom: '8px' }}>{reservation.guestName} has been checked into Room {selectedRoom}</div>
+                <div style={{ marginBottom: '8px' }}>{reservation.guestName} has been checked into {displayRoomNumberLabel(selectedRoom)}</div>
                 {isBNSFCrew && (
                   <div style={{
                     padding: '12px',

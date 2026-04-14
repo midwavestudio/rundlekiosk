@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import { displayRoomNumberLabel } from '@/lib/room-display';
 
 interface GuestCheckOutProps {
   onBack: () => void;
@@ -252,7 +253,7 @@ export default function GuestCheckOut({ onBack }: GuestCheckOutProps) {
                   <div className="guest-info">
                     <div className="guest-name">{guestTitle(guest)}</div>
                     <div className="guest-details">
-                      Room: {guest.roomNumber || '—'}
+                      {displayRoomNumberLabel(guest.roomNumber)}
                     </div>
                     {guest.checkInDate && (
                       <div className="guest-details">

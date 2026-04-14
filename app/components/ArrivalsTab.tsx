@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
-import { displayRoomNumberLabel } from '@/lib/room-display';
+import { resolveRoomNumberLabel } from '@/lib/room-display';
 
 interface ArrivalsTabProps {
   onCheckIn: (reservation: any) => void;
@@ -35,6 +35,11 @@ interface Row {
   cloudbedsReservationID?: string;
   cloudbedsGuestID?: string;
   rawData: CheckedInGuest;
+}
+
+interface RoomDirectoryEntry {
+  roomID: string;
+  roomName: string;
 }
 
 /** Calendar day in local timezone (matches `<input type="date">`). */
@@ -125,6 +130,7 @@ function avatarColor(name: string): string {
 
 export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
   const [checkedInGuests, setCheckedInGuests] = useState<CheckedInGuest[]>([]);
+  const [roomNameById, setRoomNameById] = useState<Record<string, string>>({});
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedRow, setSelectedRow] = useState<Row | null>(null);
 
@@ -145,6 +151,30 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
     return () => clearInterval(id);
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    const loadRoomDirectory = async () => {
+      try {
+        const res = await fetch('/api/admin/all-rooms');
+        const data = await res.json();
+        if (!res.ok || !data?.success || !Array.isArray(data.rooms) || cancelled) return;
+        const next: Record<string, string> = {};
+        for (const room of data.rooms as RoomDirectoryEntry[]) {
+          const id = String(room?.roomID ?? '').trim();
+          const name = String(room?.roomName ?? '').trim();
+          if (id && name) next[id] = name;
+        }
+        setRoomNameById(next);
+      } catch {
+        // Non-fatal: keep fallback display behavior.
+      }
+    };
+    loadRoomDirectory();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const rows: Row[] = useMemo(() =>
     checkedInGuests.map((g, i) => ({
       id: `guest-${i}`,
@@ -154,7 +184,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
       clcNumber: g.clcNumber || '—',
       phoneNumber: g.phoneNumber || '—',
       class: g.class || '—',
-      roomNumber: displayRoomNumberLabel(g.roomNumber),
+      roomNumber: resolveRoomNumberLabel(g.roomNumber, roomNameById),
       checkInDate: fmtDate(g.checkInTime),
       checkInTime: fmtTime(g.checkInTime),
       checkInIso: g.checkInTime,
@@ -162,7 +192,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
       cloudbedsGuestID: g.cloudbedsGuestID,
       rawData: g,
     })),
-  [checkedInGuests]);
+  [checkedInGuests, roomNameById]);
 
   /** Only guests whose check-in falls on the selected local calendar day. */
   const rowsForSelectedDate = useMemo(
@@ -204,7 +234,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
         clcNumber: g.clcNumber || '—',
         phoneNumber: g.phoneNumber || '—',
         class: g.class || '—',
-        roomNumber: displayRoomNumberLabel(g.roomNumber),
+        roomNumber: resolveRoomNumberLabel(g.roomNumber, roomNameById),
         checkInDate: fmtDate(g.checkInTime),
         checkInTime: fmtTime(g.checkInTime),
         checkInIso: g.checkInTime,
@@ -214,7 +244,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
       }))
     ];
     return allRows.filter(r => inDateRange(r.checkInIso, from, to));
-  }, [rows, exportFrom, exportTo]);
+  }, [rows, exportFrom, exportTo, roomNameById]);
 
   const toggleExportPanel = () => {
     setShowExportPanel((v) => {

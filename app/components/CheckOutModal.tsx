@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { displayRoomNumberLabel } from '@/lib/room-display';
 
 interface CheckOutModalProps {
   reservation: any;
@@ -138,7 +139,7 @@ export default function CheckOutModal({ reservation, onClose }: CheckOutModalPro
                 <h3 style={{ margin: '0 0 12px 0', fontSize: '18px' }}>{reservation.guestName}</h3>
                 <div style={{ fontSize: '14px', color: '#666' }}>
                   <div><strong>Reservation:</strong> {reservation.reservationId}</div>
-                  <div><strong>Room:</strong> {reservation.roomNumber}</div>
+                  <div>{displayRoomNumberLabel(reservation.roomNumber)}</div>
                   <div><strong>Dates:</strong> {reservation.checkInDate} - {reservation.checkOutDate}</div>
                 </div>
               </div>
@@ -247,7 +248,7 @@ export default function CheckOutModal({ reservation, onClose }: CheckOutModalPro
               </h3>
               <div style={{ color: '#666', marginBottom: '24px' }}>
                 <div style={{ marginBottom: '8px' }}>
-                  {reservation.guestName} has been checked out from Room {reservation.roomNumber}
+                  {reservation.guestName} has been checked out from {displayRoomNumberLabel(reservation.roomNumber)}
                 </div>
                 {isSameDay && (
                   <div style={{
@@ -259,7 +260,7 @@ export default function CheckOutModal({ reservation, onClose }: CheckOutModalPro
                     fontSize: '14px',
                     color: '#065f46'
                   }}>
-                    Room {reservation.roomNumber} has been unassigned and is now available for a new check-in today.
+                    {displayRoomNumberLabel(reservation.roomNumber)} has been unassigned and is now available for a new check-in today.
                   </div>
                 )}
                 {reservation.isBNSFCrew && (

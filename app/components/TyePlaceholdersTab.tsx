@@ -9,6 +9,7 @@ import {
   ADMIN_TINT_SOLID,
   ADMIN_TINT_TEXT,
 } from '../lib/adminTheme';
+import { formatCloudbedsRoomNameLabel } from '@/lib/room-display';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -586,7 +587,7 @@ export default function TyePlaceholdersTab() {
           <ul style={{ margin: 0, paddingLeft: '22px', color: '#7c2d12', fontSize: '14px', lineHeight: 1.55 }}>
             {blockFailures.map((f, i) => (
               <li key={`${f.date}-${f.room}-${i}`}>
-                <strong>Room {f.room}</strong> — date <strong>{f.date}</strong>
+                <strong>{formatCloudbedsRoomNameLabel(f.room)}</strong> — date <strong>{f.date}</strong>
                 <div style={{ marginTop: '2px', fontWeight: 500 }}>{f.error}</div>
               </li>
             ))}
@@ -795,7 +796,7 @@ export default function TyePlaceholdersTab() {
                           !!selectedBlockDate && !!blockedByDate.get(selectedBlockDate)?.has(rid);
                         const tooltip = anyBlockedOnSelected
                           ? `Already blocked on: ${selectedBlockDate}`
-                          : `Room ${room.roomName}`;
+                          : formatCloudbedsRoomNameLabel(room.roomName);
                         return (
                           <button
                             type="button"
@@ -830,7 +831,7 @@ export default function TyePlaceholdersTab() {
                                 : '0 1px 3px rgba(0,0,0,0.06)',
                             }}
                           >
-                            {room.roomName}
+                            {formatCloudbedsRoomNameLabel(room.roomName)}
                             {anyBlockedOnSelected && (
                               <span style={{
                                 position: 'absolute', top: '-6px', right: '-6px',
@@ -887,7 +888,7 @@ export default function TyePlaceholdersTab() {
                   <tbody>
                     {list.map((p, i) => (
                       <tr key={p.id} style={{ borderBottom: i < list.length - 1 ? '1px solid #f3f4f6' : 'none', background: i % 2 === 0 ? '#fff' : '#fafafa' }}>
-                        <td style={{ padding: '9px 14px', fontWeight: 800, color: '#111' }}>{p.roomName}</td>
+                        <td style={{ padding: '9px 14px', fontWeight: 800, color: '#111' }}>{formatCloudbedsRoomNameLabel(p.roomName)}</td>
                         <td style={{ padding: '9px 14px', color: '#6b7280' }}>{p.roomTypeName}</td>
                         <td style={{ padding: '9px 14px', fontFamily: 'monospace', fontSize: '12px', color: '#374151' }}>{p.reservationID}</td>
                         <td style={{ padding: '9px 14px' }}>

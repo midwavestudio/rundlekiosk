@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { buildGuestSyntheticEmail } from '@/lib/guest-email';
+import { formatCloudbedsRoomNameLabel, kioskPersistRoomDisplayName } from '@/lib/room-display';
 
 interface GuestCheckInProps {
   onBack: () => void;
@@ -142,7 +143,7 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
         lastName: formData.lastName.trim(),
         class: 'TYE',
         checkInTime: new Date().toISOString(),
-        roomNumber: (selectedRoom?.roomName ?? formData.roomNumber).trim(),
+        roomNumber: kioskPersistRoomDisplayName(selectedRoom, formData.roomNumber),
       };
 
       // Call Cloudbeds API to create reservation and check in
@@ -386,7 +387,7 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
               <option value="">-- Select a room --</option>
               {availableRooms.map((room) => (
                 <option key={room.roomID} value={room.roomID}>
-                  Room {room.roomName} ({room.roomTypeName}){room.placeholderReservationID ? ' ★' : ''}
+                  {formatCloudbedsRoomNameLabel(room.roomName)}{room.placeholderReservationID ? ' ★' : ''}
                 </option>
               ))}
             </select>

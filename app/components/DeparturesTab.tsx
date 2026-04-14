@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
-import { displayRoomNumberLabel } from '@/lib/room-display';
+import { resolveRoomNumberLabel } from '@/lib/room-display';
 
 interface DeparturesTabProps {
   onCheckOut: (reservation: any) => void;
@@ -40,6 +40,11 @@ interface Row {
   cloudbedsReservationID?: string;
   cloudbedsGuestID?: string;
   rawData: StoredGuest;
+}
+
+interface RoomDirectoryEntry {
+  roomID: string;
+  roomName: string;
 }
 
 function fmtDate(iso: string): string {
@@ -130,7 +135,12 @@ function avatarColor(name: string): string {
   return AVATAR_COLORS[h % AVATAR_COLORS.length];
 }
 
-function guestToRow(g: StoredGuest, i: number, prefix: string): Row {
+function guestToRow(
+  g: StoredGuest,
+  i: number,
+  prefix: string,
+  roomNameById: Record<string, string>
+): Row {
   return {
     id: `${prefix}-${i}`,
     guestName: `${g.firstName} ${g.lastName}`.trim(),
@@ -139,7 +149,7 @@ function guestToRow(g: StoredGuest, i: number, prefix: string): Row {
     clcNumber: g.clcNumber || '—',
     phoneNumber: g.phoneNumber || '—',
     class: g.class || '—',
-    roomNumber: displayRoomNumberLabel(g.roomNumber),
+    roomNumber: resolveRoomNumberLabel(g.roomNumber, roomNameById),
     checkInDate: fmtDate(g.checkInTime),
     checkInTime: fmtTime(g.checkInTime),
     checkInIso: g.checkInTime,
@@ -156,6 +166,7 @@ function guestToRow(g: StoredGuest, i: number, prefix: string): Row {
 export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabProps) {
   const [checkedInGuests, setCheckedInGuests] = useState<StoredGuest[]>([]);
   const [checkOutHistory, setCheckOutHistory] = useState<StoredGuest[]>([]);
+  const [roomNameById, setRoomNameById] = useState<Record<string, string>>({});
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedRow, setSelectedRow] = useState<Row | null>(null);
 
@@ -176,14 +187,38 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
     return () => clearInterval(id);
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    const loadRoomDirectory = async () => {
+      try {
+        const res = await fetch('/api/admin/all-rooms');
+        const data = await res.json();
+        if (!res.ok || !data?.success || !Array.isArray(data.rooms) || cancelled) return;
+        const next: Record<string, string> = {};
+        for (const room of data.rooms as RoomDirectoryEntry[]) {
+          const id = String(room?.roomID ?? '').trim();
+          const name = String(room?.roomName ?? '').trim();
+          if (id && name) next[id] = name;
+        }
+        setRoomNameById(next);
+      } catch {
+        // Non-fatal: keep fallback display behavior.
+      }
+    };
+    loadRoomDirectory();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const rows: Row[] = useMemo(() => {
-    const inRows = checkedInGuests.map((g, i) => guestToRow(g, i, 'in'));
-    const outRows = checkOutHistory.map((g, i) => guestToRow(g, i, 'out'));
+    const inRows = checkedInGuests.map((g, i) => guestToRow(g, i, 'in', roomNameById));
+    const outRows = checkOutHistory.map((g, i) => guestToRow(g, i, 'out', roomNameById));
     return [
       ...inRows,
       ...outRows.slice().reverse(),
     ];
-  }, [checkedInGuests, checkOutHistory]);
+  }, [checkedInGuests, checkOutHistory, roomNameById]);
 
   const dateFilteredRows = useMemo(() => {
     const todayYmd = localYmd(new Date());
