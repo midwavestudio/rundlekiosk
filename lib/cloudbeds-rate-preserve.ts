@@ -36,11 +36,12 @@ export function unwrapReservationFromGetReservation(resData: any): any | null {
  * status or checkoutDate.  This function is intentionally a no-op — it returns an empty
  * object so callers spread nothing.  It is kept so call-sites remain readable.
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function extractRatePreservationFields(
   _activeRoom: any,
   _reservationRecord: any
 ): Record<string, string> {
+  void _activeRoom;
+  void _reservationRecord;
   // Intentionally empty — see comment above.
   return {};
 }

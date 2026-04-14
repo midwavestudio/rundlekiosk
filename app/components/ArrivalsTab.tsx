@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
+import { displayRoomNumberLabel } from '@/lib/room-display';
 
 interface ArrivalsTabProps {
   onCheckIn: (reservation: any) => void;
@@ -153,7 +154,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
       clcNumber: g.clcNumber || '—',
       phoneNumber: g.phoneNumber || '—',
       class: g.class || '—',
-      roomNumber: g.roomNumber || '—',
+      roomNumber: displayRoomNumberLabel(g.roomNumber),
       checkInDate: fmtDate(g.checkInTime),
       checkInTime: fmtTime(g.checkInTime),
       checkInIso: g.checkInTime,
@@ -176,7 +177,8 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
       r.guestName.toLowerCase().includes(q) ||
       r.clcNumber.toLowerCase().includes(q) ||
       r.phoneNumber.includes(q) ||
-      r.roomNumber.toLowerCase().includes(q)
+      r.roomNumber.toLowerCase().includes(q) ||
+      (r.rawData.roomNumber || '').toLowerCase().includes(q)
     );
   }, [rowsForSelectedDate, searchTerm]);
 
@@ -202,7 +204,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
         clcNumber: g.clcNumber || '—',
         phoneNumber: g.phoneNumber || '—',
         class: g.class || '—',
-        roomNumber: g.roomNumber || '—',
+        roomNumber: displayRoomNumberLabel(g.roomNumber),
         checkInDate: fmtDate(g.checkInTime),
         checkInTime: fmtTime(g.checkInTime),
         checkInIso: g.checkInTime,

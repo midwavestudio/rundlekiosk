@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
+import { displayRoomNumberLabel } from '@/lib/room-display';
 
 interface DeparturesTabProps {
   onCheckOut: (reservation: any) => void;
@@ -138,7 +139,7 @@ function guestToRow(g: StoredGuest, i: number, prefix: string): Row {
     clcNumber: g.clcNumber || '—',
     phoneNumber: g.phoneNumber || '—',
     class: g.class || '—',
-    roomNumber: g.roomNumber || '—',
+    roomNumber: displayRoomNumberLabel(g.roomNumber),
     checkInDate: fmtDate(g.checkInTime),
     checkInTime: fmtTime(g.checkInTime),
     checkInIso: g.checkInTime,
@@ -202,7 +203,8 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
       r.guestName.toLowerCase().includes(q) ||
       r.clcNumber.toLowerCase().includes(q) ||
       r.phoneNumber.includes(q) ||
-      r.roomNumber.toLowerCase().includes(q)
+      r.roomNumber.toLowerCase().includes(q) ||
+      (r.rawData.roomNumber || '').toLowerCase().includes(q)
     );
   }, [dateFilteredRows, searchTerm]);
 

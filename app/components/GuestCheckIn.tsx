@@ -133,6 +133,8 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
 
     try {
       let reservationConfirmedOnly = false;
+      // Match dropdown value (Cloudbeds roomID) to the row so we persist human roomName for lists/exports.
+      const selectedRoom = availableRooms.find((r) => String(r.roomID) === String(formData.roomNumber));
       // Add timestamp (trim names for storage consistency with API)
       const checkInData: GuestData = {
         ...formData,
@@ -140,12 +142,11 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
         lastName: formData.lastName.trim(),
         class: 'TYE',
         checkInTime: new Date().toISOString(),
+        roomNumber: (selectedRoom?.roomName ?? formData.roomNumber).trim(),
       };
 
       // Call Cloudbeds API to create reservation and check in
       try {
-        // Find the selected room (compare as strings so number/string from API doesn't break match)
-        const selectedRoom = availableRooms.find(r => String(r.roomID) === String(formData.roomNumber));
         const roomIdentifier = selectedRoom ? selectedRoom.roomID : formData.roomNumber;
         
         console.log('Checking in with room:', { roomID: roomIdentifier, roomName: selectedRoom?.roomName });
