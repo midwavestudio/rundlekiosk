@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import GuestCheckIn from './components/GuestCheckIn';
 import GuestCheckOut from './components/GuestCheckOut';
+import KioskGlobalErrorLogger from './components/KioskGlobalErrorLogger';
 
 type Screen = 'home' | 'checkin' | 'checkout';
 
@@ -10,15 +11,26 @@ export default function Home() {
   const [currentScreen, setCurrentScreen] = useState<Screen>('home');
 
   if (currentScreen === 'checkin') {
-    return <GuestCheckIn onBack={() => setCurrentScreen('home')} />;
+    return (
+      <>
+        <KioskGlobalErrorLogger />
+        <GuestCheckIn onBack={() => setCurrentScreen('home')} />
+      </>
+    );
   }
 
   if (currentScreen === 'checkout') {
-    return <GuestCheckOut onBack={() => setCurrentScreen('home')} />;
+    return (
+      <>
+        <KioskGlobalErrorLogger />
+        <GuestCheckOut onBack={() => setCurrentScreen('home')} />
+      </>
+    );
   }
 
   return (
     <div className="kiosk-container">
+      <KioskGlobalErrorLogger />
       <div className="kiosk-header">
         <h1>Welcome to Rundle Suites</h1>
         <p className="subtitle">Please select an option to continue</p>

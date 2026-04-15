@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { displayRoomNumberLabel } from '@/lib/room-display';
+import { appendKioskError } from '@/lib/kiosk-error-log';
 
 interface CheckOutModalProps {
   reservation: any;
@@ -70,6 +71,14 @@ export default function CheckOutModal({ reservation, onClose }: CheckOutModalPro
       setStep('success');
     } catch (error: any) {
       console.error('Check-out error:', error);
+      appendKioskError({
+        source: 'admin-check-out',
+        message: error?.message || 'Admin check-out failed',
+        detail: {
+          reservation: reservation?.rawData ?? reservation,
+          stack: error instanceof Error ? error.stack : undefined,
+        },
+      });
       alert(`Check-out failed: ${error.message}. Please try again.`);
       setStep('confirm');
     }

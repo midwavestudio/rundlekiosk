@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import type { User, Auth } from 'firebase/auth';
+import Link from 'next/link';
 import Dashboard from '../components/Dashboard';
 
 /**
@@ -230,6 +231,13 @@ export default function AdminPage() {
           <a href="/" style={{ color: '#8B6F47' }}>
             Go to Guest Check-In/Out
           </a>
+        </p>
+        <p style={{ margin: '12px 0 0', fontSize: '13px' }}>
+          After you sign in: use the <strong>Errors</strong> tab or{' '}
+          <Link href="/admin/errors" style={{ color: '#8B6F47' }}>
+            Operation error log
+          </Link>{' '}
+          for failed check-ins/check-outs recorded on this device.
         </p>
       </div>
     </div>

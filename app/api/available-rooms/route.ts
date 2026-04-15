@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAvailablePlaceholdersByDate } from '@/lib/tye-placeholder-store';
+import { isConRoomExcludedFromKiosk } from '@/lib/kiosk-room-exclusions';
 
 export const dynamic = 'force-dynamic';
 
@@ -338,6 +339,7 @@ export async function GET(request: NextRequest) {
         .map(formatRoom)
         .filter((r: any) => r.roomID !== 'unknown' && !r.roomName.includes('(Remove BE)') && !r.roomTypeName.includes('(Remove BE)'));
       rooms = await mergePlaceholderRooms(rooms, today);
+      rooms = rooms.filter((r: { roomTypeName: string; roomName: string }) => !isConRoomExcludedFromKiosk(r.roomTypeName, r.roomName));
       return NextResponse.json({
         success: true,
         rooms,
@@ -394,6 +396,7 @@ export async function GET(request: NextRequest) {
         .filter((r: any) => r.roomID !== 'unknown' && !r.roomName.includes('(Remove BE)') && !r.roomTypeName.includes('(Remove BE)'));
 
       rooms = await mergePlaceholderRooms(rooms, today);
+      rooms = rooms.filter((r: { roomTypeName: string; roomName: string }) => !isConRoomExcludedFromKiosk(r.roomTypeName, r.roomName));
 
       return NextResponse.json({
         success: true,

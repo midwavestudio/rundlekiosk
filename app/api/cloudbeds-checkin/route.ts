@@ -22,6 +22,23 @@ function logCheckInFailure(context: {
   );
 }
 
+/** Guest flow succeeded in Cloudbeds but physical room could not be booked / check-in deferred — staff should review. */
+function logCheckInStaffAlert(context: {
+  guest: string;
+  room: string;
+  reservationID: string;
+  message?: string;
+  flow: 'walk_in' | 'tye_placeholder';
+}) {
+  console.warn(
+    '[CHECK-IN STAFF ALERT] Requested room unavailable or check-in deferred — confirmed reservation without that room:',
+    JSON.stringify({
+      timestamp: new Date().toISOString(),
+      ...context,
+    })
+  );
+}
+
 export async function POST(request: NextRequest) {
   let debugLog: Array<{ step: string; request?: unknown; response?: unknown; error?: string }> | undefined;
   try {
@@ -90,6 +107,16 @@ export async function POST(request: NextRequest) {
           { status: assignRes.ok ? 500 : assignRes.status }
         );
       }
+      if (assignData.reservationStatus === 'confirmed') {
+        logCheckInStaffAlert({
+          guest: `${String(firstName).trim()} ${String(lastName).trim()}`,
+          room: String(roomName),
+          reservationID: String(assignData.reservationID ?? placeholderReservationID),
+          message: typeof assignData.message === 'string' ? assignData.message : undefined,
+          flow: 'tye_placeholder',
+        });
+      }
+
       return NextResponse.json({
         success: true,
         reservationID: assignData.reservationID,
@@ -170,6 +197,15 @@ export async function POST(request: NextRequest) {
         checkOutDate: bodyCheckOut,
         debugLog,
       });
+      if (result.reservationStatus === 'confirmed') {
+        logCheckInStaffAlert({
+          guest: `${String(firstName).trim()} ${String(lastName).trim()}`,
+          room: String(roomName),
+          reservationID: String(result.reservationID),
+          message: result.message,
+          flow: 'walk_in',
+        });
+      }
       const response: Record<string, unknown> = {
         success: true,
         guestID: result.guestID,

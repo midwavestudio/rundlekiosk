@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { displayRoomNumberLabel } from '@/lib/room-display';
+import { appendKioskError } from '@/lib/kiosk-error-log';
 
 interface GuestCheckOutProps {
   onBack: () => void;
@@ -151,6 +152,23 @@ export default function GuestCheckOut({ onBack }: GuestCheckOutProps) {
           ? err.message
           : 'Check-out failed. Please try again or contact the front desk.';
       setError(msg);
+      appendKioskError({
+        source: 'check-out',
+        message: msg,
+        detail: selectedGuest
+          ? {
+              firstName: selectedGuest.firstName,
+              lastName: selectedGuest.lastName,
+              displayName: selectedGuest.displayName,
+              roomNumber: selectedGuest.roomNumber,
+              cloudbedsReservationID: selectedGuest.cloudbedsReservationID,
+              cloudbedsGuestID: selectedGuest.cloudbedsGuestID,
+              checkInDate: selectedGuest.checkInDate,
+              checkOutDate: selectedGuest.checkOutDate,
+              stack: err instanceof Error ? err.stack : undefined,
+            }
+          : { stack: err instanceof Error ? err.stack : undefined },
+      });
     } finally {
       setLoading(false);
     }

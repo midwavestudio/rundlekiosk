@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { displayRoomNumberLabel } from '@/lib/room-display';
+import { appendKioskError } from '@/lib/kiosk-error-log';
 
 interface CheckInModalProps {
   reservation: any;
@@ -69,6 +70,15 @@ export default function CheckInModal({ reservation, onClose }: CheckInModalProps
       setStep('success');
     } catch (error: any) {
       console.error('Check-in error:', error);
+      appendKioskError({
+        source: 'admin-check-in',
+        message: error?.message || 'Admin check-in failed',
+        detail: {
+          selectedRoom,
+          reservation: reservation?.rawData ?? reservation,
+          stack: error instanceof Error ? error.stack : undefined,
+        },
+      });
       alert(`Check-in failed: ${error.message}. Please try again.`);
       setStep('confirm');
     }

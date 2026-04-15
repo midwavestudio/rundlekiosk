@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { buildGuestSyntheticEmail } from '@/lib/guest-email';
 import { formatCloudbedsRoomNameLabel, kioskPersistRoomDisplayName } from '@/lib/room-display';
+import { appendKioskError, recordCheckinAttempt, updateCheckinAttempt } from '@/lib/kiosk-error-log';
 
 interface GuestCheckInProps {
   onBack: () => void;
@@ -75,10 +76,23 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
         } else {
           console.error('Failed to fetch rooms:', data.error);
           setError('Unable to load available rooms. Please contact the front desk.');
+          appendKioskError({
+            source: 'rooms',
+            message:
+              typeof data.error === 'string'
+                ? data.error
+                : 'Available rooms API returned success: false',
+            detail: { endpoint: '/api/available-rooms', response: data },
+          });
         }
       } catch (error) {
         console.error('Error fetching rooms:', error);
         setError('Unable to load available rooms. Please contact the front desk.');
+        appendKioskError({
+          source: 'rooms',
+          message: error instanceof Error ? error.message : 'Failed to load available rooms',
+          detail: { endpoint: '/api/available-rooms', phase: 'network_or_parse' },
+        });
       } finally {
         setLoadingRooms(false);
       }
@@ -131,6 +145,28 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
 
     setLoading(true);
     setError('');
+
+    // ── Always record the attempt immediately, before any API call ────────────
+    const selectedRoomForLog = availableRooms.find((r) => String(r.roomID) === String(formData.roomNumber));
+    const anchorForLog = new Date();
+    if (stayStartNight === 'yesterday') anchorForLog.setDate(anchorForLog.getDate() - 1);
+    const checkOutForLog = new Date(anchorForLog);
+    checkOutForLog.setDate(checkOutForLog.getDate() + 1);
+    const attemptId = recordCheckinAttempt({
+      status: 'pending',
+      firstName: formData.firstName.trim(),
+      lastName: formData.lastName.trim(),
+      clcNumber: formData.clcNumber,
+      phoneNumber: formData.phoneNumber,
+      roomID: formData.roomNumber,
+      roomName: selectedRoomForLog?.roomName,
+      roomTypeName: selectedRoomForLog?.roomTypeName,
+      stayStartNight,
+      checkInDate: kioskLocalDateYmd(anchorForLog),
+      checkOutDate: kioskLocalDateYmd(checkOutForLog),
+      placeholderReservationID: selectedRoomForLog?.placeholderReservationID,
+    });
+    // ─────────────────────────────────────────────────────────────────────────
 
     try {
       let reservationConfirmedOnly = false;
@@ -213,6 +249,36 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
         setSuccessIsConfirmedOnly(reservationConfirmedOnly);
         checkInData.cloudbedsGuestID = cloudbedsResult.guestID as string | undefined;
         checkInData.cloudbedsReservationID = cloudbedsResult.reservationID as string | undefined;
+        // ── Mark attempt as success ──────────────────────────────────────────
+        updateCheckinAttempt(attemptId, {
+          status: reservationConfirmedOnly ? 'partial_success' : 'success',
+          outcome: reservationConfirmedOnly
+            ? 'Reservation confirmed: the selected room was not available to assign — Cloudbeds did not book that physical room; staff may assign another room or complete check-in when it is free.'
+            : 'Check-in completed successfully in Cloudbeds',
+          cloudbedsReservationID: cloudbedsResult.reservationID as string | undefined,
+          cloudbedsGuestID: cloudbedsResult.guestID as string | undefined,
+        });
+        if (reservationConfirmedOnly) {
+          appendKioskError({
+            source: 'check-in',
+            message:
+              'Room could not be booked after eviction attempt. A paid confirmed reservation was created without a physical room assigned — the prior occupant may still be blocking the room in Cloudbeds. Staff should assign the correct room in Cloudbeds.',
+            detail: {
+              alertType: 'requested_room_unavailable_confirmed_instead',
+              guest: `${formData.firstName.trim()} ${formData.lastName.trim()}`,
+              requestedRoomID: formData.roomNumber,
+              requestedRoomName: selectedRoomForLog?.roomName,
+              roomTypeName: selectedRoomForLog?.roomTypeName,
+              cloudbedsReservationID: cloudbedsResult.reservationID,
+              cloudbedsGuestID: cloudbedsResult.guestID,
+              flow: placeholderReservationID ? 'tye_placeholder' : 'walk_in',
+              stayStartNight,
+              checkInDate: kioskLocalDateYmd(anchorForLog),
+              checkOutDate: kioskLocalDateYmd(checkOutForLog),
+            },
+          });
+        }
+        // ─────────────────────────────────────────────────────────────────────
       } catch (cloudbedsError: any) {
         throw cloudbedsError;
       }
@@ -226,6 +292,15 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
         }
       } catch (storageErr) {
         console.warn('Could not save guest to local storage (check-in still completed):', storageErr);
+        appendKioskError({
+          source: 'check-in',
+          message: 'Could not save guest to local storage after successful Cloudbeds check-in',
+          detail: {
+            firstName: checkInData.firstName,
+            lastName: checkInData.lastName,
+            error: storageErr instanceof Error ? storageErr.message : String(storageErr),
+          },
+        });
       }
 
       setSuccess(true);
@@ -241,6 +316,34 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
           : 'Check-in failed. Please try again or contact the front desk.';
       setError(decodeCloudbedsUserMessage(raw));
       console.error('Check-in error:', err);
+
+      // ── Mark attempt as failed and push to error log ─────────────────────
+      updateCheckinAttempt(attemptId, {
+        status: 'cloudbeds_error',
+        outcome: decodeCloudbedsUserMessage(raw),
+        errorMessage: decodeCloudbedsUserMessage(raw),
+        errorStack: err instanceof Error ? err.stack : undefined,
+      });
+
+      appendKioskError({
+        source: 'check-in',
+        message: decodeCloudbedsUserMessage(raw),
+        detail: {
+          firstName: formData.firstName.trim(),
+          lastName: formData.lastName.trim(),
+          clcNumber: formData.clcNumber,
+          phoneNumber: formData.phoneNumber,
+          roomSelectionRoomID: formData.roomNumber,
+          roomName: selectedRoomForLog?.roomName,
+          roomTypeName: selectedRoomForLog?.roomTypeName,
+          placeholderReservationID: selectedRoomForLog?.placeholderReservationID,
+          stayStartNight,
+          checkInDate: kioskLocalDateYmd(anchorForLog),
+          checkOutDate: kioskLocalDateYmd(checkOutForLog),
+          stack: err instanceof Error ? err.stack : undefined,
+        },
+      });
+      // ─────────────────────────────────────────────────────────────────────
     } finally {
       setLoading(false);
     }

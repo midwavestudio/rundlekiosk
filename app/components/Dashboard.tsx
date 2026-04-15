@@ -9,6 +9,9 @@ import CheckInModal from './CheckInModal';
 import CheckOutModal from './CheckOutModal';
 import BulkCheckInTab from './BulkCheckInTab';
 import TyePlaceholdersTab from './TyePlaceholdersTab';
+import OperationErrorsTab from './OperationErrorsTab';
+import KioskGlobalErrorLogger from './KioskGlobalErrorLogger';
+import Link from 'next/link';
 
 interface DashboardProps {
   user: User;
@@ -16,7 +19,9 @@ interface DashboardProps {
 }
 
 export default function Dashboard({ user, onLogout }: DashboardProps) {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'arrivals' | 'departures' | 'bulk-checkin' | 'tye-placeholders'>('dashboard');
+  const [activeTab, setActiveTab] = useState<
+    'dashboard' | 'arrivals' | 'departures' | 'bulk-checkin' | 'tye-placeholders' | 'errors'
+  >('dashboard');
   const [showCheckInModal, setShowCheckInModal] = useState(false);
   const [showCheckOutModal, setShowCheckOutModal] = useState(false);
   const [selectedReservation, setSelectedReservation] = useState<any>(null);
@@ -35,6 +40,7 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
 
   return (
     <>
+      <KioskGlobalErrorLogger />
       {/* `body` is `display:flex; justify-content:center` in globals.css — without width:100% this shell shrink-wraps to ~login width. */}
       <div
         className="admin-dashboard-shell"
@@ -75,29 +81,55 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
                 {user.email}
               </p>
             </div>
-            <button
-              onClick={onLogout}
+            <div
               style={{
-                background: 'rgba(255,255,255,0.2)',
-                color: 'white',
-                border: '2px solid white',
-                padding: '10px 20px',
-                borderRadius: '8px',
-                cursor: 'pointer',
-                fontSize: '14px'
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px',
+                flexWrap: 'wrap',
+                justifyContent: 'flex-end',
               }}
             >
-              Sign Out
-            </button>
+              <Link
+                href="/admin/errors"
+                style={{
+                  color: 'white',
+                  fontWeight: 600,
+                  fontSize: '14px',
+                  textDecoration: 'underline',
+                  textUnderlineOffset: '3px',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                Error log
+              </Link>
+              <button
+                onClick={onLogout}
+                style={{
+                  background: 'rgba(255,255,255,0.2)',
+                  color: 'white',
+                  border: '2px solid white',
+                  padding: '10px 20px',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  fontSize: '14px'
+                }}
+              >
+                Sign Out
+              </button>
+            </div>
           </div>
 
           {/* Tabs */}
           <div style={{
             display: 'flex',
             borderBottom: '2px solid #f0f0f0',
-            padding: '0 20px'
-          }}>
-            {['dashboard', 'arrivals', 'departures', 'bulk-checkin', 'tye-placeholders'].map((tab) => (
+            padding: '0 20px',
+            overflowX: 'auto',
+            WebkitOverflowScrolling: 'touch',
+            scrollbarWidth: 'none',
+          } as React.CSSProperties}>
+            {['dashboard', 'arrivals', 'departures', 'bulk-checkin', 'tye-placeholders', 'errors'].map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab as any)}
@@ -111,10 +143,18 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
                   cursor: 'pointer',
                   textTransform: 'capitalize',
                   fontSize: '16px',
-                  transition: 'all 0.3s'
+                  transition: 'all 0.3s',
+                  flexShrink: 0,
+                  whiteSpace: 'nowrap',
                 }}
               >
-                {tab === 'bulk-checkin' ? 'Bulk Check-In' : tab === 'tye-placeholders' ? 'Blocks' : tab}
+                {tab === 'bulk-checkin'
+                  ? 'Bulk Check-In'
+                  : tab === 'tye-placeholders'
+                    ? 'Blocks'
+                    : tab === 'errors'
+                      ? 'Error log'
+                      : tab}
               </button>
             ))}
           </div>
@@ -147,6 +187,9 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
           )}
           {activeTab === 'tye-placeholders' && (
             <TyePlaceholdersTab />
+          )}
+          {activeTab === 'errors' && (
+            <OperationErrorsTab />
           )}
           </div>
         </div>
@@ -241,6 +284,21 @@ function DashboardTab() {
           <StatusRow label="Firebase Auth" status="Active" />
           <StatusRow label="Transaction Logging" status="Active" />
         </div>
+      </div>
+
+      <div
+        style={{
+          marginTop: '28px',
+          paddingTop: '20px',
+          borderTop: '1px solid #e5e7eb',
+        }}
+      >
+        <p style={{ margin: 0, fontSize: '14px', color: '#555' }}>
+          <Link href="/admin/errors" style={{ color: ADMIN_ACCENT, fontWeight: 600 }}>
+            Open check-in attempts &amp; error log (full page)
+          </Link>
+          <span style={{ color: '#9ca3af' }}> — every check-in attempt is logged here, successful or not.</span>
+        </p>
       </div>
     </div>
   );

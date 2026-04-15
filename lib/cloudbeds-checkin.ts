@@ -4,8 +4,13 @@
  */
 
 import { buildGuestSyntheticEmail } from '@/lib/guest-email';
+import {
+  mergeReservationRoomRows,
+  pickActiveRoom,
+  unwrapReservationFromGetReservation,
+} from '@/lib/cloudbeds-rate-preserve';
 
-function getLocalDateStr(d: Date): string {
+export function getLocalDateStr(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
@@ -275,10 +280,10 @@ export type SettleReservationFolioOptions = {
   /** From postReservation only, first settle: invoice still reads $0 — use hint once to avoid double-charging. */
   amountDueHint?: number | null;
   /**
-   * TYE placeholder assign: after a successful postPayment, getReservationInvoiceInformation often
-   * still returns the same "due" (stale total vs balance). The strict duplicate guard would abort the
-   * whole assign flow even though guest/room updates never run. When true: poll longer, then exit
-   * successfully if payment succeeded — do not throw for stale invoice reads.
+   * After a successful postPayment, Cloudbeds often still returns the same "amount due" for several
+   * seconds (invoice / folio lag). The duplicate guard would otherwise abort with "Automatic payment
+   * stopped…". When true: poll the folio, then exit successfully if payment already posted — do not
+   * throw for stale reads. **Walk-in check-in passes this on every settle** (same as TYE placeholder).
    */
   trustStaleInvoiceAfterSuccessfulPayment?: boolean;
 };
@@ -331,18 +336,19 @@ export async function settleReservationFolio(
     }
     if (amountPostedSuccessfully != null && Math.abs(balance - amountPostedSuccessfully) < 0.05) {
       log('4_settleFolio_stale_same_due_after_payment', { balance, lastPostedAmount: amountPostedSuccessfully });
-      if (options?.trustStaleInvoiceAfterSuccessfulPayment) {
-        for (let p = 0; p < 15; p++) {
-          await sleep(400);
-          const b = await readOutstandingBalance(apiV13, propertyID, apiKey, reservationID);
-          if (b <= 0.02) {
-            log('4_settleFolio_stale_resolved_after_poll', { attempts: p + 1, balance: b });
-            return;
-          }
+      // Always poll: folio often lags after postPayment — do not throw until we've waited.
+      for (let p = 0; p < 15; p++) {
+        await sleep(400);
+        const b = await readOutstandingBalance(apiV13, propertyID, apiKey, reservationID);
+        if (b <= 0.02) {
+          log('4_settleFolio_stale_resolved_after_poll', { attempts: p + 1, balance: b });
+          return;
         }
+      }
+      if (options?.trustStaleInvoiceAfterSuccessfulPayment) {
         log('4_settleFolio_trust_post_exit_stale_invoice', {
           balance,
-          note: 'postPayment succeeded; invoice still echoes prior due — continuing assign flow',
+          note: 'postPayment succeeded; invoice still echoes prior due — continuing flow',
         });
         return;
       }
@@ -593,6 +599,22 @@ function extractReservationRoomLineId(root: any): string | null {
   return null;
 }
 
+/** Same as extractReservationRoomLineId but also scans assigned[] / rooms[] (required for checked_in guests). */
+function extractReservationRoomLineIdIncludingAssigned(root: any): string | null {
+  const fromUnassigned = extractReservationRoomLineId(root);
+  if (fromUnassigned) return fromUnassigned;
+  const d = root?.data ?? root;
+  for (const key of ['assigned', 'rooms'] as const) {
+    const arr = d?.[key];
+    if (!Array.isArray(arr)) continue;
+    for (const row of arr) {
+      const id = row?.reservationRoomID ?? row?.reservationRoomId;
+      if (id != null && String(id).trim() !== '') return String(id);
+    }
+  }
+  return null;
+}
+
 /** True when getReservation shows a physical room already on the booking (postReservation may still echo unassigned[]). */
 function reservationAlreadyHasPhysicalRoom(root: any): boolean {
   const d = root?.data ?? root;
@@ -655,6 +677,315 @@ async function getReservationAssignedRoomIds(
   }
   if (!res.ok || !parsed?.success) return [];
   return extractAssignedRoomIdsFromGetReservationRoot(parsed);
+}
+
+// ---------------------------------------------------------------------------
+// Occupant-eviction helpers
+// ---------------------------------------------------------------------------
+
+/** YYYY-MM-DD from ISO or date-only strings (normalises Cloudbeds date fields). */
+function normalizeYmdLocal(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  const s = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  if (s.length >= 10 && /^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  return undefined;
+}
+
+/**
+ * Fetch up to 3 pages of checked_in reservations and return the first one whose
+ * roomID or roomName matches the target room. Returns null when none is found.
+ */
+async function findCheckedInReservationForRoom(
+  apiV13: string,
+  propertyID: string,
+  apiKey: string,
+  targetRoomID: string,
+  targetRoomName: string,
+): Promise<any | null> {
+  const normName = (s: string) => s.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+  const targetIDStr = String(targetRoomID).trim();
+  const targetNameNorm = normName(targetRoomName);
+  const headers = { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
+
+  for (let page = 1; page <= 3; page++) {
+    const url = `${apiV13}/getReservations?propertyID=${encodeURIComponent(propertyID)}&status=checked_in&pageNumber=${page}&pageSize=100`;
+    const res = await fetch(url, { method: 'GET', headers });
+    if (!res.ok) break;
+    const parsed = await res.json().catch(() => null);
+    if (!parsed?.success || !Array.isArray(parsed.data)) break;
+
+    const reservations: any[] = parsed.data;
+    for (const r of reservations) {
+      const roomID = String(r.roomID ?? r.room_id ?? '').trim();
+      const roomName = normName(String(r.roomName ?? r.room_name ?? ''));
+      if (
+        (targetIDStr !== '' && roomID === targetIDStr) ||
+        (targetNameNorm !== '' && roomName === targetNameNorm)
+      ) {
+        return r;
+      }
+    }
+    if (reservations.length < 100) break;
+  }
+  return null;
+}
+
+export interface EvictOccupantResult {
+  /** Room is free for re-use (either fully checked out, or confirmed+unassigned). */
+  evicted: boolean;
+  occupantReservationID?: string;
+  occupantGuestName?: string;
+  /**
+   * True when occupant checked in TODAY → reservation left as confirmed with room unassigned.
+   * False when occupant checked in on a prior day → reservation fully checked out.
+   */
+  occupantSetToConfirmed?: boolean;
+  evictLog: Array<Record<string, unknown>>;
+}
+
+/**
+ * Find the currently checked-in guest in a room and free it for a new reservation.
+ *
+ * Two strategies based on the occupant's check-in date vs today:
+ *
+ * A) Occupant checked in TODAY (startDate === todayYmd):
+ *    → putReservation status=confirmed  (unlock from checked_in)
+ *    → postRoomAssign newRoomID=''      (physically unassign / free the room)
+ *    The occupant's reservation stays as a confirmed/unassigned booking — staff
+ *    can move them to another room. Their stay is NOT ended.
+ *
+ * B) Occupant checked in YESTERDAY or earlier (startDate < todayYmd), OR overdue:
+ *    → Set checkoutDate=today → postRoomCheckOut → putReservation status=checked_out
+ *    The occupant is fully checked out so the room is clean for the new guest.
+ *
+ * After either path succeeds the physical room ID is free and postReservation with
+ * that roomID will succeed.
+ */
+export async function evictRoomOccupant(
+  apiV13: string,
+  propertyID: string,
+  apiKey: string,
+  targetRoomID: string,
+  targetRoomName: string,
+  todayYmd: string,
+  outerLog: (step: string, data?: unknown) => void,
+): Promise<EvictOccupantResult> {
+  const evictLog: Array<Record<string, unknown>> = [];
+  const logE = (step: string, data?: unknown) => {
+    evictLog.push({ step, ...(data != null && typeof data === 'object' ? (data as object) : { value: data }) });
+    outerLog(`evict_${step}`, data);
+  };
+
+  try {
+    const occupant = await findCheckedInReservationForRoom(
+      apiV13, propertyID, apiKey, targetRoomID, targetRoomName,
+    );
+
+    if (!occupant) {
+      logE('no_occupant_found', { targetRoomID, targetRoomName });
+      return { evicted: false, evictLog };
+    }
+
+    const occupantResID = String(occupant.reservationID ?? occupant.reservation_id ?? '').trim();
+    const occupantGuestName = `${occupant.guestName ?? occupant.guestFirstName ?? ''} ${occupant.guestLastName ?? ''}`.trim() || 'unknown';
+
+    logE('occupant_found', { occupantResID, occupantGuestName });
+
+    if (!occupantResID) {
+      logE('skip_no_reservation_id', {});
+      return { evicted: false, evictLog };
+    }
+
+    // Full getReservation — list rows often omit or shape startDate/endDate differently; strategy
+    // and room line IDs must come from the canonical reservation payload.
+    const grUrl = `${apiV13}/getReservation?propertyID=${encodeURIComponent(propertyID)}&reservationID=${encodeURIComponent(occupantResID)}&includeAllRooms=true`;
+    const grRes = await fetch(grUrl, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    });
+    const grParsed = grRes.ok ? await grRes.json().catch(() => null) : null;
+    const resRoot = unwrapReservationFromGetReservation(grParsed ?? {}) ?? grParsed?.data ?? {};
+    const reservationRecord = resRoot && typeof resRoot === 'object' ? resRoot : {};
+
+    const startFromList = normalizeYmdLocal(occupant.startDate ?? occupant.checkInDate ?? occupant.arrivalDate);
+    const endFromList = normalizeYmdLocal(occupant.endDate ?? occupant.checkoutDate ?? occupant.departureDate);
+    const occupantStartDate = normalizeYmdLocal(
+      (reservationRecord as any).startDate ??
+        (reservationRecord as any).checkInDate ??
+        (reservationRecord as any).arrivalDate
+    ) ?? startFromList;
+    const occupantEndDate = normalizeYmdLocal(
+      (reservationRecord as any).endDate ??
+        (reservationRecord as any).checkoutDate ??
+        (reservationRecord as any).departureDate ??
+        (reservationRecord as any).scheduledCheckout
+    ) ?? endFromList;
+
+    const reservationRoomID =
+      extractReservationRoomLineIdIncludingAssigned(reservationRecord) ??
+      extractReservationRoomLineId(occupant);
+    const roomRows = mergeReservationRoomRows(reservationRecord);
+    const activeRoom = pickActiveRoom(roomRows);
+    const activeSubResID =
+      activeRoom?.subReservationID != null ? String(activeRoom.subReservationID).trim() : '';
+    const activeRoomID = activeRoom?.roomID != null ? String(activeRoom.roomID).trim() : '';
+    logE('reservation_detail', {
+      occupantStartDate,
+      occupantEndDate,
+      reservationRoomID,
+      activeSubResID,
+      activeRoomID,
+    });
+
+    // ── Strategy selection ────────────────────────────────────────────────────
+    // Strict "today" = stay start date equals local today (list alone was unreliable).
+    // Prior-night / multi-night in-house → full checkout path.
+    const checkedInToday = !!occupantStartDate && occupantStartDate === todayYmd;
+    logE('checkout_strategy', {
+      checkedInToday,
+      occupantStartDate,
+      occupantEndDate,
+      todayYmd,
+      strategy: checkedInToday ? 'confirm_and_unassign' : 'full_checkout',
+    });
+
+    const authHeaders = { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/x-www-form-urlencoded' };
+    const putUrl = `${apiV13}/putReservation`;
+
+    const postF = async (url: string, fields: Record<string, string | undefined>, keepEmpty?: string[]) => {
+      const p = new URLSearchParams();
+      for (const [k, v] of Object.entries(fields)) {
+        if (v !== undefined && v !== null && (v !== '' || keepEmpty?.includes(k))) p.append(k, v ?? '');
+      }
+      const r = await fetch(url, { method: 'POST', headers: authHeaders, body: p.toString() });
+      const txt = await r.text();
+      let d: any = {};
+      try { d = JSON.parse(txt); } catch { d = {}; }
+      return { ok: r.ok && d.success === true, data: d };
+    };
+
+    const putF = async (fields: Record<string, string | undefined>) => {
+      const p = new URLSearchParams();
+      for (const [k, v] of Object.entries(fields)) {
+        if (v !== undefined && v !== null && v !== '') p.append(k, v);
+      }
+      const r = await fetch(putUrl, { method: 'PUT', headers: authHeaders, body: p.toString() });
+      const txt = await r.text();
+      let d: any = {};
+      try { d = JSON.parse(txt); } catch { d = {}; }
+      return { ok: r.ok && d.success === true, data: d };
+    };
+
+    let roomFreed = false;
+    let occupantSetToConfirmed = false;
+
+    if (checkedInToday) {
+      // ── PATH A: Today's check-in ─────────────────────────────────────────
+      // Occupant arrived today — we do NOT check them out. Instead:
+      //   1. Reset reservation to confirmed (unlocks it from checked_in so room can be unassigned)
+      //   2. Unassign the physical room (frees the room for the new guest)
+      // Their reservation persists as confirmed/unassigned; staff re-assigns them to another room.
+
+      const resetRes = await putF({ propertyID, reservationID: occupantResID, status: 'confirmed' });
+      logE('today_reset_to_confirmed', { ok: resetRes.ok });
+
+      if (reservationRoomID) {
+        const unassignRes = await postF(
+          `${apiV13}/postRoomAssign`,
+          { propertyID, reservationID: occupantResID, reservationRoomID, newRoomID: '' },
+          ['newRoomID'],
+        );
+        logE('today_unassign_room', { ok: unassignRes.ok, reservationRoomID });
+        if (unassignRes.ok) {
+          roomFreed = true;
+          occupantSetToConfirmed = true;
+        }
+      }
+
+      // Even if postRoomAssign returned non-ok (e.g. already unassigned), if the reset succeeded
+      // the room may be free — treat as success so check-in can proceed.
+      if (!roomFreed && resetRes.ok) {
+        logE('today_assume_freed_after_confirm', { note: 'putReservation confirmed succeeded; treating room as freed' });
+        roomFreed = true;
+        occupantSetToConfirmed = true;
+      }
+    } else {
+      // ── PATH B: Prior night / multi-night in-house — full checkout ───────
+      // Match cloudbeds-checkout: set checkoutDate to today when needed, then room checkout, then status.
+
+      const subResForOut = activeSubResID || String(occupant.subReservationID ?? '').trim() || undefined;
+      const roomIdForOut = activeRoomID || String(targetRoomID).trim() || undefined;
+
+      // If scheduled departure is not already today, tell Cloudbeds we're closing the stay today.
+      const schedOut = occupantEndDate;
+      const checkoutDateAlreadyToday = !!schedOut && schedOut === todayYmd;
+      if (!checkoutDateAlreadyToday) {
+        const dateRes = await putF({ propertyID, reservationID: occupantResID, checkoutDate: todayYmd });
+        logE('prior_set_checkoutDate', { ok: dateRes.ok, todayYmd, schedOut });
+      } else {
+        logE('prior_skip_checkoutDate_put', { schedOut, note: 'already today — avoid repricing' });
+      }
+
+      if (subResForOut || roomIdForOut) {
+        const roomOutRes = await postF(`${apiV13}/postRoomCheckOut`, {
+          propertyID,
+          reservationID: occupantResID,
+          ...(subResForOut ? { subReservationID: subResForOut } : {}),
+          ...(roomIdForOut ? { roomID: roomIdForOut } : {}),
+        });
+        logE('prior_postRoomCheckOut', { ok: roomOutRes.ok, subResForOut, roomIdForOut });
+      }
+
+      const statusRes = await putF({ propertyID, reservationID: occupantResID, status: 'checked_out' });
+      logE('prior_checked_out', { ok: statusRes.ok });
+      if (statusRes.ok) roomFreed = true;
+
+      if (!roomFreed) {
+        const combined = await putF({
+          propertyID,
+          reservationID: occupantResID,
+          checkoutDate: todayYmd,
+          status: 'checked_out',
+        });
+        logE('prior_combined_fallback', { ok: combined.ok });
+        if (combined.ok) roomFreed = true;
+      }
+
+      // Same-day-style unassign + out (some accounts need room physically released before status sticks)
+      if (!roomFreed && reservationRoomID) {
+        const resetRes = await putF({ propertyID, reservationID: occupantResID, status: 'confirmed' });
+        logE('prior_fallback_reset_confirmed', { ok: resetRes.ok });
+        const unassignRes = await postF(
+          `${apiV13}/postRoomAssign`,
+          { propertyID, reservationID: occupantResID, reservationRoomID, newRoomID: '' },
+          ['newRoomID']
+        );
+        logE('prior_fallback_unassign', { ok: unassignRes.ok, reservationRoomID });
+        const out2 = await putF({ propertyID, reservationID: occupantResID, status: 'checked_out' });
+        logE('prior_fallback_checked_out_after_unassign', { ok: out2.ok });
+        if (out2.ok) roomFreed = true;
+      }
+
+      if (!roomFreed) {
+        const lastDitch = await putF({ propertyID, reservationID: occupantResID, status: 'checked_out' });
+        logE('prior_last_ditch_checked_out', { ok: lastDitch.ok });
+        if (lastDitch.ok) roomFreed = true;
+      }
+    }
+
+    logE('result', { roomFreed, occupantSetToConfirmed, occupantResID });
+    return {
+      evicted: roomFreed,
+      occupantReservationID: occupantResID,
+      occupantGuestName,
+      occupantSetToConfirmed,
+      evictLog,
+    };
+  } catch (e: any) {
+    logE('error', { message: e?.message });
+    return { evicted: false, evictLog };
+  }
 }
 
 async function cancelCloudbedsReservation(
@@ -965,11 +1296,16 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   const roomRateIDStr = rateID != null ? String(rateID) : ratePlanID != null ? String(ratePlanID) : '';
 
   // Prefer stay-window room id from getRooms(startDate,endDate); Cloudbeds uses that inventory for the booking dates.
-  const roomIdForCreate = roomIdForStayPeriod ?? actualRoomID;
+  let roomIdForCreate: string | number | null = roomIdForStayPeriod ?? actualRoomID;
   const canAttachPhysicalRoomToReservation =
-    process.env.CLOUDBEDS_SKIP_POST_RESERVATION_ROOM_ID !== '1' && roomIdForCreate != null;
+    process.env.CLOUDBEDS_SKIP_POST_RESERVATION_ROOM_ID !== '1' && actualRoomID != null;
 
-  const buildReservationParams = (attachPhysicalRoom: boolean): URLSearchParams => {
+  /**
+   * Build postReservation params. Pass an explicit roomIdOverride after eviction — roomIdForCreate
+   * may be stale (dated getRooms excluded the occupied room before eviction).
+   */
+  const buildReservationParams = (attachPhysicalRoom: boolean, roomIdOverride?: string | number | null): URLSearchParams => {
+    const rid = roomIdOverride ?? roomIdForCreate;
     const reservationParams = new URLSearchParams();
     reservationParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
     reservationParams.append('startDate', checkInDate);
@@ -992,11 +1328,11 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     reservationParams.append('children[0][roomTypeID]', roomTypeIDStr);
     reservationParams.append('children[0][quantity]', '0');
     reservationParams.append('sourceID', 's-945658-1');
-    if (attachPhysicalRoom && roomIdForCreate != null) {
-      const rid = String(roomIdForCreate);
-      reservationParams.append('rooms[0][roomID]', rid);
-      reservationParams.append('adults[0][roomID]', rid);
-      reservationParams.append('children[0][roomID]', rid);
+    if (attachPhysicalRoom && rid != null) {
+      const ridStr = String(rid);
+      reservationParams.append('rooms[0][roomID]', ridStr);
+      reservationParams.append('adults[0][roomID]', ridStr);
+      reservationParams.append('children[0][roomID]', ridStr);
     }
     return reservationParams;
   };
@@ -1006,13 +1342,14 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   let reservationData: any = {};
   let confirmedPayOnly = false;
 
-  const runPostReservation = async (attachPhysicalRoom: boolean): Promise<{ ok: boolean; text: string; data: any }> => {
-    const reservationParams = buildReservationParams(attachPhysicalRoom);
+  const runPostReservation = async (attachPhysicalRoom: boolean, roomIdOverride?: string | number | null): Promise<{ ok: boolean; text: string; data: any }> => {
+    const reservationParams = buildReservationParams(attachPhysicalRoom, roomIdOverride);
+    const effectiveRoomId = roomIdOverride ?? (attachPhysicalRoom ? roomIdForCreate : null);
     log('3_postReservation_request', {
       url: `${apiV13}/postReservation`,
       body: {
         roomTypeID: roomTypeIDStr,
-        roomID: attachPhysicalRoom && roomIdForCreate != null ? String(roomIdForCreate) : undefined,
+        roomID: attachPhysicalRoom && effectiveRoomId != null ? String(effectiveRoomId) : undefined,
         roomRateID: roomRateIDStr || undefined,
         startDate: checkInDate,
         endDate: checkOutDate,
@@ -1045,7 +1382,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     return { ok, text: responseText, data: parsed };
   };
 
-  if (stopAfterReservationCreate && (!canAttachPhysicalRoomToReservation || roomIdForCreate == null)) {
+  if (stopAfterReservationCreate && (!canAttachPhysicalRoomToReservation || actualRoomID == null)) {
     throw new Error(
       'TYE block requires a bookable physical room ID from Cloudbeds. Unset CLOUDBEDS_SKIP_POST_RESERVATION_ROOM_ID if it is set to 1, or ensure getRooms returns this room for the stay dates.'
     );
@@ -1055,22 +1392,108 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   if (first.ok) {
     reservationData = first.data;
   } else if (canAttachPhysicalRoomToReservation && !stopAfterReservationCreate) {
-    // Walk-in / kiosk: if the specific room cannot be booked, fall back to room-type-only reservation.
-    // TYE blocks (stopAfterReservationCreate): never do this — it creates a booking on the wrong room or unassigned.
-    const second = await runPostReservation(false);
-    if (!second.ok) {
-      const msg =
-        second.data?.message ||
-        first.data?.message ||
-        first.text ||
-        'Failed to create reservation in Cloudbeds';
-      throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
+    // Walk-in / kiosk: specific room couldn't be booked.
+    // Attempt to evict whoever is currently in that room, then retry postReservation.
+    // Only fall back to room-type-only if eviction is impossible or all retries still fail.
+    const todayForEvict = getLocalDateStr(new Date());
+    const evictResult = await evictRoomOccupant(
+      apiV13,
+      CLOUDBEDS_PROPERTY_ID,
+      CLOUDBEDS_API_KEY,
+      String(actualRoomID ?? ''),        // always use the canonical internal room ID for lookup
+      String(selectedRoomName ?? roomName),
+      todayForEvict,
+      log,
+    );
+
+    let usedRoomAfterEvict = false;
+    if (evictResult.evicted) {
+      log('3_evict_occupant_success', {
+        occupantReservationID: evictResult.occupantReservationID,
+        occupantGuestName: evictResult.occupantGuestName,
+        occupantSetToConfirmed: evictResult.occupantSetToConfirmed,
+        strategy: evictResult.occupantSetToConfirmed ? 'confirmed_and_unassigned' : 'checked_out',
+      });
+
+      // Give Cloudbeds a moment to propagate the eviction before creating the new reservation.
+      await sleep(1500);
+
+      // Re-fetch the dated room list so the room now appears as available inventory.
+      // (The original roomIdForStayPeriod was null or stale because the room was occupied.)
+      let freshRoomIdForCreate: string | number | null = actualRoomID;
+      try {
+        const freshStayRooms = await fetchAllRoomsPagesMerged(
+          apiV13, CLOUDBEDS_PROPERTY_ID, CLOUDBEDS_API_KEY,
+          { startDate: checkInDate, endDate: checkOutDate },
+        );
+        const freshStayRoom = findRoomByKey(freshStayRooms, roomKey)
+          || (hint ? findRoomByKey(freshStayRooms, hint) : null);
+        if (freshStayRoom) {
+          const freshedId = freshStayRoom.roomID ?? freshStayRoom.id;
+          if (freshedId != null) {
+            freshRoomIdForCreate = freshedId;
+            log('3_post_evict_refreshed_room_id', { freshRoomIdForCreate, previousRoomIdForCreate: roomIdForCreate });
+          }
+        }
+        // Update the outer variable so subsequent steps (assign, check-in) use the fresh ID.
+        roomIdForCreate = freshRoomIdForCreate;
+      } catch (e: any) {
+        log('3_post_evict_refresh_room_error', undefined, undefined, e?.message);
+      }
+
+      // First retry with the fresh room ID.
+      const retried = await runPostReservation(true, freshRoomIdForCreate);
+      if (retried.ok) {
+        reservationData = retried.data;
+        usedRoomAfterEvict = true;
+        log('3_postReservation_after_eviction_success', {
+          note: 'Prior occupant cleared; new reservation booked on the same physical room.',
+          roomIdUsed: freshRoomIdForCreate,
+          occupantReservationID: evictResult.occupantReservationID,
+        });
+      } else {
+        // One more attempt after a further short delay — Cloudbeds can lag on inventory refresh.
+        await sleep(1000);
+        const retried2 = await runPostReservation(true, freshRoomIdForCreate);
+        if (retried2.ok) {
+          reservationData = retried2.data;
+          usedRoomAfterEvict = true;
+          log('3_postReservation_after_eviction_2nd_retry_success', {
+            note: 'Succeeded on second retry after eviction.',
+            roomIdUsed: freshRoomIdForCreate,
+          });
+        } else {
+          log('3_postReservation_after_eviction_still_failed', {
+            note: 'Eviction succeeded but room still not bookable after two retries — falling back to room-type-only.',
+            response: retried2.data,
+          });
+        }
+      }
+    } else {
+      log('3_evict_occupant_skipped_or_failed', {
+        note: 'No occupant found or eviction failed — falling back to room-type-only reservation.',
+      });
     }
-    reservationData = second.data;
-    confirmedPayOnly = true;
-    log('3_postReservation_fallback_no_physical_room', {
-      note: 'Physical room was not available for postReservation; created unassigned reservation for payment as confirmed',
-    });
+
+    if (!usedRoomAfterEvict) {
+      // Fall back to the existing behaviour: create an unassigned (confirmed-only) reservation.
+      const second = await runPostReservation(false);
+      if (!second.ok) {
+        const msg =
+          second.data?.message ||
+          first.data?.message ||
+          first.text ||
+          'Failed to create reservation in Cloudbeds';
+        throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
+      }
+      reservationData = second.data;
+      confirmedPayOnly = true;
+      log('3_postReservation_fallback_no_physical_room', {
+        note: 'Physical room was not available even after eviction attempt; created unassigned reservation for payment as confirmed.',
+        evictAttempted: true,
+        evictedOccupant: evictResult.evicted ? evictResult.occupantReservationID : null,
+      });
+    }
   } else {
     const msg =
       first.data?.message ||
@@ -1124,7 +1547,10 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       String(reservationID),
       `${guestFirstName} ${guestLastName}`,
       log,
-      { amountDueHint: postReservationAmountHint }
+      {
+        amountDueHint: postReservationAmountHint,
+        trustStaleInvoiceAfterSuccessfulPayment: true,
+      }
     );
     return {
       success: true,
@@ -1193,7 +1619,10 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     String(reservationID),
     `${guestFirstName} ${guestLastName}`,
     log,
-    { amountDueHint: postReservationAmountHint }
+    {
+      amountDueHint: postReservationAmountHint,
+      trustStaleInvoiceAfterSuccessfulPayment: true,
+    }
   );
 
   // Refresh reservation after payment (reservationRoomID may appear; room may show as assigned only now).
@@ -1381,7 +1810,8 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     CLOUDBEDS_API_KEY,
     String(reservationID),
     `${guestFirstName} ${guestLastName}`,
-    log
+    log,
+    { trustStaleInvoiceAfterSuccessfulPayment: true }
   );
 
   const roomIdForCheckIn = String(roomIdForStayPeriod ?? actualRoomID);

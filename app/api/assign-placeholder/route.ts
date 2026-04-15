@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { settleReservationFolio } from '@/lib/cloudbeds-checkin';
+import { settleReservationFolio, evictRoomOccupant, getLocalDateStr } from '@/lib/cloudbeds-checkin';
 import {
   getPlaceholderByReservationID,
   assignPlaceholder,
@@ -552,16 +552,47 @@ export async function POST(request: NextRequest) {
           if (st === 'checked_in') {
             ciResult = { ok: true, data: { message: 'Reconciled: reservation already checked in per getReservation', reconciled: true } };
           } else if (st === 'confirmed' || st === 'not_confirmed') {
-            deferredPhysicalCheckIn = true;
-            ciResult = {
-              ok: true,
-              data: {
-                deferredRoomCheckIn: true,
-                message:
-                  'Guest details and payment are saved. Physical check-in is waiting because this room still has a prior guest in Cloudbeds — staff can check the new guest in when the room is free.',
-              },
-            };
-            log('6_defer_physical_checkin_prior_guest_in_room', { reservationStatus: st, reservationID });
+            // Before deferring, try to evict whoever is still physically in the room and retry check-in.
+            const todayForEvict = getLocalDateStr(new Date());
+            const evict = await evictRoomOccupant(
+              apiV13,
+              CLOUDBEDS_PROPERTY_ID,
+              CLOUDBEDS_API_KEY,
+              assignedRoomID || placeholder.roomID || '',
+              placeholder.roomName || '',
+              todayForEvict,
+              (step, data) => log(`6_ph_evict_${step}`, data),
+            );
+            log('6_evict_occupant_result', {
+              evicted: evict.evicted,
+              occupantReservationID: evict.occupantReservationID,
+              occupantSetToConfirmed: evict.occupantSetToConfirmed,
+              strategy: evict.occupantSetToConfirmed ? 'confirmed_and_unassigned' : 'checked_out',
+            });
+
+            if (evict.evicted) {
+              // Retry postRoomCheckIn then putReservation checked_in
+              for (const v of checkInVariants) {
+                const rc = await doPostRoomCheckIn(v);
+                if (rc.ok) break;
+              }
+              ciResult = await doPutCheckedIn();
+              log('6_retry_after_eviction', { ok: ciResult.ok, body: ciResult.data });
+            }
+
+            if (!ciResult.ok) {
+              // Still failing after eviction attempt — defer as before
+              deferredPhysicalCheckIn = true;
+              ciResult = {
+                ok: true,
+                data: {
+                  deferredRoomCheckIn: true,
+                  message:
+                    'Guest details and payment are saved. Physical check-in is waiting because this room still has a prior guest in Cloudbeds — staff can check the new guest in when the room is free.',
+                },
+              };
+              log('6_defer_physical_checkin_prior_guest_in_room', { reservationStatus: st, reservationID, evictAttempted: true });
+            }
           }
         } catch {
           /* fall through to throw */
