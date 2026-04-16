@@ -275,10 +275,10 @@ export type SettleReservationFolioOptions = {
   /** From postReservation only, first settle: invoice still reads $0 — use hint once to avoid double-charging. */
   amountDueHint?: number | null;
   /**
-   * TYE placeholder assign: after a successful postPayment, getReservationInvoiceInformation often
-   * still returns the same "due" (stale total vs balance). The strict duplicate guard would abort the
-   * whole assign flow even though guest/room updates never run. When true: poll longer, then exit
-   * successfully if payment succeeded — do not throw for stale invoice reads.
+   * After a successful postPayment, getReservationInvoiceInformation often still returns the same
+   * "due" (stale total vs balance). The strict duplicate guard would abort check-in / assign even
+   * though CLC posted. When true: poll longer, then exit successfully if payment succeeded — do not
+   * throw for stale invoice reads (used by TYE assign-placeholder and performCloudbedsCheckIn).
    */
   trustStaleInvoiceAfterSuccessfulPayment?: boolean;
 };
@@ -1124,7 +1124,10 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       String(reservationID),
       `${guestFirstName} ${guestLastName}`,
       log,
-      { amountDueHint: postReservationAmountHint }
+      {
+        amountDueHint: postReservationAmountHint,
+        trustStaleInvoiceAfterSuccessfulPayment: true,
+      }
     );
     return {
       success: true,
@@ -1193,7 +1196,10 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     String(reservationID),
     `${guestFirstName} ${guestLastName}`,
     log,
-    { amountDueHint: postReservationAmountHint }
+    {
+      amountDueHint: postReservationAmountHint,
+      trustStaleInvoiceAfterSuccessfulPayment: true,
+    }
   );
 
   // Refresh reservation after payment (reservationRoomID may appear; room may show as assigned only now).
@@ -1381,7 +1387,8 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     CLOUDBEDS_API_KEY,
     String(reservationID),
     `${guestFirstName} ${guestLastName}`,
-    log
+    log,
+    { trustStaleInvoiceAfterSuccessfulPayment: true }
   );
 
   const roomIdForCheckIn = String(roomIdForStayPeriod ?? actualRoomID);
