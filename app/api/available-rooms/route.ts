@@ -118,8 +118,10 @@ async function fetchAllUnassignedRooms(
         newCount += 1;
       }
     }
+    // Do not stop when batch.length < pageSize — Cloudbeds often returns far fewer than
+    // the requested pageSize per page; stopping early omitted later pages and hid rooms
+    // (e.g. 201) from the check-in dropdown while they still appeared in Cloudbeds UI.
     if (newCount === 0) break;
-    if (batch.length < pageSize) break;
     pageNumber += 1;
     if (pageNumber > maxPages) break;
   }
