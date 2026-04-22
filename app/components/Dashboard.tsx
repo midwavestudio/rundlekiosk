@@ -9,6 +9,7 @@ import CheckInModal from './CheckInModal';
 import CheckOutModal from './CheckOutModal';
 import BulkCheckInTab from './BulkCheckInTab';
 import TyePlaceholdersTab from './TyePlaceholdersTab';
+import FeedbackTab from './FeedbackTab';
 
 interface DashboardProps {
   user: User;
@@ -16,7 +17,7 @@ interface DashboardProps {
 }
 
 export default function Dashboard({ user, onLogout }: DashboardProps) {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'arrivals' | 'departures' | 'bulk-checkin' | 'tye-placeholders'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'arrivals' | 'departures' | 'bulk-checkin' | 'tye-placeholders' | 'feedback'>('dashboard');
   const [showCheckInModal, setShowCheckInModal] = useState(false);
   const [showCheckOutModal, setShowCheckOutModal] = useState(false);
   const [selectedReservation, setSelectedReservation] = useState<any>(null);
@@ -97,7 +98,7 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
             borderBottom: '2px solid #f0f0f0',
             padding: '0 20px'
           }}>
-            {['dashboard', 'arrivals', 'departures', 'bulk-checkin', 'tye-placeholders'].map((tab) => (
+            {['dashboard', 'arrivals', 'departures', 'bulk-checkin', 'tye-placeholders', 'feedback'].map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab as any)}
@@ -147,6 +148,9 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
           )}
           {activeTab === 'tye-placeholders' && (
             <TyePlaceholdersTab />
+          )}
+          {activeTab === 'feedback' && (
+            <FeedbackTab />
           )}
           </div>
         </div>

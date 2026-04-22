@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
+import KioskAutoUpdate from './components/KioskAutoUpdate';
 
 const APP_NAME = 'Rundle Kiosk';
 const APP_TITLE = 'Rundle Kiosk - Dual Check-In System';
@@ -39,7 +40,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <KioskAutoUpdate />
+        {children}
+      </body>
     </html>
   );
 }
