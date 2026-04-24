@@ -33,7 +33,6 @@ interface GuestData {
   class: 'TYE';
   cloudbedsGuestID?: string;
   cloudbedsReservationID?: string;
-  cloudbedsSyncFailed?: boolean;
 }
 
 interface Room {
@@ -157,7 +156,6 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
 
     try {
       let reservationConfirmedOnly = false;
-      let cloudbedsSyncFailed = false;
       // Match dropdown value (Cloudbeds roomID) to the row so we persist human roomName for lists/exports.
       const selectedRoom = availableRooms.find((r) => String(r.roomID) === String(formData.roomNumber));
       // Add timestamp (trim names for storage consistency with API)
@@ -170,8 +168,7 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
         roomNumber: kioskPersistRoomDisplayName(selectedRoom, formData.roomNumber),
       };
 
-      // Call Cloudbeds API to create reservation and check in.
-      // Kiosk UX should still complete even if Cloudbeds fails — failures are routed to admin error logs.
+      // Call Cloudbeds API to create reservation and check in
       try {
         const roomIdentifier = selectedRoom ? selectedRoom.roomID : formData.roomNumber;
         
@@ -228,7 +225,9 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
             (typeof cloudbedsResult.error === 'string' && cloudbedsResult.error) ||
             (typeof cloudbedsResult.message === 'string' && cloudbedsResult.message) ||
             '';
-          throw new Error(decodeCloudbedsUserMessage(apiMsg || `Cloudbeds check-in failed (${cloudbedsResponse.status})`));
+          throw new Error(
+            decodeCloudbedsUserMessage(apiMsg || `Cloudbeds check-in failed (${cloudbedsResponse.status})`)
+          );
         }
 
         console.log('Cloudbeds check-in successful:', cloudbedsResult);
@@ -237,33 +236,20 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
         checkInData.cloudbedsGuestID = cloudbedsResult.guestID as string | undefined;
         checkInData.cloudbedsReservationID = cloudbedsResult.reservationID as string | undefined;
       } catch (cloudbedsError: any) {
-        cloudbedsSyncFailed = true;
-        const raw =
-          typeof cloudbedsError?.message === 'string' && cloudbedsError.message.trim().length > 0
-            ? cloudbedsError.message
-            : 'Cloudbeds check-in failed';
-        const decoded = decodeCloudbedsUserMessage(raw);
-        console.error('Cloudbeds check-in failed (kiosk continues):', cloudbedsError);
-        postKioskEvent('kiosk:check-in', decoded, {
-          room: formData.roomNumber || undefined,
-          cloudbedsSyncFailed: true,
-        });
+        throw cloudbedsError;
       }
 
-      // Always record kiosk arrivals in local storage so admin Arrivals reflects what happened at the kiosk,
-      // even when Cloudbeds reservation/assignment fails.
+      // Save to localStorage only for actual kiosk check-in — confirmed-only stays live in Cloudbeds until staff assigns the room.
       try {
-        checkInData.cloudbedsSyncFailed = cloudbedsSyncFailed;
-        const existingGuests = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
-        existingGuests.push(checkInData);
-        localStorage.setItem('checkedInGuests', JSON.stringify(existingGuests));
+        if (!reservationConfirmedOnly) {
+          const existingGuests = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
+          existingGuests.push(checkInData);
+          localStorage.setItem('checkedInGuests', JSON.stringify(existingGuests));
+        }
       } catch (storageErr) {
         console.warn('Could not save guest to local storage (check-in still completed):', storageErr);
       }
 
-      if (cloudbedsSyncFailed) {
-        setSuccessIsConfirmedOnly(false);
-      }
       setSuccess(true);
       
       // Return to home after 2 seconds

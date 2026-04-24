@@ -337,7 +337,7 @@ export async function GET(request: NextRequest) {
 
     if (allRooms.length > 0) {
       let rooms = allRooms
-        .filter((room: any) => !!room)
+        .filter((room: any) => room && room.roomBlocked !== true)
         .map(formatRoom)
         .filter((r: any) => r.roomID !== 'unknown' && !r.roomName.includes('(Remove BE)') && !r.roomTypeName.includes('(Remove BE)'))
         .filter((r, i, arr) => arr.findIndex((x) => x.roomID === r.roomID) === i);
