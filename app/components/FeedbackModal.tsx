@@ -211,10 +211,7 @@ export default function FeedbackModal({ onClose }: FeedbackModalProps) {
             <div style={{ fontSize: '56px', marginBottom: '16px' }}>✅</div>
             <h2 style={{ margin: 0, fontSize: '24px', color: '#333' }}>Message Sent!</h2>
             <p style={{ color: '#666', fontSize: '15px', margin: '12px 0 28px' }}>
-              Thank you — our team will review your message shortly. If you need immediate help, please call the front desk at&nbsp;
-              <a href="tel:+14062282800" style={{ color: '#8B6F47', fontWeight: 700, textDecoration: 'none' }}>
-                (406)&nbsp;228-2800
-              </a>.
+              Thank you — our team will review your message shortly.
             </p>
             <button
               onClick={onClose}

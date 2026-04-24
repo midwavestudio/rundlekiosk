@@ -394,12 +394,7 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
         <p>All fields marked with * are required</p>
         {onOpenFeedback && (
           <>
-            <p style={{ marginTop: '12px', marginBottom: 0 }}>
-              Need assistance? Please contact the front desk &mdash;{' '}
-              <a href="tel:+14062282800" style={{ color: 'inherit', textDecoration: 'none', fontWeight: 600 }}>
-                (406) 228-2800
-              </a>
-            </p>
+            <p style={{ marginTop: '12px', marginBottom: 0 }}>Any issues?</p>
             <button
               type="button"
               onClick={onOpenFeedback}

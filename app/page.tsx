@@ -61,7 +61,7 @@ export default function Home() {
       </div>
 
       <div className="kiosk-footer">
-        <p>Need assistance? Please contact the front desk &mdash; <a href="tel:+14062282800" style={{ color: 'inherit', textDecoration: 'none', fontWeight: 600 }}>(406) 228-2800</a></p>
+        <p style={{ marginBottom: 0 }}>Any issues?</p>
         <button
           onClick={() => setShowFeedback(true)}
           style={{

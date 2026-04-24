@@ -304,25 +304,27 @@ export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutP
       </div>
 
       <div className="kiosk-footer">
-        <p>Need help? Please contact the front desk &mdash; <a href="tel:+14062282800" style={{ color: 'inherit', textDecoration: 'none', fontWeight: 600 }}>(406) 228-2800</a></p>
         {onOpenFeedback && (
-          <button
-            type="button"
-            onClick={onOpenFeedback}
-            style={{
-              marginTop: '10px',
-              background: 'rgba(255,255,255,0.18)',
-              border: '1px solid rgba(255,255,255,0.45)',
-              color: 'inherit',
-              borderRadius: '8px',
-              padding: '7px 18px',
-              fontSize: '13px',
-              cursor: 'pointer',
-              letterSpacing: '0.02em',
-            }}
-          >
-            💬 Leave us a message
-          </button>
+          <>
+            <p style={{ marginBottom: 0 }}>Any issues?</p>
+            <button
+              type="button"
+              onClick={onOpenFeedback}
+              style={{
+                marginTop: '10px',
+                background: 'rgba(255,255,255,0.18)',
+                border: '1px solid rgba(255,255,255,0.45)',
+                color: 'inherit',
+                borderRadius: '8px',
+                padding: '7px 18px',
+                fontSize: '13px',
+                cursor: 'pointer',
+                letterSpacing: '0.02em',
+              }}
+            >
+              💬 Leave us a message
+            </button>
+          </>
         )}
       </div>
     </div>
