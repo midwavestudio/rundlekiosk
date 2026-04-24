@@ -173,19 +173,9 @@ export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutP
     return (
       <div className="kiosk-container">
         <div className="success-screen">
-          <h1 className="animated-message">Thank you for staying with us!</h1>
-          {isSameDay ? (
-            <p className="subtitle" style={{ marginTop: '1rem' }}>
-              Your room has been released. We hope to see you again soon!
-            </p>
-          ) : (
-            daysStayed != null && daysStayed > 0 && (
-              <p className="subtitle" style={{ marginTop: '1rem' }}>
-                Your stay was {daysStayed} day{daysStayed === 1 ? '' : 's'} (based on your check-in and
-                check-out time).
-              </p>
-            )
-          )}
+          <h1 className="animated-message" style={{ textAlign: 'center', margin: 0 }}>
+            Thank you for staying with us!
+          </h1>
         </div>
       </div>
     );

@@ -36,6 +36,9 @@ function logCheckInFailure(context: {
 
 export async function POST(request: NextRequest) {
   let debugLog: Array<{ step: string; request?: unknown; response?: unknown; error?: string }> | undefined;
+  // Hoisted so the outer catch can include guest context in the admin error log.
+  let guestLabel = 'unknown';
+  let roomLabel = 'unknown';
   try {
     const body = await request.json();
     const {
@@ -54,8 +57,12 @@ export async function POST(request: NextRequest) {
       debug: enableDebug,
     } = body;
 
-    console.log('Check-in API called with:', { firstName, lastName, roomName, clcNumber, classType });
-    debugLog = enableDebug === true ? [] : undefined;
+    if (firstName || lastName) guestLabel = `${firstName ?? ''} ${lastName ?? ''}`.trim();
+    if (roomName) roomLabel = String(roomName);
+
+    console.log('Check-in API called with:', { firstName, lastName, roomName, clcNumber, classType, checkInDate: bodyCheckIn, checkOutDate: bodyCheckOut });
+    // Always collect debug steps so failures in the admin Error Log include a full trace.
+    debugLog = [];
 
     if (!String(firstName ?? '').trim() || !String(lastName ?? '').trim() || !roomName) {
       return NextResponse.json(
@@ -205,6 +212,8 @@ export async function POST(request: NextRequest) {
   } catch (error: any) {
     const errMsg = error.message || 'Failed to check in to Cloudbeds';
     logCheckInFailure({
+      guest: guestLabel,
+      room: roomLabel,
       error: errMsg,
       debugTrail: debugLog,
     });

@@ -356,8 +356,20 @@ export async function POST(request: NextRequest) {
     const activeRoom = pickActiveRoom(rooms);
     const roomID = activeRoom?.roomID != null ? String(activeRoom.roomID) : undefined;
     const subReservationID = activeRoom?.subReservationID != null ? String(activeRoom.subReservationID) : undefined;
+    const schedOut = reservationScheduledCheckoutYmd(reservationRecord);
 
-    log.push({ step: 'room_info', roomID, subReservationID, checkoutDate, startYmd });
+    // Late checkouts (after the reservation's scheduled checkout date) should not rewrite
+    // reservation length/rates. Keep the original scheduled checkout date in Cloudbeds.
+    if (schedOut && checkoutDate > schedOut) {
+      log.push({
+        step: 'late_checkout_preserve_scheduled_date',
+        requestedCheckoutDate: checkoutDate,
+        preservedCheckoutDate: schedOut,
+      });
+      checkoutDate = schedOut;
+    }
+
+    log.push({ step: 'room_info', roomID, subReservationID, checkoutDate, startYmd, schedOut });
 
     // ── Detect same-day checkout ──
     // A same-day checkout occurs when the guest checks in and out on the same calendar date.
@@ -479,7 +491,6 @@ export async function POST(request: NextRequest) {
       // differs from what we want to check out at.  If Cloudbeds already has the right date,
       // skip entirely and go straight to postRoomCheckOut / status=checked_out.
 
-      const schedOut = reservationScheduledCheckoutYmd(reservationRecord);
       const dateAlreadyCorrect = !!schedOut && schedOut === checkoutDate;
       let dateUpdated = dateAlreadyCorrect;
 

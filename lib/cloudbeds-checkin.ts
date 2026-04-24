@@ -969,11 +969,24 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   const canAttachPhysicalRoomToReservation =
     process.env.CLOUDBEDS_SKIP_POST_RESERVATION_ROOM_ID !== '1' && roomIdForCreate != null;
 
-  const buildReservationParams = (attachPhysicalRoom: boolean): URLSearchParams => {
+  interface PostReservationOpts {
+    attachPhysicalRoom: boolean;
+    dateOverride?: { startDate: string; endDate: string };
+    /**
+     * When true: omit rooms[0][roomTypeID] and send only rooms[0][roomID].
+     * Bypasses Cloudbeds type-level inventory counting, which blocks new reservations
+     * for rooms whose prior same-day reservation was unassigned but not yet cleared
+     * from the type inventory cache.
+     */
+    roomIdOnly?: boolean;
+  }
+
+  const buildReservationParams = (opts: PostReservationOpts): URLSearchParams => {
+    const { attachPhysicalRoom, dateOverride, roomIdOnly } = opts;
     const reservationParams = new URLSearchParams();
     reservationParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
-    reservationParams.append('startDate', checkInDate);
-    reservationParams.append('endDate', checkOutDate);
+    reservationParams.append('startDate', dateOverride?.startDate ?? checkInDate);
+    reservationParams.append('endDate', dateOverride?.endDate ?? checkOutDate);
     reservationParams.append('guestFirstName', guestFirstName);
     reservationParams.append('guestLastName', guestLastName);
     reservationParams.append('guestCountry', 'US');
@@ -984,20 +997,30 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     );
     reservationParams.append('guestPhone', phoneNumber || '000-000-0000');
     reservationParams.append('paymentMethod', 'CLC');
-    reservationParams.append('rooms[0][roomTypeID]', roomTypeIDStr);
-    reservationParams.append('rooms[0][quantity]', '1');
-    if (roomRateIDStr) reservationParams.append('rooms[0][roomRateID]', roomRateIDStr);
-    reservationParams.append('adults[0][roomTypeID]', roomTypeIDStr);
-    reservationParams.append('adults[0][quantity]', '1');
-    reservationParams.append('children[0][roomTypeID]', roomTypeIDStr);
-    reservationParams.append('children[0][quantity]', '0');
-    reservationParams.append('sourceID', 's-945658-1');
-    if (attachPhysicalRoom && roomIdForCreate != null) {
+    if (roomIdOnly && roomIdForCreate != null) {
+      // Room-ID-only mode: skip roomTypeID to bypass type-level inventory check.
+      // Used as a last resort when prior same-day unassigned reservations exhaust type inventory.
       const rid = String(roomIdForCreate);
       reservationParams.append('rooms[0][roomID]', rid);
-      reservationParams.append('adults[0][roomID]', rid);
-      reservationParams.append('children[0][roomID]', rid);
+      reservationParams.append('rooms[0][quantity]', '1');
+      reservationParams.append('adults[0][quantity]', '1');
+      reservationParams.append('children[0][quantity]', '0');
+    } else {
+      reservationParams.append('rooms[0][roomTypeID]', roomTypeIDStr);
+      reservationParams.append('rooms[0][quantity]', '1');
+      if (roomRateIDStr) reservationParams.append('rooms[0][roomRateID]', roomRateIDStr);
+      reservationParams.append('adults[0][roomTypeID]', roomTypeIDStr);
+      reservationParams.append('adults[0][quantity]', '1');
+      reservationParams.append('children[0][roomTypeID]', roomTypeIDStr);
+      reservationParams.append('children[0][quantity]', '0');
+      if (attachPhysicalRoom && roomIdForCreate != null) {
+        const rid = String(roomIdForCreate);
+        reservationParams.append('rooms[0][roomID]', rid);
+        reservationParams.append('adults[0][roomID]', rid);
+        reservationParams.append('children[0][roomID]', rid);
+      }
     }
+    reservationParams.append('sourceID', 's-945658-1');
     return reservationParams;
   };
 
@@ -1006,19 +1029,21 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   let reservationData: any = {};
   let confirmedPayOnly = false;
 
-  const runPostReservation = async (attachPhysicalRoom: boolean): Promise<{ ok: boolean; text: string; data: any }> => {
-    const reservationParams = buildReservationParams(attachPhysicalRoom);
+  const runPostReservation = async (opts: PostReservationOpts): Promise<{ ok: boolean; text: string; data: any }> => {
+    const { attachPhysicalRoom, dateOverride, roomIdOnly } = opts;
+    const reservationParams = buildReservationParams(opts);
     log('3_postReservation_request', {
       url: `${apiV13}/postReservation`,
       body: {
-        roomTypeID: roomTypeIDStr,
-        roomID: attachPhysicalRoom && roomIdForCreate != null ? String(roomIdForCreate) : undefined,
-        roomRateID: roomRateIDStr || undefined,
-        startDate: checkInDate,
-        endDate: checkOutDate,
+        roomTypeID: roomIdOnly ? undefined : roomTypeIDStr,
+        roomID: (attachPhysicalRoom || roomIdOnly) && roomIdForCreate != null ? String(roomIdForCreate) : undefined,
+        roomRateID: roomIdOnly ? undefined : (roomRateIDStr || undefined),
+        startDate: dateOverride?.startDate ?? checkInDate,
+        endDate: dateOverride?.endDate ?? checkOutDate,
         guestFirstName: guestFirstName,
         guestLastName: guestLastName,
         attachPhysicalRoom,
+        roomIdOnly: roomIdOnly ?? false,
       },
     });
     const reservationResponse = await fetch(`${apiV13}/postReservation`, {
@@ -1051,26 +1076,77 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     );
   }
 
-  const first = await runPostReservation(canAttachPhysicalRoomToReservation);
+  const first = await runPostReservation({ attachPhysicalRoom: canAttachPhysicalRoomToReservation });
   if (first.ok) {
     reservationData = first.data;
   } else if (canAttachPhysicalRoomToReservation && !stopAfterReservationCreate) {
     // Walk-in / kiosk: if the specific room cannot be booked, fall back to room-type-only reservation.
     // TYE blocks (stopAfterReservationCreate): never do this — it creates a booking on the wrong room or unassigned.
-    const second = await runPostReservation(false);
+    const second = await runPostReservation({ attachPhysicalRoom: false });
     if (!second.ok) {
-      const msg =
-        second.data?.message ||
-        first.data?.message ||
-        first.text ||
-        'Failed to create reservation in Cloudbeds';
-      throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
+      const today = getLocalDateStr(new Date());
+
+      if (checkInDate < today) {
+        // Third attempt: Cloudbeds often returns "cannot accommodate" for past dates when the room
+        // type's inventory for that night is exhausted. Retry the type-only reservation using
+        // today's dates so at least a confirmed booking is created.
+        const todayOut = addOneCalendarDayYmd(today);
+        const third = await runPostReservation({ attachPhysicalRoom: false, dateOverride: { startDate: today, endDate: todayOut } });
+        if (third.ok) {
+          reservationData = third.data;
+          confirmedPayOnly = true;
+          log('3_postReservation_fallback_today_dates', {
+            note: `Back-dated check-in (${checkInDate}) rejected by Cloudbeds; created confirmed reservation for today (${today})`,
+            originalCheckInDate: checkInDate,
+            fallbackStartDate: today,
+            fallbackEndDate: todayOut,
+          });
+        } else {
+          const msg =
+            third.data?.message ||
+            second.data?.message ||
+            first.data?.message ||
+            first.text ||
+            'Failed to create reservation in Cloudbeds';
+          throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
+        }
+      } else if (roomIdForCreate != null) {
+        // Fourth attempt (same-day, room was previously unassigned): send only rooms[0][roomID]
+        // without rooms[0][roomTypeID]. Prior same-day checkouts can exhaust the room TYPE's
+        // inventory counter even though the physical room is free — omitting the type lets
+        // Cloudbeds infer it from the room ID and bypass the type-level inventory check.
+        const fourth = await runPostReservation({ attachPhysicalRoom: true, roomIdOnly: true });
+        if (fourth.ok) {
+          reservationData = fourth.data;
+          confirmedPayOnly = true;
+          log('3_postReservation_fallback_room_id_only', {
+            note: 'Type-level inventory exhausted by prior same-day reservation; created confirmed reservation using room ID only',
+            roomID: String(roomIdForCreate),
+          });
+        } else {
+          const msg =
+            fourth.data?.message ||
+            second.data?.message ||
+            first.data?.message ||
+            first.text ||
+            'Failed to create reservation in Cloudbeds';
+          throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
+        }
+      } else {
+        const msg =
+          second.data?.message ||
+          first.data?.message ||
+          first.text ||
+          'Failed to create reservation in Cloudbeds';
+        throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
+      }
+    } else {
+      reservationData = second.data;
+      confirmedPayOnly = true;
+      log('3_postReservation_fallback_no_physical_room', {
+        note: 'Physical room was not available for postReservation; created unassigned reservation for payment as confirmed',
+      });
     }
-    reservationData = second.data;
-    confirmedPayOnly = true;
-    log('3_postReservation_fallback_no_physical_room', {
-      note: 'Physical room was not available for postReservation; created unassigned reservation for payment as confirmed',
-    });
   } else {
     const msg =
       first.data?.message ||
