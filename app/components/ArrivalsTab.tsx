@@ -15,6 +15,7 @@ interface CheckedInGuest {
   phoneNumber: string;
   class: 'TYE' | 'MOW';
   checkInTime: string;
+  checkOutTime?: string;
   cloudbedsGuestID?: string;
   cloudbedsReservationID?: string;
   roomNumber?: string;
@@ -32,6 +33,9 @@ interface Row {
   checkInDate: string;      // display date string
   checkInTime: string;      // display time string
   checkInIso: string;       // raw ISO for sorting / export
+  /** Present when this row is from check-out history (guest has left). */
+  checkOutIso?: string;
+  fromHistory?: boolean;
   cloudbedsReservationID?: string;
   cloudbedsGuestID?: string;
   rawData: CheckedInGuest;
@@ -94,7 +98,7 @@ function inDateRange(iso: string, from: Date, to: Date): boolean {
 }
 
 function exportCSV(rows: Row[], label: string) {
-  const headers = ['Name', 'CLC Number', 'Class', 'Phone', 'Room', 'Check-In Date', 'Check-In Time', 'Reservation ID'];
+  const headers = ['Name', 'CLC Number', 'Class', 'Phone', 'Room', 'Check-In Date', 'Check-In Time', 'Check-Out Date', 'Check-Out Time', 'Reservation ID'];
   const lines = [
     headers.join(','),
     ...rows.map(r => [
@@ -105,6 +109,8 @@ function exportCSV(rows: Row[], label: string) {
       r.roomNumber || '',
       `"${r.checkInDate}"`,
       `"${r.checkInTime}"`,
+      r.checkOutIso ? `"${fmtDate(r.checkOutIso)}"` : '',
+      r.checkOutIso ? `"${fmtTime(r.checkOutIso)}"` : '',
       r.cloudbedsReservationID || '',
     ].join(','))
   ];
@@ -128,8 +134,13 @@ function avatarColor(name: string): string {
   return AVATAR_COLORS[h % AVATAR_COLORS.length];
 }
 
+function guestMatchKey(g: Pick<CheckedInGuest, 'firstName' | 'lastName' | 'checkInTime'>): string {
+  return `${g.firstName}|${g.lastName}|${g.checkInTime}`;
+}
+
 export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
   const [checkedInGuests, setCheckedInGuests] = useState<CheckedInGuest[]>([]);
+  const [checkOutHistory, setCheckOutHistory] = useState<CheckedInGuest[]>([]);
   const [roomNameById, setRoomNameById] = useState<Record<string, string>>({});
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedRow, setSelectedRow] = useState<Row | null>(null);
@@ -146,7 +157,9 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
   useEffect(() => {
     const load = () => {
       const g = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
+      const h = JSON.parse(localStorage.getItem('checkOutHistory') || '[]');
       setCheckedInGuests(g);
+      setCheckOutHistory(Array.isArray(h) ? h : []);
     };
     load();
     const id = setInterval(load, 2000);
@@ -177,9 +190,12 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
     };
   }, []);
 
-  const rows: Row[] = useMemo(() =>
-    checkedInGuests.map((g, i) => ({
-      id: `guest-${i}`,
+  const rows: Row[] = useMemo(() => {
+    const activeKeys = new Set(checkedInGuests.map((g) => guestMatchKey(g)));
+    const historyGuests = checkOutHistory.filter((g) => !activeKeys.has(guestMatchKey(g)));
+
+    const toRow = (g: CheckedInGuest, id: string, fromHistory: boolean): Row => ({
+      id,
       guestName: `${g.firstName} ${g.lastName}`.trim(),
       firstName: g.firstName,
       lastName: g.lastName,
@@ -190,11 +206,19 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
       checkInDate: fmtDate(g.checkInTime),
       checkInTime: fmtTime(g.checkInTime),
       checkInIso: g.checkInTime,
+      checkOutIso: g.checkOutTime,
+      fromHistory,
       cloudbedsReservationID: g.cloudbedsReservationID,
       cloudbedsGuestID: g.cloudbedsGuestID,
       rawData: g,
-    })),
-  [checkedInGuests, roomNameById]);
+    });
+
+    const activeRows = checkedInGuests.map((g, i) => toRow(g, `guest-${i}`, false));
+    const historyRows = historyGuests.map((g, i) =>
+      toRow(g, `hist-${guestMatchKey(g)}-${String(g.checkOutTime ?? '')}-${i}`, true)
+    );
+    return [...activeRows, ...historyRows];
+  }, [checkedInGuests, checkOutHistory, roomNameById]);
 
   /** Only guests whose check-in falls on the selected local calendar day. */
   const rowsForSelectedDate = useMemo(
@@ -239,29 +263,8 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
     if (!exportFrom || !exportTo) return rows;
     const from = new Date(exportFrom + 'T00:00:00');
     const to = new Date(exportTo + 'T23:59:59');
-    // Also include checkout history for departures export
-    const history: any[] = JSON.parse(localStorage.getItem('checkOutHistory') || '[]');
-    const allRows = [
-      ...rows,
-      ...history.map((g: any, i: number) => ({
-        id: `hist-${i}`,
-        guestName: `${g.firstName} ${g.lastName}`.trim(),
-        firstName: g.firstName,
-        lastName: g.lastName,
-        clcNumber: g.clcNumber || '—',
-        phoneNumber: g.phoneNumber || '—',
-        class: g.class || '—',
-        roomNumber: resolveRoomNumberLabel(g.roomNumber, roomNameById),
-        checkInDate: fmtDate(g.checkInTime),
-        checkInTime: fmtTime(g.checkInTime),
-        checkInIso: g.checkInTime,
-        cloudbedsReservationID: g.cloudbedsReservationID,
-        cloudbedsGuestID: g.cloudbedsGuestID,
-        rawData: g,
-      }))
-    ];
-    return allRows.filter(r => inDateRange(r.checkInIso, from, to));
-  }, [rows, exportFrom, exportTo, roomNameById]);
+    return rows.filter((r) => inDateRange(r.checkInIso, from, to));
+  }, [rows, exportFrom, exportTo]);
 
   const toggleExportPanel = () => {
     setShowExportPanel((v) => {
@@ -274,17 +277,47 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
   };
 
   const handleDelete = async (row: Row) => {
-    if (!confirm(`Delete reservation for ${row.guestName}? This will also remove it from Cloudbeds.`)) return;
+    const msg = row.fromHistory
+      ? `Remove ${row.guestName} from this list? (They are already checked out; this only deletes the local history record.)`
+      : `Delete reservation for ${row.guestName}? This will also remove it from Cloudbeds.`;
+    if (!confirm(msg)) return;
     try {
-      if (row.cloudbedsReservationID) {
+      if (!row.fromHistory && row.cloudbedsReservationID) {
         const res = await fetch(`/api/cloudbeds-delete?reservationID=${row.cloudbedsReservationID}`, { method: 'DELETE' });
         const result = await res.json();
         if (!result.success && !result.mockMode) throw new Error(result.error || 'Failed to delete from Cloudbeds');
       }
-      const stored: CheckedInGuest[] = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
-      const updated = stored.filter(g => !(g.firstName === row.rawData.firstName && g.lastName === row.rawData.lastName && g.checkInTime === row.rawData.checkInTime));
-      localStorage.setItem('checkedInGuests', JSON.stringify(updated));
-      setCheckedInGuests(updated);
+      if (row.fromHistory) {
+        const history: CheckedInGuest[] = JSON.parse(localStorage.getItem('checkOutHistory') || '[]');
+        const updated = history.filter((g) => {
+          if (
+            row.rawData.cloudbedsReservationID &&
+            g.cloudbedsReservationID === row.rawData.cloudbedsReservationID
+          ) {
+            return g.checkOutTime !== row.rawData.checkOutTime;
+          }
+          return !(
+            g.firstName === row.rawData.firstName &&
+            g.lastName === row.rawData.lastName &&
+            g.checkInTime === row.rawData.checkInTime &&
+            g.checkOutTime === row.rawData.checkOutTime
+          );
+        });
+        localStorage.setItem('checkOutHistory', JSON.stringify(updated));
+        setCheckOutHistory(updated);
+      } else {
+        const stored: CheckedInGuest[] = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
+        const updated = stored.filter(
+          (g) =>
+            !(
+              g.firstName === row.rawData.firstName &&
+              g.lastName === row.rawData.lastName &&
+              g.checkInTime === row.rawData.checkInTime
+            )
+        );
+        localStorage.setItem('checkedInGuests', JSON.stringify(updated));
+        setCheckedInGuests(updated);
+      }
       if (selectedRow?.id === row.id) setSelectedRow(null);
       if (onDelete) onDelete(row);
     } catch (err: any) {
@@ -447,7 +480,8 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
             <div style={{ flex: '1 1 0', minWidth: '90px', padding: '0 12px', fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>CLC Number</div>
             <div style={{ flex: '1 1 0', minWidth: '80px', padding: '0 12px', fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Room</div>
             <div style={{ flex: '0.7 1 0', minWidth: '60px', padding: '0 12px', fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Class</div>
-            <div style={{ flex: '1.6 1 0', minWidth: '160px', padding: '0 12px', fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Check-in</div>
+            <div style={{ flex: '1.5 1 0', minWidth: '140px', padding: '0 12px', fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Check-in</div>
+            <div style={{ flex: '1.5 1 0', minWidth: '140px', padding: '0 12px', fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Check-out</div>
             <div style={{ width: '48px', flexShrink: 0 }} />
           </div>
 
@@ -496,10 +530,21 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
                     <div style={{ flex: '0.7 1 0', minWidth: '60px', padding: '0 12px' }}>
                       <span style={{ fontSize: '12px', fontWeight: 600, padding: '2px 8px', borderRadius: '12px', background: '#fef3c7', color: '#92400e' }}>{row.class}</span>
                     </div>
-                    <div style={{ flex: '1.6 1 0', minWidth: '160px', padding: '0 12px', fontSize: '13px', color: '#374151' }}>
+                    <div style={{ flex: '1.5 1 0', minWidth: '140px', padding: '0 12px', fontSize: '13px', color: '#374151' }}>
                       <span style={{ whiteSpace: 'nowrap' }}>{row.checkInDate}</span>
                       <span style={{ color: '#9ca3af', margin: '0 4px' }}>·</span>
                       <span style={{ fontWeight: 600, color: '#111' }}>{row.checkInTime}</span>
+                    </div>
+                    <div style={{ flex: '1.5 1 0', minWidth: '140px', padding: '0 12px', fontSize: '13px', color: '#374151' }}>
+                      {row.checkOutIso ? (
+                        <>
+                          <span style={{ whiteSpace: 'nowrap' }}>{fmtDate(row.checkOutIso)}</span>
+                          <span style={{ color: '#9ca3af', margin: '0 4px' }}>·</span>
+                          <span style={{ fontWeight: 600, color: '#111' }}>{fmtTime(row.checkOutIso)}</span>
+                        </>
+                      ) : (
+                        <span style={{ color: '#9ca3af' }}>—</span>
+                      )}
                     </div>
 
                     {/* Sign out action */}
@@ -543,6 +588,9 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
               { label: 'Room', value: selectedRow.roomNumber },
               { label: 'Class', value: selectedRow.class },
               { label: 'Signed In', value: `${selectedRow.checkInDate}, ${selectedRow.checkInTime}` },
+              ...(selectedRow.checkOutIso
+                ? [{ label: 'Checked Out', value: `${fmtDate(selectedRow.checkOutIso)}, ${fmtTime(selectedRow.checkOutIso)}` }]
+                : []),
               ...(selectedRow.cloudbedsReservationID ? [{ label: 'Reservation ID', value: selectedRow.cloudbedsReservationID }] : []),
             ].map(({ label, value }) => (
               <div key={label}>
@@ -553,12 +601,14 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
 
             {/* Actions */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px' }}>
+              {!selectedRow.fromHistory && (
               <button
                 onClick={() => onCheckIn({ ...selectedRow, rawData: selectedRow.rawData })}
                 style={{ padding: '10px', background: '#667eea', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 600, fontSize: '14px' }}
               >
                 View / Check In
               </button>
+              )}
               <button
                 onClick={() => handleDelete(selectedRow)}
                 style={{ padding: '10px', background: 'white', color: '#ef4444', border: '1px solid #ef4444', borderRadius: '8px', cursor: 'pointer', fontWeight: 600, fontSize: '14px' }}

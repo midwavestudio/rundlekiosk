@@ -597,6 +597,44 @@ export async function POST(request: NextRequest) {
 
     if (!checkoutSucceeded) {
       const msg = decodeHtmlEntities(lastMessage || 'Check-out could not be completed.');
+
+      // Same-day Cloudbeds checkouts are blocked by the platform (a guest who checks in
+      // and out on the same calendar day cannot be marked checked_out via the API).
+      // In this case we treat the checkout as locally successful so the guest's experience
+      // is unaffected and the admin Arrivals / Departures tabs capture the checkout time.
+      // The Cloudbeds failure is logged as a warning for staff review.
+      if (isSameDay) {
+        console.warn(
+          'cloudbeds-checkout: same-day Cloudbeds update failed — recording locally only.',
+          JSON.stringify({ reservationID, checkoutDate, error: msg, debugLog: log })
+        );
+        void saveEventLog({
+          level: 'warn',
+          source: 'api:cloudbeds-checkout',
+          message: `Same-day checkout recorded locally (Cloudbeds update failed): ${msg}`,
+          detail: {
+            reservationID: String(reservationID),
+            checkoutDate,
+            isSameDay: true,
+            cloudbedsError: msg,
+            debugLog: log,
+            submittedRequest: submittedRequestLog,
+          },
+        }).catch(() => {});
+
+        const startForDays = startYmd ?? checkInYmdFromBody ?? checkoutDate;
+        const daysStayed = computeDaysStayed(startForDays, checkoutDate);
+        return NextResponse.json({
+          success: true,
+          reservationID,
+          checkoutDate,
+          daysStayed,
+          isSameDay: true,
+          localOnly: true,
+          checkOutAt: new Date(checkOutMs).toISOString(),
+        });
+      }
+
       logCheckOutFailure({
         reservationID: String(reservationID),
         checkoutDate,

@@ -14,7 +14,8 @@ interface StoredGuest {
   clcNumber: string;
   phoneNumber: string;
   class: 'TYE' | 'MOW';
-  checkInTime: string;
+  /** May be missing for Cloudbeds-only kiosk checkouts (no kiosk arrival record). */
+  checkInTime?: string;
   checkOutTime?: string;
   cloudbedsGuestID?: string;
   cloudbedsReservationID?: string;
@@ -141,18 +142,19 @@ function guestToRow(
   prefix: string,
   roomNameById: Record<string, string>
 ): Row {
+  const checkInIso = g.checkInTime || '';
   return {
     id: `${prefix}-${i}`,
-    guestName: `${g.firstName} ${g.lastName}`.trim(),
+    guestName: `${g.firstName} ${g.lastName}`.trim() || 'Guest',
     firstName: g.firstName,
     lastName: g.lastName,
     clcNumber: g.clcNumber || '—',
     phoneNumber: g.phoneNumber || '—',
     class: g.class || '—',
     roomNumber: resolveRoomNumberLabel(g.roomNumber, roomNameById),
-    checkInDate: fmtDate(g.checkInTime),
-    checkInTime: fmtTime(g.checkInTime),
-    checkInIso: g.checkInTime,
+    checkInDate: checkInIso ? fmtDate(checkInIso) : '—',
+    checkInTime: checkInIso ? fmtTime(checkInIso) : '—',
+    checkInIso,
     checkOutDate: g.checkOutTime ? fmtDate(g.checkOutTime) : '—',
     checkOutTime: g.checkOutTime ? fmtTime(g.checkOutTime) : '—',
     checkOutIso: g.checkOutTime || '',
@@ -284,7 +286,19 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
         setCheckedInGuests(next);
       } else {
         const stored: StoredGuest[] = JSON.parse(localStorage.getItem('checkOutHistory') || '[]');
-        const next = stored.filter(g => !(g.firstName === row.rawData.firstName && g.lastName === row.rawData.lastName && g.checkInTime === row.rawData.checkInTime));
+        const next = stored.filter((g) => {
+          if (
+            row.rawData.cloudbedsReservationID &&
+            g.cloudbedsReservationID === row.rawData.cloudbedsReservationID
+          ) {
+            return g.checkOutTime !== row.rawData.checkOutTime;
+          }
+          return !(
+            g.firstName === row.rawData.firstName &&
+            g.lastName === row.rawData.lastName &&
+            g.checkInTime === row.rawData.checkInTime
+          );
+        });
         localStorage.setItem('checkOutHistory', JSON.stringify(next));
         setCheckOutHistory(next);
       }
