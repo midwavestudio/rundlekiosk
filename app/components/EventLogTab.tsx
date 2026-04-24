@@ -145,22 +145,42 @@ export default function EventLogTab() {
                   <div style={{ fontSize: '15px', color: '#111', lineHeight: 1.45 }}>{ev.message}</div>
                   <span style={{ fontSize: '12px', color: '#999' }}>{expanded ? 'Hide detail ▲' : 'Show detail ▼'}</span>
                 </button>
-                {expanded && detailPretty && (
-                  <pre
+                {expanded && (
+                  <div
                     style={{
-                      margin: 0,
-                      padding: '12px 14px',
-                      background: '#1e1e1e',
-                      color: '#e5e5e5',
-                      fontSize: '12px',
-                      lineHeight: 1.45,
-                      overflow: 'auto',
-                      maxHeight: '280px',
-                      borderTop: '1px solid #333',
+                      borderTop: '1px solid #e5e7eb',
+                      background: detailPretty ? '#1e1e1e' : '#f9fafb',
                     }}
                   >
-                    {detailPretty}
-                  </pre>
+                    {detailPretty ? (
+                      <pre
+                        style={{
+                          margin: 0,
+                          padding: '12px 14px',
+                          color: '#e5e5e5',
+                          fontSize: '12px',
+                          lineHeight: 1.45,
+                          overflow: 'auto',
+                          maxHeight: '320px',
+                        }}
+                      >
+                        {detailPretty}
+                      </pre>
+                    ) : (
+                      <p
+                        style={{
+                          margin: 0,
+                          padding: '12px 14px',
+                          fontSize: '13px',
+                          color: '#888',
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        No structured detail was stored for this event (older log entries may not include
+                        submitted fields).
+                      </p>
+                    )}
+                  </div>
                 )}
               </div>
             );

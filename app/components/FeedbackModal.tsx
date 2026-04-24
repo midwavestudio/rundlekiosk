@@ -92,7 +92,7 @@ export default function FeedbackModal({ onClose }: FeedbackModalProps) {
           <>
             <div style={{ textAlign: 'center', marginBottom: '28px' }}>
               <div style={{ fontSize: '40px', marginBottom: '10px' }}>💬</div>
-              <h2 style={{ margin: 0, fontSize: '24px', color: '#333' }}>Send Us a Message</h2>
+              <h2 style={{ margin: 0, fontSize: '24px', color: '#333' }}>Leave us a message</h2>
               <p style={{ margin: '8px 0 0', color: '#666', fontSize: '15px' }}>
                 Have feedback, a question, or spotted something off? Let us know.
               </p>

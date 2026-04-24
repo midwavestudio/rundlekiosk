@@ -76,7 +76,7 @@ export default function Home() {
             letterSpacing: '0.02em',
           }}
         >
-          💬 Send Us a Message
+          💬 Leave us a message
         </button>
       </div>
 

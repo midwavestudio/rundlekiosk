@@ -13,6 +13,7 @@ function logCheckOutFailure(context: {
   isSameDay?: boolean;
   error: string;
   debugLog?: unknown;
+  submittedRequest?: Record<string, unknown> | null;
 }) {
   console.error(
     '[CHECK-OUT FAILURE] Review required:',
@@ -22,6 +23,7 @@ function logCheckOutFailure(context: {
       checkoutDate: context.checkoutDate ?? 'unknown',
       isSameDay: context.isSameDay ?? false,
       error: context.error,
+      submittedRequest: context.submittedRequest ?? null,
       debugLog: context.debugLog ?? [],
     }, null, 2)
   );
@@ -30,6 +32,7 @@ function logCheckOutFailure(context: {
     source: 'api:cloudbeds-checkout',
     message: context.error,
     detail: {
+      submittedRequest: context.submittedRequest ?? null,
       reservationID: context.reservationID ?? null,
       checkoutDate: context.checkoutDate ?? null,
       isSameDay: context.isSameDay ?? null,
@@ -314,9 +317,21 @@ async function unassignRoom(
 }
 
 export async function POST(request: NextRequest) {
+  let submittedRequestLog: Record<string, unknown> | null = null;
   try {
     const body = await request.json();
     const { reservationID, checkoutAtIso, checkoutDate: bodyCheckoutDate, checkInDate: bodyCheckInDate } = body;
+    submittedRequestLog = {
+      reservationID: reservationID != null ? String(reservationID) : null,
+      checkoutAtIso: typeof checkoutAtIso === 'string' ? checkoutAtIso : null,
+      checkoutDate:
+        typeof bodyCheckoutDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(bodyCheckoutDate.trim())
+          ? bodyCheckoutDate.trim()
+          : bodyCheckoutDate != null
+            ? String(bodyCheckoutDate)
+            : null,
+      checkInDate: bodyCheckInDate != null ? String(bodyCheckInDate) : null,
+    };
 
     if (!reservationID) {
       return NextResponse.json({ success: false, error: 'Reservation ID is required' }, { status: 400 });
@@ -582,7 +597,14 @@ export async function POST(request: NextRequest) {
 
     if (!checkoutSucceeded) {
       const msg = decodeHtmlEntities(lastMessage || 'Check-out could not be completed.');
-      logCheckOutFailure({ reservationID: String(reservationID), checkoutDate, isSameDay, error: msg, debugLog: log });
+      logCheckOutFailure({
+        reservationID: String(reservationID),
+        checkoutDate,
+        isSameDay,
+        error: msg,
+        debugLog: log,
+        submittedRequest: submittedRequestLog,
+      });
       return NextResponse.json(
         { success: false, error: msg, debugLog: log },
         { status: 422 }
@@ -604,7 +626,10 @@ export async function POST(request: NextRequest) {
       checkOutAt: new Date(checkOutMs).toISOString(),
     });
   } catch (error: any) {
-    logCheckOutFailure({ error: error.message || 'Unhandled exception in checkout' });
+    logCheckOutFailure({
+      error: error.message || 'Unhandled exception in checkout',
+      submittedRequest: submittedRequestLog,
+    });
     return NextResponse.json(
       { success: false, error: error.message || 'Failed to check out from Cloudbeds' },
       { status: 500 }

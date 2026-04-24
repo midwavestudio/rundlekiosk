@@ -104,17 +104,19 @@ export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutP
     setLoading(true);
     setError('');
 
+    const checkoutAt = new Date();
+    const checkoutPayload = {
+      reservationID: selectedGuest.cloudbedsReservationID,
+      checkoutAtIso: checkoutAt.toISOString(),
+      checkoutDate: kioskLocalDateStr(checkoutAt),
+      checkInDate: selectedGuest.checkInDate || undefined,
+    };
+
     try {
-      const checkoutAt = new Date();
       const res = await fetch('/api/cloudbeds-checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          reservationID: selectedGuest.cloudbedsReservationID,
-          checkoutAtIso: checkoutAt.toISOString(),
-          checkoutDate: kioskLocalDateStr(checkoutAt),
-          checkInDate: selectedGuest.checkInDate || undefined,
-        }),
+        body: JSON.stringify(checkoutPayload),
       });
 
       const text = await res.text();
@@ -162,7 +164,18 @@ export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutP
           : 'Check-out failed. Please try again or contact the front desk.';
       setError(msg);
       postKioskEvent(msg, {
-        reservationID: selectedGuest?.cloudbedsReservationID,
+        submittedRequest: checkoutPayload,
+        selectedGuest: {
+          firstName: selectedGuest.firstName,
+          lastName: selectedGuest.lastName,
+          displayName: selectedGuest.displayName,
+          roomNumber: selectedGuest.roomNumber,
+          cloudbedsReservationID: selectedGuest.cloudbedsReservationID,
+          cloudbedsGuestID: selectedGuest.cloudbedsGuestID,
+          checkInDate: selectedGuest.checkInDate,
+          checkOutDate: selectedGuest.checkOutDate,
+        },
+        searchQuery: searchQuery.trim() || undefined,
       });
     } finally {
       setLoading(false);
@@ -308,7 +321,7 @@ export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutP
               letterSpacing: '0.02em',
             }}
           >
-            💬 Send Us a Message
+            💬 Leave us a message
           </button>
         )}
       </div>

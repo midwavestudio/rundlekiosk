@@ -2,6 +2,25 @@ import { NextRequest, NextResponse } from 'next/server';
 import { performCloudbedsCheckIn } from '@/lib/cloudbeds-checkin';
 import { saveEventLog } from '@/lib/event-log-store';
 
+/** Kiosk/API request fields stored on failures so the admin error log shows what was submitted. */
+function pickCheckInRequestForLog(body: Record<string, unknown>) {
+  return {
+    firstName: body.firstName != null ? String(body.firstName).trim() : null,
+    lastName: body.lastName != null ? String(body.lastName).trim() : null,
+    phoneNumber: body.phoneNumber != null ? String(body.phoneNumber) : null,
+    clcNumber: body.clcNumber != null ? String(body.clcNumber) : null,
+    classType: body.classType != null ? String(body.classType) : null,
+    email: body.email != null ? String(body.email) : null,
+    roomName: body.roomName != null ? String(body.roomName) : null,
+    roomNameHint: body.roomNameHint != null ? String(body.roomNameHint) : null,
+    checkInDate: body.checkInDate != null ? String(body.checkInDate) : null,
+    checkOutDate: body.checkOutDate != null ? String(body.checkOutDate) : null,
+    placeholderReservationID:
+      body.placeholderReservationID != null ? String(body.placeholderReservationID) : null,
+    reservationID: body.reservationID != null ? String(body.reservationID) : null,
+  };
+}
+
 /** Structured admin-facing error log for check-in failures. Visible in server logs / hosting dashboard. */
 function logCheckInFailure(context: {
   guest?: string;
@@ -9,6 +28,7 @@ function logCheckInFailure(context: {
   reservationID?: string;
   error: string;
   debugTrail?: unknown;
+  submittedRequest?: Record<string, unknown> | null;
 }) {
   console.error(
     '[CHECK-IN FAILURE] Review required:',
@@ -18,6 +38,7 @@ function logCheckInFailure(context: {
       room: context.room ?? 'unknown',
       reservationID: context.reservationID ?? 'none',
       error: context.error,
+      submittedRequest: context.submittedRequest ?? null,
       debugTrail: context.debugTrail ?? [],
     }, null, 2)
   );
@@ -26,6 +47,7 @@ function logCheckInFailure(context: {
     source: 'api:cloudbeds-checkin',
     message: context.error,
     detail: {
+      submittedRequest: context.submittedRequest ?? null,
       guest: context.guest ?? null,
       room: context.room ?? null,
       reservationID: context.reservationID ?? null,
@@ -39,8 +61,10 @@ export async function POST(request: NextRequest) {
   // Hoisted so the outer catch can include guest context in the admin error log.
   let guestLabel = 'unknown';
   let roomLabel = 'unknown';
+  let submittedRequestLog: Record<string, unknown> | null = null;
   try {
     const body = await request.json();
+    submittedRequestLog = pickCheckInRequestForLog(body as Record<string, unknown>);
     const {
       firstName,
       lastName,
@@ -99,6 +123,7 @@ export async function POST(request: NextRequest) {
           reservationID: placeholderReservationID,
           error: assignErr,
           debugTrail: assignData.debugTrail,
+          submittedRequest: submittedRequestLog,
         });
         return NextResponse.json(
           {
@@ -162,6 +187,7 @@ export async function POST(request: NextRequest) {
           reservationID: existingReservationID,
           error: `putReservation status=checked_in failed: ${errMsg}`,
           debugTrail: errorData,
+          submittedRequest: submittedRequestLog,
         });
         throw new Error('Failed to check in guest in Cloudbeds');
       }
@@ -216,6 +242,7 @@ export async function POST(request: NextRequest) {
       room: roomLabel,
       error: errMsg,
       debugTrail: debugLog,
+      submittedRequest: submittedRequestLog,
     });
     const errResponse: Record<string, unknown> = {
       success: false,

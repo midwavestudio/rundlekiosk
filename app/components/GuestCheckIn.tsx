@@ -162,19 +162,32 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
 
       // Attempt Cloudbeds check-in. Any failure is silently logged to the admin error log
       // and never surfaced to the guest — the check-in always appears successful.
+      const roomIdentifier = selectedRoom ? selectedRoom.roomID : formData.roomNumber;
+
+      console.log('Checking in with room:', { roomID: roomIdentifier, roomName: selectedRoom?.roomName });
+
+      const checkInAnchor = new Date();
+      const checkOutNight = new Date(checkInAnchor);
+      checkOutNight.setDate(checkOutNight.getDate() + 1);
+      const checkInYmd = kioskLocalDateYmd(checkInAnchor);
+      const checkOutYmd = kioskLocalDateYmd(checkOutNight);
+      const placeholderReservationID = selectedRoom?.placeholderReservationID;
+
+      const submittedFields = {
+        firstName: formData.firstName.trim(),
+        lastName: formData.lastName.trim(),
+        phoneNumber: formData.phoneNumber,
+        clcNumber: formData.clcNumber,
+        classType: 'TYE' as const,
+        email: buildGuestSyntheticEmail(formData.firstName, formData.lastName),
+        roomID: roomIdentifier,
+        roomDisplayName: selectedRoom?.roomName,
+        checkInDate: checkInYmd,
+        checkOutDate: checkOutYmd,
+        ...(placeholderReservationID ? { placeholderReservationID } : {}),
+      };
+
       try {
-        const roomIdentifier = selectedRoom ? selectedRoom.roomID : formData.roomNumber;
-
-        console.log('Checking in with room:', { roomID: roomIdentifier, roomName: selectedRoom?.roomName });
-
-        const checkInAnchor = new Date();
-        const checkOutNight = new Date(checkInAnchor);
-        checkOutNight.setDate(checkOutNight.getDate() + 1);
-        const checkInYmd = kioskLocalDateYmd(checkInAnchor);
-        const checkOutYmd = kioskLocalDateYmd(checkOutNight);
-        // If the selected room has a pre-created TYE placeholder reservation, pass its ID.
-        const placeholderReservationID = selectedRoom?.placeholderReservationID;
-
         const cloudbedsResponse = await fetch('/api/cloudbeds-checkin', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -207,7 +220,7 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
             `Cloudbeds check-in failed (HTTP ${cloudbedsResponse.status})`;
           console.error('[CHECK-IN] Cloudbeds failure logged to admin, not shown to guest:', errMsg);
           postKioskEvent('kiosk:check-in', decodeCloudbedsUserMessage(errMsg), {
-            room: formData.roomNumber || undefined,
+            ...submittedFields,
             cloudbedsFailure: true,
           });
         } else {
@@ -230,7 +243,7 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
         const errMsg = cloudbedsErr?.message || 'Network error during Cloudbeds check-in';
         console.error('[CHECK-IN] Network error logged to admin, not shown to guest:', errMsg);
         postKioskEvent('kiosk:check-in', errMsg, {
-          room: formData.roomNumber || undefined,
+          ...submittedFields,
           networkError: true,
         });
       }
@@ -402,7 +415,7 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
                 letterSpacing: '0.02em',
               }}
             >
-              💬 Send Us a Message
+              💬 Leave us a message
             </button>
           </>
         )}
