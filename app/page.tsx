@@ -61,23 +61,12 @@ export default function Home() {
       </div>
 
       <div className="kiosk-footer">
-        <p style={{ marginBottom: 0 }}>Any issues?</p>
-        <button
-          onClick={() => setShowFeedback(true)}
-          style={{
-            marginTop: '10px',
-            background: 'rgba(255,255,255,0.18)',
-            border: '1px solid rgba(255,255,255,0.45)',
-            color: 'inherit',
-            borderRadius: '8px',
-            padding: '7px 18px',
-            fontSize: '13px',
-            cursor: 'pointer',
-            letterSpacing: '0.02em',
-          }}
-        >
-          💬 Leave us a message
-        </button>
+        <div className="kiosk-footer-feedback">
+          <p>Any issues?</p>
+          <button type="button" className="kiosk-feedback-button" onClick={() => setShowFeedback(true)}>
+            💬 Leave us a message
+          </button>
+        </div>
       </div>
 
       {showFeedback && <FeedbackModal onClose={() => setShowFeedback(false)} />}

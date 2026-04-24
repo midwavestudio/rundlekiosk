@@ -140,6 +140,8 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
   const [exportFrom, setExportFrom] = useState(() => localYmd(new Date()));
   const [exportTo, setExportTo] = useState(() => localYmd(new Date()));
   const [showExportPanel, setShowExportPanel] = useState(false);
+  /** When true, list is sorted by check-in time descending (latest at top). */
+  const [newestFirst, setNewestFirst] = useState(true);
 
   useEffect(() => {
     const load = () => {
@@ -211,6 +213,21 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
       (r.rawData.roomNumber || '').toLowerCase().includes(q)
     );
   }, [rowsForSelectedDate, searchTerm]);
+
+  const sortedFilteredRows = useMemo(() => {
+    const copy = [...filteredRows];
+    copy.sort((a, b) => {
+      const ta = new Date(a.checkInIso).getTime();
+      const tb = new Date(b.checkInIso).getTime();
+      const aBad = Number.isNaN(ta);
+      const bBad = Number.isNaN(tb);
+      if (aBad && bBad) return 0;
+      if (aBad) return 1;
+      if (bBad) return -1;
+      return newestFirst ? tb - ta : ta - tb;
+    });
+    return copy;
+  }, [filteredRows, newestFirst]);
 
   useEffect(() => {
     if (selectedRow && !filteredRows.some((r) => r.id === selectedRow.id)) {
@@ -370,6 +387,30 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
             ›
           </button>
         </div>
+        <span style={{ width: '1px', height: '24px', background: '#e5e7eb', flexShrink: 0 }} aria-hidden />
+        <button
+          type="button"
+          aria-pressed={newestFirst}
+          aria-label={newestFirst ? 'Sort: latest check-ins first' : 'Sort: earliest check-ins first'}
+          onClick={() => setNewestFirst((v) => !v)}
+          title={newestFirst ? 'Showing latest check-ins first. Click for earliest first.' : 'Showing earliest check-ins first. Click for latest first.'}
+          style={{
+            padding: '8px 14px',
+            border: '1px solid #d1d5db',
+            borderRadius: '8px',
+            background: 'white',
+            cursor: 'pointer',
+            fontWeight: 600,
+            fontSize: '13px',
+            color: '#374151',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+          }}
+        >
+          <span aria-hidden>{newestFirst ? '↓' : '↑'}</span>
+          {newestFirst ? 'Latest first' : 'Earliest first'}
+        </button>
       </div>
 
       {/* ── Export Panel ── */}
@@ -412,7 +453,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
 
           {/* Rows */}
           <div style={{ flex: 1, overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: '0 0 8px 8px', background: 'white' }}>
-            {filteredRows.length === 0 ? (
+            {sortedFilteredRows.length === 0 ? (
               <div style={{ textAlign: 'center', padding: '60px 20px', color: '#9ca3af' }}>
                 <div style={{ fontSize: '40px', marginBottom: '8px' }}>📭</div>
                 <div style={{ fontSize: '14px' }}>
@@ -422,7 +463,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
                 </div>
               </div>
             ) : (
-              filteredRows.map((row, idx) => {
+              sortedFilteredRows.map((row, idx) => {
                 const isSelected = selectedRow?.id === row.id;
                 return (
                   <div
@@ -430,7 +471,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
                     onClick={() => setSelectedRow(isSelected ? null : row)}
                     style={{
                       display: 'flex', alignItems: 'center', padding: '10px 0',
-                      borderBottom: idx < filteredRows.length - 1 ? '1px solid #f3f4f6' : 'none',
+                      borderBottom: idx < sortedFilteredRows.length - 1 ? '1px solid #f3f4f6' : 'none',
                       background: isSelected ? '#eef2ff' : idx % 2 === 0 ? '#fff' : '#fafafa',
                       cursor: 'pointer', transition: 'background 0.15s',
                     }}
