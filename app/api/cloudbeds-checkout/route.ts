@@ -4,6 +4,7 @@ import {
   pickActiveRoom,
   unwrapReservationFromGetReservation,
 } from '@/lib/cloudbeds-rate-preserve';
+import { saveEventLog } from '@/lib/event-log-store';
 
 /** Structured admin-facing error log for checkout failures. Visible in server logs / hosting dashboard. */
 function logCheckOutFailure(context: {
@@ -24,6 +25,17 @@ function logCheckOutFailure(context: {
       debugLog: context.debugLog ?? [],
     }, null, 2)
   );
+  void saveEventLog({
+    level: 'error',
+    source: 'api:cloudbeds-checkout',
+    message: context.error,
+    detail: {
+      reservationID: context.reservationID ?? null,
+      checkoutDate: context.checkoutDate ?? null,
+      isSameDay: context.isSameDay ?? null,
+      debugLog: context.debugLog ?? null,
+    },
+  }).catch(() => {});
 }
 
 /**

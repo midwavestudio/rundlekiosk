@@ -5,6 +5,16 @@ import { displayRoomNumberLabel } from '@/lib/room-display';
 
 interface GuestCheckOutProps {
   onBack: () => void;
+  onOpenFeedback?: () => void;
+}
+
+function postKioskEvent(message: string, detail?: Record<string, unknown>) {
+  if (typeof window === 'undefined') return;
+  void fetch('/api/event-log', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source: 'kiosk:check-out', level: 'error', message, detail }),
+  }).catch(() => {});
 }
 
 interface CloudbedsGuest {
@@ -37,7 +47,7 @@ function kioskLocalDateStr(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
-export default function GuestCheckOut({ onBack }: GuestCheckOutProps) {
+export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [guests, setGuests] = useState<CloudbedsGuest[]>([]);
   const [selectedGuest, setSelectedGuest] = useState<CloudbedsGuest | null>(null);
@@ -151,6 +161,9 @@ export default function GuestCheckOut({ onBack }: GuestCheckOutProps) {
           ? err.message
           : 'Check-out failed. Please try again or contact the front desk.';
       setError(msg);
+      postKioskEvent(msg, {
+        reservationID: selectedGuest?.cloudbedsReservationID,
+      });
     } finally {
       setLoading(false);
     }
@@ -289,6 +302,25 @@ export default function GuestCheckOut({ onBack }: GuestCheckOutProps) {
 
       <div className="kiosk-footer">
         <p>Need help? Please contact the front desk &mdash; <a href="tel:+14062282800" style={{ color: 'inherit', textDecoration: 'none', fontWeight: 600 }}>(406) 228-2800</a></p>
+        {onOpenFeedback && (
+          <button
+            type="button"
+            onClick={onOpenFeedback}
+            style={{
+              marginTop: '10px',
+              background: 'rgba(255,255,255,0.18)',
+              border: '1px solid rgba(255,255,255,0.45)',
+              color: 'inherit',
+              borderRadius: '8px',
+              padding: '7px 18px',
+              fontSize: '13px',
+              cursor: 'pointer',
+              letterSpacing: '0.02em',
+            }}
+          >
+            💬 Send Us a Message
+          </button>
+        )}
       </div>
     </div>
   );

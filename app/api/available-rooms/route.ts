@@ -293,8 +293,11 @@ export async function GET(request: NextRequest) {
           { roomID: '101', roomName: '101', roomTypeName: 'Standard Room' },
           { roomID: '102', roomName: '102', roomTypeName: 'Standard Room' },
           { roomID: '103', roomName: '103', roomTypeName: 'Deluxe Room' },
+          { roomID: '201', roomName: '201', roomTypeName: 'Deluxe Room' },
+          { roomID: '202', roomName: '202', roomTypeName: 'Deluxe Room' },
         ],
         mockMode: true,
+        reason: 'Cloudbeds credentials missing (set CLOUDBEDS_API_KEY and CLOUDBEDS_PROPERTY_ID)',
       });
     }
 
@@ -310,98 +313,40 @@ export async function GET(request: NextRequest) {
       };
     }
 
-    // PRIMARY: getRoomsUnassigned(checkIn, checkOut) — Cloudbeds inventory for this night only.
-    // This excludes occupied rooms and booked inventory correctly; the old "getRooms minus
-    // checked_in" path missed many in-house assignments.
+    // Return full room inventory for the picker (all rooms), not just unassigned rooms.
+    // This allows staff/guests to select a room even when Cloudbeds marks it unavailable;
+    // downstream check-in logic already handles assignment edge cases gracefully.
     let apiError: string | null = null;
     const headers: HeadersInit = {
       Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
       'Content-Type': 'application/json',
     };
-
-    let unassignedRooms: any[] = [];
+    let allRooms: any[] = [];
     try {
-      unassignedRooms = await fetchAllUnassignedRooms(
-        apiV13,
-        CLOUDBEDS_PROPERTY_ID,
-        headers,
-        today,
-        tomorrow
-      );
-      console.log('getRoomsUnassigned (primary):', unassignedRooms.length, 'for', today, '→', tomorrow);
-    } catch (e: any) {
-      apiError = e?.message ?? 'getRoomsUnassigned failed';
-      console.warn(apiError);
-    }
-
-    if (unassignedRooms.length > 0) {
-      let rooms = unassignedRooms
-        .filter((room: any) => room && room.roomBlocked !== true)
-        .map(formatRoom)
-        .filter((r: any) => r.roomID !== 'unknown' && !r.roomName.includes('(Remove BE)') && !r.roomTypeName.includes('(Remove BE)'));
-      rooms = await mergePlaceholderRooms(rooms, today);
-      return NextResponse.json({
-        success: true,
-        rooms,
-        count: rooms.length,
-        method: 'getRoomsUnassigned',
-        checkIn: today,
-        checkOut: tomorrow,
-      });
-    }
-
-    // FALLBACK: full getRooms minus checked-in room assignments (when unassigned is empty or unavailable)
-    let availableRooms: any[] = [];
-    try {
-      let allRooms = await fetchAllRoomsPages(apiV13, CLOUDBEDS_PROPERTY_ID, headers);
+      allRooms = await fetchAllRoomsPages(apiV13, CLOUDBEDS_PROPERTY_ID, headers);
       if (allRooms.length === 0) {
         const legacyBase = `${baseUrl.replace(/\/$/, '')}/v1.2`;
         allRooms = await fetchAllRoomsPages(legacyBase, CLOUDBEDS_PROPERTY_ID, headers);
       }
       if (allRooms.length === 0) {
         apiError = 'getRooms returned no rooms';
-      } else {
-        let occupiedRoomIDs = new Set<string>();
-        let occupiedRoomNames = new Set<string>();
-        try {
-          const occ = await fetchOccupiedRoomKeysFromCheckedIn(
-            apiV13,
-            CLOUDBEDS_PROPERTY_ID,
-            headers,
-            today
-          );
-          occupiedRoomIDs = occ.ids;
-          occupiedRoomNames = occ.names;
-        } catch (e) {
-          console.warn('fetchOccupiedRoomKeysFromCheckedIn:', e);
-        }
-        availableRooms = allRooms.filter((room: any) => {
-          const id = (room.roomID ?? room.id)?.toString().trim();
-          const name = String(room.roomName ?? room.name ?? '').trim();
-          const nameLc = name.toLowerCase();
-          const blocked = room.roomBlocked === true;
-          const idTaken = occupiedRoomIDs.has(id);
-          const nameTaken = name && occupiedRoomNames.has(nameLc);
-          return !blocked && !idTaken && !nameTaken;
-        });
-        console.log('getRooms + checked_in filter (fallback): total', allRooms.length, 'available', availableRooms.length);
       }
     } catch (e: any) {
       apiError = e?.message ?? 'Unknown error';
     }
 
-    if (availableRooms.length > 0) {
-      let rooms = availableRooms
+    if (allRooms.length > 0) {
+      let rooms = allRooms
+        .filter((room: any) => !!room)
         .map(formatRoom)
-        .filter((r: any) => r.roomID !== 'unknown' && !r.roomName.includes('(Remove BE)') && !r.roomTypeName.includes('(Remove BE)'));
-
+        .filter((r: any) => r.roomID !== 'unknown' && !r.roomName.includes('(Remove BE)') && !r.roomTypeName.includes('(Remove BE)'))
+        .filter((r, i, arr) => arr.findIndex((x) => x.roomID === r.roomID) === i);
       rooms = await mergePlaceholderRooms(rooms, today);
-
       return NextResponse.json({
         success: true,
         rooms,
         count: rooms.length,
-        method: 'getRooms_with_filtering',
+        method: 'getRooms_all',
         checkIn: today,
         checkOut: tomorrow,
       });

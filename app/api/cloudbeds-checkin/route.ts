@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { performCloudbedsCheckIn } from '@/lib/cloudbeds-checkin';
+import { saveEventLog } from '@/lib/event-log-store';
 
 /** Structured admin-facing error log for check-in failures. Visible in server logs / hosting dashboard. */
 function logCheckInFailure(context: {
@@ -20,6 +21,17 @@ function logCheckInFailure(context: {
       debugTrail: context.debugTrail ?? [],
     }, null, 2)
   );
+  void saveEventLog({
+    level: 'error',
+    source: 'api:cloudbeds-checkin',
+    message: context.error,
+    detail: {
+      guest: context.guest ?? null,
+      room: context.room ?? null,
+      reservationID: context.reservationID ?? null,
+      debugTrail: context.debugTrail ?? null,
+    },
+  }).catch(() => {});
 }
 
 export async function POST(request: NextRequest) {

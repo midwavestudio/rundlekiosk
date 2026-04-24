@@ -3,10 +3,14 @@
   "version": "1.0.0",
   "description": "Dual Check-In System for Rundle Suites Hotel - Next.js App",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint",
+    "predev": "node scripts/ensure-deps.cjs",
+    "dev": "node node_modules/next/dist/bin/next dev",
+    "prebuild": "node scripts/ensure-deps.cjs",
+    "build": "node node_modules/next/dist/bin/next build",
+    "prestart": "node scripts/ensure-deps.cjs",
+    "start": "node node_modules/next/dist/bin/next start",
+    "prelint": "node scripts/ensure-deps.cjs",
+    "lint": "node node_modules/next/dist/bin/next lint",
     "test": "jest",
     "generate-pwa-icons": "node scripts/generate-pwa-icons.cjs"
   },

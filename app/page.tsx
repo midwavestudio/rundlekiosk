@@ -12,11 +12,27 @@ export default function Home() {
   const [showFeedback, setShowFeedback] = useState(false);
 
   if (currentScreen === 'checkin') {
-    return <GuestCheckIn onBack={() => setCurrentScreen('home')} />;
+    return (
+      <>
+        <GuestCheckIn
+          onBack={() => setCurrentScreen('home')}
+          onOpenFeedback={() => setShowFeedback(true)}
+        />
+        {showFeedback && <FeedbackModal onClose={() => setShowFeedback(false)} />}
+      </>
+    );
   }
 
   if (currentScreen === 'checkout') {
-    return <GuestCheckOut onBack={() => setCurrentScreen('home')} />;
+    return (
+      <>
+        <GuestCheckOut
+          onBack={() => setCurrentScreen('home')}
+          onOpenFeedback={() => setShowFeedback(true)}
+        />
+        {showFeedback && <FeedbackModal onClose={() => setShowFeedback(false)} />}
+      </>
+    );
   }
 
   return (

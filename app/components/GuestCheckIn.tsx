@@ -6,6 +6,20 @@ import { formatCloudbedsRoomNameLabel, kioskPersistRoomDisplayName } from '@/lib
 
 interface GuestCheckInProps {
   onBack: () => void;
+  onOpenFeedback?: () => void;
+}
+
+function postKioskEvent(
+  source: 'kiosk:check-in' | 'kiosk:check-in-rooms',
+  message: string,
+  detail?: Record<string, unknown>
+) {
+  if (typeof window === 'undefined') return;
+  void fetch('/api/event-log', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source, level: 'error', message, detail }),
+  }).catch(() => {});
 }
 
 interface GuestData {
@@ -19,6 +33,7 @@ interface GuestData {
   class: 'TYE';
   cloudbedsGuestID?: string;
   cloudbedsReservationID?: string;
+  cloudbedsSyncFailed?: boolean;
 }
 
 interface Room {
@@ -45,7 +60,7 @@ function decodeCloudbedsUserMessage(msg: string): string {
   return msg.replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
 }
 
-export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
+export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInProps) {
   const [formData, setFormData] = useState<Omit<GuestData, 'class' | 'checkInTime'>>({
     firstName: '',
     lastName: '',
@@ -75,10 +90,18 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
         } else {
           console.error('Failed to fetch rooms:', data.error);
           setError('Unable to load available rooms. Please contact the front desk.');
+          postKioskEvent(
+            'kiosk:check-in-rooms',
+            typeof data.error === 'string' ? data.error : 'Failed to load available rooms',
+            { api: 'available-rooms', success: data.success === false }
+          );
         }
       } catch (error) {
         console.error('Error fetching rooms:', error);
         setError('Unable to load available rooms. Please contact the front desk.');
+        postKioskEvent('kiosk:check-in-rooms', 'Network or server error loading rooms', {
+          api: 'available-rooms',
+        });
       } finally {
         setLoadingRooms(false);
       }
@@ -134,6 +157,7 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
 
     try {
       let reservationConfirmedOnly = false;
+      let cloudbedsSyncFailed = false;
       // Match dropdown value (Cloudbeds roomID) to the row so we persist human roomName for lists/exports.
       const selectedRoom = availableRooms.find((r) => String(r.roomID) === String(formData.roomNumber));
       // Add timestamp (trim names for storage consistency with API)
@@ -146,7 +170,8 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
         roomNumber: kioskPersistRoomDisplayName(selectedRoom, formData.roomNumber),
       };
 
-      // Call Cloudbeds API to create reservation and check in
+      // Call Cloudbeds API to create reservation and check in.
+      // Kiosk UX should still complete even if Cloudbeds fails — failures are routed to admin error logs.
       try {
         const roomIdentifier = selectedRoom ? selectedRoom.roomID : formData.roomNumber;
         
@@ -203,9 +228,7 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
             (typeof cloudbedsResult.error === 'string' && cloudbedsResult.error) ||
             (typeof cloudbedsResult.message === 'string' && cloudbedsResult.message) ||
             '';
-          throw new Error(
-            decodeCloudbedsUserMessage(apiMsg || `Cloudbeds check-in failed (${cloudbedsResponse.status})`)
-          );
+          throw new Error(decodeCloudbedsUserMessage(apiMsg || `Cloudbeds check-in failed (${cloudbedsResponse.status})`));
         }
 
         console.log('Cloudbeds check-in successful:', cloudbedsResult);
@@ -214,20 +237,33 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
         checkInData.cloudbedsGuestID = cloudbedsResult.guestID as string | undefined;
         checkInData.cloudbedsReservationID = cloudbedsResult.reservationID as string | undefined;
       } catch (cloudbedsError: any) {
-        throw cloudbedsError;
+        cloudbedsSyncFailed = true;
+        const raw =
+          typeof cloudbedsError?.message === 'string' && cloudbedsError.message.trim().length > 0
+            ? cloudbedsError.message
+            : 'Cloudbeds check-in failed';
+        const decoded = decodeCloudbedsUserMessage(raw);
+        console.error('Cloudbeds check-in failed (kiosk continues):', cloudbedsError);
+        postKioskEvent('kiosk:check-in', decoded, {
+          room: formData.roomNumber || undefined,
+          cloudbedsSyncFailed: true,
+        });
       }
 
-      // Save to localStorage only for actual kiosk check-in — confirmed-only stays live in Cloudbeds until staff assigns the room.
+      // Always record kiosk arrivals in local storage so admin Arrivals reflects what happened at the kiosk,
+      // even when Cloudbeds reservation/assignment fails.
       try {
-        if (!reservationConfirmedOnly) {
-          const existingGuests = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
-          existingGuests.push(checkInData);
-          localStorage.setItem('checkedInGuests', JSON.stringify(existingGuests));
-        }
+        checkInData.cloudbedsSyncFailed = cloudbedsSyncFailed;
+        const existingGuests = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
+        existingGuests.push(checkInData);
+        localStorage.setItem('checkedInGuests', JSON.stringify(existingGuests));
       } catch (storageErr) {
         console.warn('Could not save guest to local storage (check-in still completed):', storageErr);
       }
 
+      if (cloudbedsSyncFailed) {
+        setSuccessIsConfirmedOnly(false);
+      }
       setSuccess(true);
       
       // Return to home after 2 seconds
@@ -241,6 +277,9 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
           : 'Check-in failed. Please try again or contact the front desk.';
       setError(decodeCloudbedsUserMessage(raw));
       console.error('Check-in error:', err);
+      postKioskEvent('kiosk:check-in', decodeCloudbedsUserMessage(raw), {
+        room: formData.roomNumber || undefined,
+      });
     } finally {
       setLoading(false);
     }
@@ -408,6 +447,33 @@ export default function GuestCheckIn({ onBack }: GuestCheckInProps) {
 
       <div className="kiosk-footer">
         <p>All fields marked with * are required</p>
+        {onOpenFeedback && (
+          <>
+            <p style={{ marginTop: '12px', marginBottom: 0 }}>
+              Need assistance? Please contact the front desk &mdash;{' '}
+              <a href="tel:+14062282800" style={{ color: 'inherit', textDecoration: 'none', fontWeight: 600 }}>
+                (406) 228-2800
+              </a>
+            </p>
+            <button
+              type="button"
+              onClick={onOpenFeedback}
+              style={{
+                marginTop: '10px',
+                background: 'rgba(255,255,255,0.18)',
+                border: '1px solid rgba(255,255,255,0.45)',
+                color: 'inherit',
+                borderRadius: '8px',
+                padding: '7px 18px',
+                fontSize: '13px',
+                cursor: 'pointer',
+                letterSpacing: '0.02em',
+              }}
+            >
+              💬 Send Us a Message
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
