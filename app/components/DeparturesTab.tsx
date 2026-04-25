@@ -20,6 +20,7 @@ interface StoredGuest {
   cloudbedsGuestID?: string;
   cloudbedsReservationID?: string;
   roomNumber?: string;
+  _serverId?: string;
 }
 
 interface Row {
@@ -165,6 +166,20 @@ function guestToRow(
   };
 }
 
+function guestDedupeKey(g: StoredGuest): string {
+  if (g.cloudbedsReservationID) return `res:${g.cloudbedsReservationID}`;
+  if (g.checkInTime) return `time:${g.firstName}|${g.lastName}|${g.checkInTime}`;
+  if (g.checkOutTime) return `out:${g.firstName}|${g.lastName}|${g.checkOutTime}`;
+  return `name:${g.firstName}|${g.lastName}`;
+}
+
+function mergeGuestLists(local: StoredGuest[], server: StoredGuest[]): StoredGuest[] {
+  const map = new Map<string, StoredGuest>();
+  for (const g of local) map.set(guestDedupeKey(g), g);
+  for (const g of server) map.set(guestDedupeKey(g), g); // server wins (has _serverId, fresh data)
+  return Array.from(map.values());
+}
+
 export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabProps) {
   const [checkedInGuests, setCheckedInGuests] = useState<StoredGuest[]>([]);
   const [checkOutHistory, setCheckOutHistory] = useState<StoredGuest[]>([]);
@@ -180,13 +195,64 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
   const [showExportPanel, setShowExportPanel] = useState(false);
 
   useEffect(() => {
-    const load = () => {
-      setCheckedInGuests(JSON.parse(localStorage.getItem('checkedInGuests') || '[]'));
-      setCheckOutHistory(JSON.parse(localStorage.getItem('checkOutHistory') || '[]'));
+    let cancelled = false;
+
+    const loadLocal = () => {
+      const g: StoredGuest[] = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
+      const h: StoredGuest[] = JSON.parse(localStorage.getItem('checkOutHistory') || '[]');
+      if (!cancelled) {
+        setCheckedInGuests((prev) => mergeGuestLists(g, prev.filter((r) => r._serverId)));
+        setCheckOutHistory((prev) => mergeGuestLists(h, prev.filter((r) => r._serverId)));
+      }
     };
-    load();
-    const id = setInterval(load, 2000);
-    return () => clearInterval(id);
+
+    const loadServer = async () => {
+      try {
+        const res = await fetch('/api/checkin-records');
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (!data.success || !Array.isArray(data.records) || cancelled) return;
+
+        const allRecords: StoredGuest[] = (data.records as any[]).map((r) => ({
+          firstName: String(r.firstName ?? ''),
+          lastName: String(r.lastName ?? ''),
+          clcNumber: String(r.clcNumber ?? ''),
+          phoneNumber: String(r.phoneNumber ?? ''),
+          class: (r.class ?? 'TYE') as 'TYE' | 'MOW',
+          checkInTime: r.checkInTime ? String(r.checkInTime) : undefined,
+          checkOutTime: r.checkOutTime ? String(r.checkOutTime) : undefined,
+          cloudbedsReservationID: r.cloudbedsReservationID ? String(r.cloudbedsReservationID) : undefined,
+          cloudbedsGuestID: r.cloudbedsGuestID ? String(r.cloudbedsGuestID) : undefined,
+          roomNumber: String(r.roomNumber ?? ''),
+          _serverId: String(r.id),
+        }));
+
+        const active = allRecords.filter((r) => !r.checkOutTime);
+        const history = allRecords.filter((r) => !!r.checkOutTime);
+
+        const localGuests: StoredGuest[] = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
+        const localHistory: StoredGuest[] = JSON.parse(localStorage.getItem('checkOutHistory') || '[]');
+
+        if (!cancelled) {
+          setCheckedInGuests(mergeGuestLists(localGuests, active));
+          setCheckOutHistory(mergeGuestLists(localHistory, history));
+        }
+      } catch {
+        // Non-fatal — fall back to localStorage data
+      }
+    };
+
+    loadLocal();
+    loadServer();
+
+    const localId = setInterval(loadLocal, 3000);
+    const serverId = setInterval(loadServer, 10000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(localId);
+      clearInterval(serverId);
+    };
   }, []);
 
   useEffect(() => {

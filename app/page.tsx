@@ -4,6 +4,7 @@ import { useState } from 'react';
 import GuestCheckIn from './components/GuestCheckIn';
 import GuestCheckOut from './components/GuestCheckOut';
 import FeedbackModal from './components/FeedbackModal';
+import KioskDataSync from './components/KioskDataSync';
 
 type Screen = 'home' | 'checkin' | 'checkout';
 
@@ -14,6 +15,7 @@ export default function Home() {
   if (currentScreen === 'checkin') {
     return (
       <>
+        <KioskDataSync />
         <GuestCheckIn
           onBack={() => setCurrentScreen('home')}
           onOpenFeedback={() => setShowFeedback(true)}
@@ -26,6 +28,7 @@ export default function Home() {
   if (currentScreen === 'checkout') {
     return (
       <>
+        <KioskDataSync />
         <GuestCheckOut
           onBack={() => setCurrentScreen('home')}
           onOpenFeedback={() => setShowFeedback(true)}
@@ -37,6 +40,7 @@ export default function Home() {
 
   return (
     <div className="kiosk-container">
+      <KioskDataSync />
       <div className="kiosk-header">
         <h1>Welcome to Rundle Suites</h1>
         <p className="subtitle">Please select an option to continue</p>

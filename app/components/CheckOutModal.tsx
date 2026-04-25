@@ -55,18 +55,31 @@ export default function CheckOutModal({ reservation, onClose }: CheckOutModalPro
                    g.checkInTime === reservation.rawData?.checkInTime
       );
 
+      const checkOutTime = new Date().toISOString();
       if (guestIndex >= 0) {
         const checkedOutGuest = {
           ...checkedInGuests[guestIndex],
-          checkOutTime: new Date().toISOString(),
+          checkOutTime,
         };
         checkOutHistory.push(checkedOutGuest);
         checkedInGuests.splice(guestIndex, 1);
-        
+
         localStorage.setItem('checkedInGuests', JSON.stringify(checkedInGuests));
         localStorage.setItem('checkOutHistory', JSON.stringify(checkOutHistory));
       }
-      
+
+      // Update server-side record so all admin devices see the checkout time.
+      if (reservation.rawData?.cloudbedsReservationID) {
+        fetch('/api/checkin-records', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            reservationID: reservation.rawData.cloudbedsReservationID,
+            checkOutTime,
+          }),
+        }).catch(() => {});
+      }
+
       setStep('success');
     } catch (error: any) {
       console.error('Check-out error:', error);

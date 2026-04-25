@@ -189,6 +189,18 @@ export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutP
         // localStorage is not critical; ignore
       }
 
+      // Update the server-side record so admin Arrivals / Departures show checkout time.
+      if (selectedGuest.cloudbedsReservationID) {
+        fetch('/api/checkin-records', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            reservationID: selectedGuest.cloudbedsReservationID,
+            checkOutTime: checkoutAt.toISOString(),
+          }),
+        }).catch(() => {});
+      }
+
       setSuccess(true);
       setTimeout(() => {
         onBack();

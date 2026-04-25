@@ -160,6 +160,20 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
         console.warn('Could not pre-save guest to local storage:', storageErr);
       }
 
+      // Also save to the server-side store so all admin devices see this check-in.
+      let serverRecordId: string | null = null;
+      try {
+        const serverRes = await fetch('/api/checkin-records', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...checkInData, source: 'kiosk' }),
+        });
+        const serverData = await serverRes.json();
+        if (serverData.success) serverRecordId = serverData.id as string;
+      } catch {
+        // Non-fatal — local record is already saved.
+      }
+
       // Attempt Cloudbeds check-in. Any failure is silently logged to the admin error log
       // and never surfaced to the guest — the check-in always appears successful.
       const roomIdentifier = selectedRoom ? selectedRoom.roomID : formData.roomNumber;
@@ -224,7 +238,7 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
             cloudbedsFailure: true,
           });
         } else {
-          // Cloudbeds accepted — patch the already-saved localStorage record with the reservation IDs.
+          // Cloudbeds accepted — patch the already-saved localStorage and server records.
           console.log('Cloudbeds check-in successful:', cloudbedsResult);
           const guestID = cloudbedsResult.guestID as string | undefined;
           const reservationID = cloudbedsResult.reservationID as string | undefined;
@@ -236,7 +250,19 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
               stored[idx] = { ...stored[idx], cloudbedsGuestID: guestID, cloudbedsReservationID: reservationID };
               localStorage.setItem('checkedInGuests', JSON.stringify(stored));
             }
-          } catch { /* non-fatal — IDs will be missing but guest is already logged */ }
+          } catch { /* non-fatal */ }
+          // Patch server record with Cloudbeds IDs
+          if (serverRecordId) {
+            fetch('/api/checkin-records', {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                id: serverRecordId,
+                cloudbedsReservationID: reservationID,
+                cloudbedsGuestID: guestID,
+              }),
+            }).catch(() => {});
+          }
         }
       } catch (cloudbedsErr: any) {
         // Network or unexpected error — log to admin, do not re-throw.

@@ -19,6 +19,8 @@ interface CheckedInGuest {
   cloudbedsGuestID?: string;
   cloudbedsReservationID?: string;
   roomNumber?: string;
+  /** Firestore document ID — present on records fetched from the server. */
+  _serverId?: string;
 }
 
 interface Row {
@@ -138,6 +140,28 @@ function guestMatchKey(g: Pick<CheckedInGuest, 'firstName' | 'lastName' | 'check
   return `${g.firstName}|${g.lastName}|${g.checkInTime}`;
 }
 
+/** Stable dedup key used to merge local + server records without duplicates. */
+function guestDedupeKey(g: CheckedInGuest): string {
+  if (g.cloudbedsReservationID) return `res:${g.cloudbedsReservationID}`;
+  if (g.checkInTime) return `time:${g.firstName}|${g.lastName}|${g.checkInTime}`;
+  return `name:${g.firstName}|${g.lastName}`;
+}
+
+/**
+ * Merge two guest arrays, preferring the record with more info (server record wins
+ * when keys match because it has _serverId and up-to-date checkOutTime).
+ */
+function mergeGuestLists(
+  local: CheckedInGuest[],
+  server: CheckedInGuest[]
+): CheckedInGuest[] {
+  const map = new Map<string, CheckedInGuest>();
+  for (const g of local) map.set(guestDedupeKey(g), g);
+  // Server records win (have _serverId, fresher checkOutTime)
+  for (const g of server) map.set(guestDedupeKey(g), g);
+  return Array.from(map.values());
+}
+
 export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
   const [checkedInGuests, setCheckedInGuests] = useState<CheckedInGuest[]>([]);
   const [checkOutHistory, setCheckOutHistory] = useState<CheckedInGuest[]>([]);
@@ -155,15 +179,67 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
   const [newestFirst, setNewestFirst] = useState(true);
 
   useEffect(() => {
-    const load = () => {
-      const g = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
-      const h = JSON.parse(localStorage.getItem('checkOutHistory') || '[]');
-      setCheckedInGuests(g);
-      setCheckOutHistory(Array.isArray(h) ? h : []);
+    let cancelled = false;
+
+    const loadLocal = () => {
+      const g: CheckedInGuest[] = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
+      const h: CheckedInGuest[] = JSON.parse(localStorage.getItem('checkOutHistory') || '[]');
+      if (!cancelled) {
+        setCheckedInGuests((prev) => mergeGuestLists(g, prev.filter((r) => r._serverId)));
+        setCheckOutHistory((prev) => mergeGuestLists(h, prev.filter((r) => r._serverId)));
+      }
     };
-    load();
-    const id = setInterval(load, 2000);
-    return () => clearInterval(id);
+
+    const loadServer = async () => {
+      try {
+        const res = await fetch('/api/checkin-records');
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (!data.success || !Array.isArray(data.records) || cancelled) return;
+
+        const allRecords: CheckedInGuest[] = (data.records as any[]).map((r) => ({
+          firstName: String(r.firstName ?? ''),
+          lastName: String(r.lastName ?? ''),
+          clcNumber: String(r.clcNumber ?? ''),
+          phoneNumber: String(r.phoneNumber ?? ''),
+          class: (r.class ?? 'TYE') as 'TYE' | 'MOW',
+          checkInTime: String(r.checkInTime ?? ''),
+          checkOutTime: r.checkOutTime ? String(r.checkOutTime) : undefined,
+          cloudbedsReservationID: r.cloudbedsReservationID ? String(r.cloudbedsReservationID) : undefined,
+          cloudbedsGuestID: r.cloudbedsGuestID ? String(r.cloudbedsGuestID) : undefined,
+          roomNumber: String(r.roomNumber ?? ''),
+          _serverId: String(r.id),
+        }));
+
+        const active = allRecords.filter((r) => !r.checkOutTime);
+        const history = allRecords.filter((r) => !!r.checkOutTime);
+
+        // Merge: local-only records (no _serverId, not yet synced) kept alongside server records
+        const localGuests: CheckedInGuest[] = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
+        const localHistory: CheckedInGuest[] = JSON.parse(localStorage.getItem('checkOutHistory') || '[]');
+
+        if (!cancelled) {
+          setCheckedInGuests(mergeGuestLists(localGuests, active));
+          setCheckOutHistory(mergeGuestLists(localHistory, history));
+        }
+      } catch {
+        // Non-fatal — fall back to localStorage data
+      }
+    };
+
+    // Initial load: local first (instant), then server
+    loadLocal();
+    loadServer();
+
+    // Local: 3s, server: 10s
+    const localId = setInterval(loadLocal, 3000);
+    const serverId = setInterval(loadServer, 10000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(localId);
+      clearInterval(serverId);
+    };
   }, []);
 
   useEffect(() => {
