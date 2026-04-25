@@ -12,7 +12,8 @@
     "prelint": "node scripts/ensure-deps.cjs",
     "lint": "node node_modules/next/dist/bin/next lint",
     "test": "jest",
-    "generate-pwa-icons": "node scripts/generate-pwa-icons.cjs"
+    "generate-pwa-icons": "node scripts/generate-pwa-icons.cjs",
+    "firebase:deploy-indexes": "firebase deploy --only firestore:indexes"
   },
   "keywords": [
     "cloudbeds",
@@ -41,6 +42,7 @@
     "@types/react-dom": "^18.2.18",
     "eslint": "^8.56.0",
     "eslint-config-next": "14.2.35",
+    "firebase-tools": "^14.24.0",
     "jest": "^29.7.0",
     "sharp": "^0.34.5",
     "typescript": "^5.3.3",

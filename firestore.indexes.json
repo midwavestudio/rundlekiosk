@@ -1,0 +1,22 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "kiosk_checkin_records",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "firstName", "order": "ASCENDING" },
+        { "fieldPath": "lastName", "order": "ASCENDING" },
+        { "fieldPath": "checkInTime", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "kiosk_checkin_records",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "checkInDateYmd", "order": "DESCENDING" },
+        { "fieldPath": "checkInTime", "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

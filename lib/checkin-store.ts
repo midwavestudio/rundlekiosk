@@ -26,6 +26,11 @@ export interface CheckinRecord {
   roomNumber: string;
   /** ISO timestamp of check-in. */
   checkInTime: string;
+  /**
+   * Calendar date derived from check-in (YYYY-MM-DD, UTC date prefix of ISO string).
+   * Used for indexed date-range queries in Firestore — see `firestore.indexes.json`.
+   */
+  checkInDateYmd?: string;
   /** ISO timestamp of checkout — set after the guest leaves. */
   checkOutTime?: string;
   cloudbedsReservationID?: string;
@@ -93,6 +98,13 @@ function docToRecord(d: FirebaseFirestore.DocumentSnapshot): CheckinRecord {
   return { id: d.id, ...data };
 }
 
+/** YYYY-MM-DD from ISO check-in time (UTC calendar date; matches indexed `checkInDateYmd`). */
+function deriveCheckInDateYmd(checkInTimeIso: string): string | undefined {
+  if (!checkInTimeIso || checkInTimeIso.length < 10) return undefined;
+  const prefix = checkInTimeIso.slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(prefix) ? prefix : undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -102,11 +114,14 @@ export async function saveCheckinRecord(
   record: Omit<CheckinRecord, 'id' | 'createdAt'>
 ): Promise<string> {
   const createdAt = record.checkInTime || new Date().toISOString();
+  const checkInDateYmd =
+    record.checkInDateYmd ?? deriveCheckInDateYmd(record.checkInTime) ?? undefined;
   // Strip undefined fields so Firestore doesn't choke
   const payload: Record<string, unknown> = { createdAt };
   for (const [k, v] of Object.entries(record)) {
     if (v !== undefined) payload[k] = v;
   }
+  if (checkInDateYmd) payload.checkInDateYmd = checkInDateYmd;
 
   const db = getDb();
   if (db) {
@@ -119,7 +134,8 @@ export async function saveCheckinRecord(
   }
 
   const id = memId();
-  memStore.unshift({ id, ...record, createdAt });
+  const ymd = checkInDateYmd ?? deriveCheckInDateYmd(record.checkInTime);
+  memStore.unshift({ id, ...record, createdAt, ...(ymd ? { checkInDateYmd: ymd } : {}) });
   while (memStore.length > MAX_MEM) memStore.pop();
   return id;
 }
@@ -222,8 +238,32 @@ export async function getCheckinRecords(opts: {
   const db = getDb();
   if (db) {
     try {
-      // Simple descending query — single-field index, auto-created by Firestore.
-      // Date filtering is done in JS to avoid composite index requirements.
+      // Indexed date-range path (requires composite index in firestore.indexes.json).
+      if (
+        opts.from &&
+        opts.to &&
+        /^\d{4}-\d{2}-\d{2}$/.test(opts.from) &&
+        /^\d{4}-\d{2}-\d{2}$/.test(opts.to)
+      ) {
+        try {
+          const rangeSnap = await db
+            .collection(COLLECTION)
+            .where('checkInDateYmd', '>=', opts.from)
+            .where('checkInDateYmd', '<=', opts.to)
+            .orderBy('checkInDateYmd', 'desc')
+            .orderBy('checkInTime', 'desc')
+            .limit(cap)
+            .get();
+          return rangeSnap.docs.map(docToRecord);
+        } catch (rangeErr) {
+          console.warn(
+            '[checkin-store] Indexed date-range query failed (missing index or old docs?). Falling back.',
+            rangeErr
+          );
+        }
+      }
+
+      // Default: recent records by check-in time (single-field index, auto-created).
       const snap = await db
         .collection(COLLECTION)
         .orderBy('checkInTime', 'desc')
@@ -232,11 +272,11 @@ export async function getCheckinRecords(opts: {
 
       let records = snap.docs.map(docToRecord);
 
-      // Apply date filter in JS (avoids needing a composite index)
+      // Partial date filter (only from or only to) — filter in JS
       if (opts.from || opts.to) {
         records = records.filter((r) => {
-          if (!r.checkInTime) return !opts.from; // no checkInTime → include only when no from-filter
-          const ymd = r.checkInTime.slice(0, 10); // ISO prefix YYYY-MM-DD (works for any timezone offset)
+          const ymd = r.checkInDateYmd ?? r.checkInTime?.slice(0, 10);
+          if (!ymd) return !opts.from;
           if (opts.from && ymd < opts.from) return false;
           if (opts.to && ymd > opts.to) return false;
           return true;
@@ -290,6 +330,10 @@ export async function upsertCheckinRecord(
     if (record.cloudbedsGuestID && !existing.cloudbedsGuestID)
       updates.cloudbedsGuestID = record.cloudbedsGuestID;
     if (record.roomNumber && !existing.roomNumber) updates.roomNumber = record.roomNumber;
+    if (!existing.checkInDateYmd && existing.checkInTime) {
+      const ymd = deriveCheckInDateYmd(existing.checkInTime);
+      if (ymd) updates.checkInDateYmd = ymd;
+    }
     if (Object.keys(updates).length > 0) {
       await updateCheckinRecord(existing.id, updates);
     }

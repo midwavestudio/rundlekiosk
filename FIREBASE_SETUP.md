@@ -109,6 +109,50 @@ curl -H "Authorization: Bearer YOUR_FIREBASE_TOKEN" \
 
 ---
 
+## Firestore indexes (kiosk check-ins)
+
+Check-in records live in the **`kiosk_checkin_records`** collection. Composite indexes are defined in **`firestore.indexes.json`** at the repo root so Firestore can:
+
+1. Look up guests by **`firstName` + `lastName` + `checkInTime`** (dedupe / upsert).
+2. Query by **`checkInDateYmd`** + **`checkInTime`** when the API passes both `from` and `to` (`GET /api/checkin-records?from=YYYY-MM-DD&to=YYYY-MM-DD`).
+
+Each new write sets **`checkInDateYmd`** (YYYY-MM-DD from the ISO check-in time) for indexed date ranges. Older documents get **`checkInDateYmd`** the next time they are updated via sync or upsert.
+
+### Deploy indexes (Firebase CLI)
+
+**Important:** Run each command on its own line. Do not paste several commands on one line, and do not put `# comments` on the same line as `npm install` — npm can treat `#` as a package name and fail with `EINVALIDTAGNAME`.
+
+**Recommended (uses the CLI from this repo, no global install):**
+
+```bash
+cd /path/to/rundlekiosk
+npm install
+npx firebase login
+npx firebase use --add
+```
+
+When prompted, pick your Firebase project (e.g. **kiosk-rundle**). That creates `.firebaserc` in the repo root.
+
+Then deploy the indexes defined in `firestore.indexes.json`:
+
+```bash
+npm run firebase:deploy-indexes
+```
+
+**Alternative:** install the CLI globally (one line only, no comment on the same line):
+
+```bash
+npm install -g firebase-tools
+```
+
+Then `firebase login`, `firebase use --add`, and `firebase deploy --only firestore:indexes` from the repo root.
+
+Builds can take a few minutes. Watch **Firebase Console → Firestore → Indexes** until status is **Enabled**.
+
+If deploy reports a missing `firestore.rules` file, add a minimal `firestore.rules` in the repo and extend `firebase.json` with `"rules": "firestore.rules"` — or manage rules in the Console and use the error link Firestore shows when a query needs an index.
+
+---
+
 **Need Help?** Check the Firebase documentation: https://firebase.google.com/docs/admin/setup
 
 
