@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import GuestCheckIn from './components/GuestCheckIn';
 import GuestCheckOut from './components/GuestCheckOut';
 import FeedbackModal from './components/FeedbackModal';
@@ -11,6 +12,22 @@ type Screen = 'home' | 'checkin' | 'checkout';
 export default function Home() {
   const [currentScreen, setCurrentScreen] = useState<Screen>('home');
   const [showFeedback, setShowFeedback] = useState(false);
+  const router = useRouter();
+  const tapCount = useRef(0);
+  const tapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleTitleTap = useCallback(() => {
+    tapCount.current += 1;
+    if (tapTimer.current) clearTimeout(tapTimer.current);
+    if (tapCount.current >= 5) {
+      tapCount.current = 0;
+      router.push('/admin');
+      return;
+    }
+    tapTimer.current = setTimeout(() => {
+      tapCount.current = 0;
+    }, 1500);
+  }, [router]);
 
   if (currentScreen === 'checkin') {
     return (
@@ -42,7 +59,9 @@ export default function Home() {
     <div className="kiosk-container">
       <KioskDataSync />
       <div className="kiosk-header">
-        <h1>Welcome to Rundle Suites</h1>
+        <h1 onClick={handleTitleTap} style={{ userSelect: 'none', cursor: 'default' }}>
+          Welcome to Rundle Suites
+        </h1>
         <p className="subtitle">Please select an option to continue</p>
       </div>
 
