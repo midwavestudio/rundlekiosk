@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import type { User } from 'firebase/auth';
 import { ADMIN_ACCENT, ADMIN_GRADIENT } from '../lib/adminTheme';
 import ArrivalsTab from './ArrivalsTab';
@@ -17,10 +17,30 @@ interface DashboardProps {
   onLogout: () => void;
 }
 
+interface FirebaseStatus {
+  connected: boolean;
+  error: string | null;
+  phase?: 'missing-env' | 'init-failed' | 'firestore-read' | 'ok';
+}
+
 export default function Dashboard({ user, onLogout }: DashboardProps) {
   const [activeTab, setActiveTab] = useState<
     'dashboard' | 'arrivals' | 'departures' | 'bulk-checkin' | 'tye-placeholders' | 'feedback' | 'event-log'
   >('dashboard');
+  const [firestoreStatus, setFirestoreStatus] = useState<FirebaseStatus | null>(null);
+
+  useEffect(() => {
+    fetch('/api/admin/firebase-status')
+      .then((r) => r.json())
+      .then((data: FirebaseStatus) => setFirestoreStatus(data))
+      .catch(() =>
+        setFirestoreStatus({
+          connected: false,
+          error: 'Could not reach /api/admin/firebase-status',
+          phase: undefined,
+        })
+      );
+  }, []);
   const [showCheckInModal, setShowCheckInModal] = useState(false);
   const [showCheckOutModal, setShowCheckOutModal] = useState(false);
   const [selectedReservation, setSelectedReservation] = useState<any>(null);
@@ -95,6 +115,56 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
             </button>
           </div>
 
+          {/* Firestore disconnected warning banner */}
+          {firestoreStatus && !firestoreStatus.connected && (
+            <div style={{
+              background: '#fef2f2',
+              borderBottom: '2px solid #fca5a5',
+              padding: '10px 24px',
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: '10px',
+              color: '#991b1b',
+              fontSize: '13px',
+              lineHeight: '1.5',
+            }}>
+              <span style={{ fontSize: '18px', flexShrink: 0 }}>⚠️</span>
+              <div>
+                <strong>Firestore is not connected — check-in data will NOT persist between page loads.</strong>
+                <br />
+                {firestoreStatus.phase === 'missing-env' && (
+                  <>
+                    The Firebase Admin SDK variables (<code>FIREBASE_PROJECT_ID</code>,{' '}
+                    <code>FIREBASE_PRIVATE_KEY</code>, <code>FIREBASE_CLIENT_EMAIL</code>) must be set in{' '}
+                    Vercel under <em>Settings → Environment Variables</em>, then redeploy.
+                  </>
+                )}
+                {(firestoreStatus.phase === 'init-failed' || firestoreStatus.phase === 'firestore-read') && (
+                  <>
+                    Variables may be listed in Vercel, but the server cannot authenticate or read Firestore. This is usually a{' '}
+                    <strong>bad <code>FIREBASE_PRIVATE_KEY</code> value</strong> (often shown as “Needs Attention”) or IAM/API access for the service account.
+                    Paste the full key as <strong>one line</strong> with literal <code>\n</code> characters between PEM lines — do not wrap the whole value in extra quotes.
+                  </>
+                )}
+                {!firestoreStatus.phase && firestoreStatus.error?.includes('Could not reach') && (
+                  <>
+                    Could not verify Firestore from this browser — check your network or try refreshing after deploy.
+                  </>
+                )}
+                <br />
+                Until Firestore connects, Arrivals and Departures stay empty across devices after cold starts.
+                {firestoreStatus.error && (
+                  <>
+                    <br />
+                    <span style={{ opacity: 0.75 }}>
+                      Server detail ({firestoreStatus.phase ?? 'unknown'}): {firestoreStatus.error}
+                    </span>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Tabs */}
           <div style={{
             display: 'flex',
@@ -140,7 +210,7 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
             overflowY: wideGuestTab ? 'hidden' : 'auto',
           }}>
             {activeTab === 'dashboard' && (
-              <DashboardTab />
+              <DashboardTab firestoreStatus={firestoreStatus} />
             )}
           {activeTab === 'arrivals' && (
             <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
@@ -192,7 +262,7 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
   );
 }
 
-function DashboardTab() {
+function DashboardTab({ firestoreStatus }: { firestoreStatus: FirebaseStatus | null }) {
   // Get real stats from localStorage
   const checkedInGuests = typeof window !== 'undefined' 
     ? JSON.parse(localStorage.getItem('checkedInGuests') || '[]')
@@ -255,7 +325,18 @@ function DashboardTab() {
           <StatusRow label="Cloudbeds PMS" status="Connected" />
           <StatusRow label="CLC Portal" status="Demo Mode" warning />
           <StatusRow label="Firebase Auth" status="Active" />
-          <StatusRow label="Transaction Logging" status="Active" />
+          <StatusRow
+            label="Firestore (check-in records)"
+            status={
+              firestoreStatus === null
+                ? 'Checking…'
+                : firestoreStatus.connected
+                  ? 'Connected'
+                  : 'NOT CONNECTED'
+            }
+            warning={firestoreStatus !== null && !firestoreStatus.connected}
+            error={firestoreStatus !== null && !firestoreStatus.connected}
+          />
         </div>
       </div>
     </div>
@@ -290,7 +371,9 @@ function StatCard({ icon, label, value, color }: any) {
   );
 }
 
-function StatusRow({ label, status, warning }: any) {
+function StatusRow({ label, status, warning, error }: { label: string; status: string; warning?: boolean; error?: boolean }) {
+  const bg = error ? '#fee2e2' : warning ? '#fef3c7' : '#d1fae5';
+  const color = error ? '#991b1b' : warning ? '#92400e' : '#065f46';
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
       <span style={{ color: '#666' }}>{label}</span>
@@ -299,8 +382,8 @@ function StatusRow({ label, status, warning }: any) {
         borderRadius: '12px',
         fontSize: '12px',
         fontWeight: '600',
-        background: warning ? '#fef3c7' : '#d1fae5',
-        color: warning ? '#92400e' : '#065f46'
+        background: bg,
+        color,
       }}>
         {status}
       </span>

@@ -47,6 +47,23 @@ export interface CheckinRecord {
 
 let _app: firebaseAdmin.app.App | null = null;
 
+let _initError: string | null = null;
+
+/**
+ * Normalize a service-account private key from env (Vercel often stores it as one line with literal \n).
+ * Also strips accidental wrapping quotes from copy-paste.
+ */
+function normalizePrivateKey(raw: string): string {
+  let k = raw.trim();
+  if (
+    (k.startsWith('"') && k.endsWith('"')) ||
+    (k.startsWith("'") && k.endsWith("'"))
+  ) {
+    k = k.slice(1, -1);
+  }
+  return k.replace(/\\n/g, '\n').replace(/\r\n/g, '\n');
+}
+
 function getAdminApp(): firebaseAdmin.app.App | null {
   if (_app) return _app;
   const projectId = process.env.FIREBASE_PROJECT_ID;
@@ -57,6 +74,8 @@ function getAdminApp(): firebaseAdmin.app.App | null {
     !privateKey || privateKey.includes('your_') ||
     !clientEmail
   ) {
+    _initError = 'Firebase Admin env vars (FIREBASE_PROJECT_ID / FIREBASE_PRIVATE_KEY / FIREBASE_CLIENT_EMAIL) are missing or contain placeholder values. Data will NOT be persisted to Firestore.';
+    console.error('[checkin-store]', _initError);
     return null;
   }
   try {
@@ -65,13 +84,82 @@ function getAdminApp(): firebaseAdmin.app.App | null {
       : firebaseAdmin.initializeApp({
           credential: firebaseAdmin.credential.cert({
             projectId,
-            privateKey: privateKey.replace(/\\n/g, '\n'),
+            privateKey: normalizePrivateKey(privateKey),
             clientEmail,
           }),
+          // Explicitly set projectId at top level — required for some Admin SDK operations.
+          projectId,
         });
+    _initError = null;
     return _app;
-  } catch {
+  } catch (err: any) {
+    _initError = `Firebase Admin initializeApp failed: ${err?.message ?? String(err)}`;
+    console.error('[checkin-store]', _initError);
     return null;
+  }
+}
+
+/**
+ * Returns the current Firebase / Firestore connection status.
+ * Use in admin health-check endpoints to surface misconfiguration quickly.
+ */
+export function getFirestoreStatus(): { connected: boolean; error: string | null } {
+  const app = getAdminApp();
+  if (!app) return { connected: false, error: _initError ?? 'Firebase Admin not initialized' };
+  return { connected: true, error: null };
+}
+
+export type FirestoreHealth = {
+  connected: boolean;
+  error: string | null;
+  /** Which step failed — helps distinguish bad PEM vs permission vs network. */
+  phase: 'missing-env' | 'init-failed' | 'firestore-read' | 'ok';
+};
+
+/**
+ * Verifies Admin SDK init *and* performs a lightweight Firestore read on
+ * `kiosk_checkin_records`. Catches invalid private keys, wrong project, and
+ * IAM / API issues that synchronous `getFirestoreStatus()` cannot see.
+ */
+export async function probeFirestoreHealth(): Promise<FirestoreHealth> {
+  const projectId = process.env.FIREBASE_PROJECT_ID;
+  const privateKey = process.env.FIREBASE_PRIVATE_KEY;
+  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+  if (
+    !projectId || projectId.includes('your_') ||
+    !privateKey || privateKey.includes('your_') ||
+    !clientEmail
+  ) {
+    return {
+      connected: false,
+      error:
+        'Missing or placeholder Firebase Admin env vars. Set FIREBASE_PROJECT_ID, FIREBASE_PRIVATE_KEY, and FIREBASE_CLIENT_EMAIL in Vercel.',
+      phase: 'missing-env',
+    };
+  }
+
+  const app = getAdminApp();
+  if (!app) {
+    return {
+      connected: false,
+      error: _initError ?? 'Firebase Admin failed to initialize (check private key format).',
+      phase: 'init-failed',
+    };
+  }
+
+  const db = firebaseAdmin.firestore(app);
+  try {
+    await db.collection(COLLECTION).limit(1).get();
+    return { connected: true, error: null, phase: 'ok' };
+  } catch (err: unknown) {
+    const e = err as { message?: string; code?: number | string };
+    const msg = e?.message ?? String(err);
+    console.error('[checkin-store] Firestore probe failed:', msg);
+    return {
+      connected: false,
+      error: msg,
+      phase: 'firestore-read',
+    };
   }
 }
 
