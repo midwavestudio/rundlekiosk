@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import GuestCheckIn from './components/GuestCheckIn';
 import GuestCheckOut from './components/GuestCheckOut';
@@ -15,6 +15,15 @@ export default function Home() {
   const router = useRouter();
   const tapCount = useRef(0);
   const tapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    // Clean up any previously registered service workers so stale kiosk bundles
+    // do not keep serving old client code after updates.
+    if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return;
+    void navigator.serviceWorker.getRegistrations()
+      .then((registrations) => Promise.all(registrations.map((r) => r.unregister())))
+      .catch(() => {});
+  }, []);
 
   const handleTitleTap = useCallback(() => {
     tapCount.current += 1;

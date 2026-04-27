@@ -67,7 +67,6 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
   /** When Cloudbeds could not book the physical room but created a paid confirmed stay (prior guest still in room). */
   const [successIsConfirmedOnly, setSuccessIsConfirmedOnly] = useState(false);
   const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
   const [availableRooms, setAvailableRooms] = useState<Room[]>([]);
   const [loadingRooms, setLoadingRooms] = useState(true);
 
@@ -123,7 +122,7 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
     handleChange('phoneNumber', formatted);
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     
     // Validation (trim names so stray spaces do not break synthetic email / Cloudbeds)
@@ -133,156 +132,153 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
       return;
     }
 
-    setLoading(true);
     setError('');
 
-    try {
-      // Match dropdown value (Cloudbeds roomID) to the row so we persist human roomName for lists/exports.
-      const selectedRoom = availableRooms.find((r) => String(r.roomID) === String(formData.roomNumber));
-      const checkInTime = new Date().toISOString();
-      // Build guest record immediately — saved to arrivals BEFORE the Cloudbeds call so it is
-      // always logged regardless of network errors, Cloudbeds failures, or crashes mid-flow.
-      const checkInData: GuestData = {
-        ...formData,
-        firstName: formData.firstName.trim(),
-        lastName: formData.lastName.trim(),
-        class: 'TYE',
-        checkInTime,
-        roomNumber: kioskPersistRoomDisplayName(selectedRoom, formData.roomNumber),
-      };
+    // Snapshot the form values right away so background work is independent
+    // from any later UI updates.
+    const firstName = formData.firstName.trim();
+    const lastName = formData.lastName.trim();
+    const phoneNumber = formData.phoneNumber;
+    const clcNumber = formData.clcNumber;
+    const roomNumber = formData.roomNumber;
 
-      // Persist the guest record to arrivals immediately (before hitting Cloudbeds).
-      try {
-        const existingGuests = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
-        existingGuests.push(checkInData);
-        localStorage.setItem('checkedInGuests', JSON.stringify(existingGuests));
-      } catch (storageErr) {
-        console.warn('Could not pre-save guest to local storage:', storageErr);
-      }
+    // Show success immediately — guest does not need to wait on any storage/network work.
+    setSuccess(true);
+    setTimeout(() => { onBack(); }, 2000);
 
-      // Also save to the server-side store so all admin devices see this check-in.
-      let serverRecordId: string | null = null;
-      try {
-        const serverRes = await fetch('/api/checkin-records', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...checkInData, source: 'kiosk' }),
-        });
-        const serverData = await serverRes.json();
-        if (serverData.success) serverRecordId = serverData.id as string;
-      } catch {
-        // Non-fatal — local record is already saved.
-      }
+    // Move all heavy and network work off this synchronous click path.
+    window.setTimeout(() => {
+      void (async () => {
+        // Match dropdown value (Cloudbeds roomID) to the row so we persist human roomName for lists/exports.
+        const selectedRoom = availableRooms.find((r) => String(r.roomID) === String(roomNumber));
+        const checkInTime = new Date().toISOString();
+        const checkInData: GuestData = {
+          firstName,
+          lastName,
+          clcNumber,
+          phoneNumber,
+          class: 'TYE',
+          checkInTime,
+          roomNumber: kioskPersistRoomDisplayName(selectedRoom, roomNumber),
+        };
 
-      // Attempt Cloudbeds check-in. Any failure is silently logged to the admin error log
-      // and never surfaced to the guest — the check-in always appears successful.
-      const roomIdentifier = selectedRoom ? selectedRoom.roomID : formData.roomNumber;
-
-      console.log('Checking in with room:', { roomID: roomIdentifier, roomName: selectedRoom?.roomName });
-
-      const checkInAnchor = new Date();
-      const checkOutNight = new Date(checkInAnchor);
-      checkOutNight.setDate(checkOutNight.getDate() + 1);
-      const checkInYmd = kioskLocalDateYmd(checkInAnchor);
-      const checkOutYmd = kioskLocalDateYmd(checkOutNight);
-      const placeholderReservationID = selectedRoom?.placeholderReservationID;
-
-      const submittedFields = {
-        firstName: formData.firstName.trim(),
-        lastName: formData.lastName.trim(),
-        phoneNumber: formData.phoneNumber,
-        clcNumber: formData.clcNumber,
-        classType: 'TYE' as const,
-        email: buildGuestSyntheticEmail(formData.firstName, formData.lastName),
-        roomID: roomIdentifier,
-        roomDisplayName: selectedRoom?.roomName,
-        checkInDate: checkInYmd,
-        checkOutDate: checkOutYmd,
-        ...(placeholderReservationID ? { placeholderReservationID } : {}),
-      };
-
-      try {
-        const cloudbedsResponse = await fetch('/api/cloudbeds-checkin', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            firstName: formData.firstName.trim(),
-            lastName: formData.lastName.trim(),
-            phoneNumber: formData.phoneNumber,
-            roomName: roomIdentifier,
-            roomNameHint: selectedRoom?.roomName,
-            clcNumber: formData.clcNumber,
-            classType: 'TYE',
-            email: buildGuestSyntheticEmail(formData.firstName, formData.lastName),
-            checkInDate: checkInYmd,
-            checkOutDate: checkOutYmd,
-            ...(placeholderReservationID ? { placeholderReservationID } : {}),
-          }),
-        });
-
-        const responseText = await cloudbedsResponse.text();
-        let cloudbedsResult: Record<string, unknown> = {};
+        // Persist the guest record to arrivals first.
         try {
-          cloudbedsResult = JSON.parse(responseText) as Record<string, unknown>;
-        } catch { /* non-JSON response — treat as failure below */ }
-
-        if (!cloudbedsResponse.ok || cloudbedsResult.success !== true) {
-          // Cloudbeds rejected the check-in — log to admin error log, do not surface to guest.
-          const errMsg =
-            (typeof cloudbedsResult.error === 'string' && cloudbedsResult.error) ||
-            (typeof cloudbedsResult.message === 'string' && cloudbedsResult.message) ||
-            `Cloudbeds check-in failed (HTTP ${cloudbedsResponse.status})`;
-          console.error('[CHECK-IN] Cloudbeds failure logged to admin, not shown to guest:', errMsg);
-          postKioskEvent('kiosk:check-in', decodeCloudbedsUserMessage(errMsg), {
-            ...submittedFields,
-            cloudbedsFailure: true,
-          });
-        } else {
-          // Cloudbeds accepted — patch the already-saved localStorage and server records.
-          console.log('Cloudbeds check-in successful:', cloudbedsResult);
-          const guestID = cloudbedsResult.guestID as string | undefined;
-          const reservationID = cloudbedsResult.reservationID as string | undefined;
-          setSuccessIsConfirmedOnly(cloudbedsResult.reservationStatus === 'confirmed');
-          try {
-            const stored: GuestData[] = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
-            const idx = stored.findLastIndex((g) => g.checkInTime === checkInTime);
-            if (idx >= 0) {
-              stored[idx] = { ...stored[idx], cloudbedsGuestID: guestID, cloudbedsReservationID: reservationID };
-              localStorage.setItem('checkedInGuests', JSON.stringify(stored));
-            }
-          } catch { /* non-fatal */ }
-          // Patch server record with Cloudbeds IDs
-          if (serverRecordId) {
-            fetch('/api/checkin-records', {
-              method: 'PATCH',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                id: serverRecordId,
-                cloudbedsReservationID: reservationID,
-                cloudbedsGuestID: guestID,
-              }),
-            }).catch(() => {});
-          }
+          const existingGuests = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
+          existingGuests.push(checkInData);
+          localStorage.setItem('checkedInGuests', JSON.stringify(existingGuests));
+        } catch (storageErr) {
+          console.warn('Could not pre-save guest to local storage:', storageErr);
         }
-      } catch (cloudbedsErr: any) {
-        // Network or unexpected error — log to admin, do not re-throw.
-        const errMsg = cloudbedsErr?.message || 'Network error during Cloudbeds check-in';
-        console.error('[CHECK-IN] Network error logged to admin, not shown to guest:', errMsg);
-        postKioskEvent('kiosk:check-in', errMsg, {
-          ...submittedFields,
-          networkError: true,
-        });
-      }
 
-      setSuccess(true);
+        const roomIdentifier = selectedRoom ? selectedRoom.roomID : roomNumber;
+        console.log('Checking in with room:', { roomID: roomIdentifier, roomName: selectedRoom?.roomName });
 
-      // Return to home after 2 seconds
-      setTimeout(() => {
-        onBack();
-      }, 2000);
-    } finally {
-      setLoading(false);
-    }
+        const checkInAnchor = new Date();
+        const checkOutNight = new Date(checkInAnchor);
+        checkOutNight.setDate(checkOutNight.getDate() + 1);
+        const checkInYmd = kioskLocalDateYmd(checkInAnchor);
+        const checkOutYmd = kioskLocalDateYmd(checkOutNight);
+        const placeholderReservationID = selectedRoom?.placeholderReservationID;
+
+        const submittedFields = {
+          firstName,
+          lastName,
+          phoneNumber,
+          clcNumber,
+          classType: 'TYE' as const,
+          email: buildGuestSyntheticEmail(firstName, lastName),
+          roomID: roomIdentifier,
+          roomDisplayName: selectedRoom?.roomName,
+          checkInDate: checkInYmd,
+          checkOutDate: checkOutYmd,
+          ...(placeholderReservationID ? { placeholderReservationID } : {}),
+        };
+
+        // Save to server-side store so all admin devices see this check-in.
+        let serverRecordId: string | null = null;
+        try {
+          const serverRes = await fetch('/api/checkin-records', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...checkInData, source: 'kiosk' }),
+          });
+          const serverData = await serverRes.json();
+          if (serverData.success) serverRecordId = serverData.id as string;
+        } catch {
+          // Non-fatal — local record is already saved.
+        }
+
+        // Attempt Cloudbeds check-in.
+        try {
+          const cloudbedsResponse = await fetch('/api/cloudbeds-checkin', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              firstName,
+              lastName,
+              phoneNumber,
+              roomName: roomIdentifier,
+              roomNameHint: selectedRoom?.roomName,
+              clcNumber,
+              classType: 'TYE',
+              email: buildGuestSyntheticEmail(firstName, lastName),
+              checkInDate: checkInYmd,
+              checkOutDate: checkOutYmd,
+              ...(placeholderReservationID ? { placeholderReservationID } : {}),
+            }),
+          });
+
+          const responseText = await cloudbedsResponse.text();
+          let cloudbedsResult: Record<string, unknown> = {};
+          try {
+            cloudbedsResult = JSON.parse(responseText) as Record<string, unknown>;
+          } catch { /* non-JSON response — treat as failure below */ }
+
+          if (!cloudbedsResponse.ok || cloudbedsResult.success !== true) {
+            const errMsg =
+              (typeof cloudbedsResult.error === 'string' && cloudbedsResult.error) ||
+              (typeof cloudbedsResult.message === 'string' && cloudbedsResult.message) ||
+              `Cloudbeds check-in failed (HTTP ${cloudbedsResponse.status})`;
+            console.error('[CHECK-IN] Cloudbeds failure logged to admin, not shown to guest:', errMsg);
+            postKioskEvent('kiosk:check-in', decodeCloudbedsUserMessage(errMsg), {
+              ...submittedFields,
+              cloudbedsFailure: true,
+            });
+          } else {
+            console.log('Cloudbeds check-in successful:', cloudbedsResult);
+            const guestID = cloudbedsResult.guestID as string | undefined;
+            const reservationID = cloudbedsResult.reservationID as string | undefined;
+            try {
+              const stored: GuestData[] = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
+              const idx = stored.findLastIndex((g) => g.checkInTime === checkInTime);
+              if (idx >= 0) {
+                stored[idx] = { ...stored[idx], cloudbedsGuestID: guestID, cloudbedsReservationID: reservationID };
+                localStorage.setItem('checkedInGuests', JSON.stringify(stored));
+              }
+            } catch { /* non-fatal */ }
+            if (serverRecordId) {
+              fetch('/api/checkin-records', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  id: serverRecordId,
+                  cloudbedsReservationID: reservationID,
+                  cloudbedsGuestID: guestID,
+                }),
+              }).catch(() => {});
+            }
+          }
+        } catch (cloudbedsErr: any) {
+          const errMsg = cloudbedsErr?.message || 'Network error during Cloudbeds check-in';
+          console.error('[CHECK-IN] Network error logged to admin, not shown to guest:', errMsg);
+          postKioskEvent('kiosk:check-in', errMsg, {
+            ...submittedFields,
+            networkError: true,
+          });
+        }
+      })();
+    }, 0);
   };
 
   if (success) {
@@ -404,15 +400,8 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
           )}
         </div>
 
-        <button type="submit" className="submit-button" disabled={loading || loadingRooms || availableRooms.length === 0}>
-          {loading ? (
-            <>
-              Processing...
-              <span className="loading"></span>
-            </>
-          ) : (
-            'Complete Check-In'
-          )}
+        <button type="submit" className="submit-button" disabled={loadingRooms || availableRooms.length === 0}>
+          Complete Check-In
         </button>
       </form>
 
