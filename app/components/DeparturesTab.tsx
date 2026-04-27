@@ -81,6 +81,10 @@ function addCalendarDaysToYmd(ymd: string, delta: number): string {
   return localYmd(dt);
 }
 
+const SERVER_DATE_WINDOW_DAYS = 14;
+const SERVER_RECORD_LIMIT = 200;
+const SERVER_POLL_MS = 45_000;
+
 function isoToLocalYmd(iso: string): string | undefined {
   if (!iso) return undefined;
   const d = new Date(iso);
@@ -208,7 +212,14 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
 
     const loadServer = async () => {
       try {
-        const res = await fetch('/api/checkin-records');
+        const fromYmd = addCalendarDaysToYmd(selectedDate, -SERVER_DATE_WINDOW_DAYS);
+        const toYmd = addCalendarDaysToYmd(selectedDate, SERVER_DATE_WINDOW_DAYS);
+        const params = new URLSearchParams({
+          from: fromYmd,
+          to: toYmd,
+          limit: String(SERVER_RECORD_LIMIT),
+        });
+        const res = await fetch(`/api/checkin-records?${params.toString()}`);
         if (!res.ok || cancelled) return;
         const data = await res.json();
         if (!data.success || !Array.isArray(data.records) || cancelled) return;
@@ -246,14 +257,14 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
     loadServer();
 
     const localId = setInterval(loadLocal, 3000);
-    const serverId = setInterval(loadServer, 10000);
+    const serverId = setInterval(loadServer, SERVER_POLL_MS);
 
     return () => {
       cancelled = true;
       clearInterval(localId);
       clearInterval(serverId);
     };
-  }, []);
+  }, [selectedDate]);
 
   useEffect(() => {
     let cancelled = false;

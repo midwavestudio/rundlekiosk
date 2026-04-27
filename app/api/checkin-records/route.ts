@@ -8,17 +8,28 @@ import {
 } from '@/lib/checkin-store';
 
 /**
- * GET /api/checkin-records?from=YYYY-MM-DD&to=YYYY-MM-DD
+ * GET /api/checkin-records?from=YYYY-MM-DD&to=YYYY-MM-DD&limit=N
  *
  * Returns check-in records whose checkInTime falls within [from, to].
- * Both params are optional; when omitted, returns the 500 most-recent records.
+ * Both date params are optional; when omitted, returns the most-recent records.
+ * `limit` caps Firestore reads (default 500, max 500); admin UI should pass a
+ * smaller limit and a date window to stay under Spark daily quotas.
  */
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const from = searchParams.get('from') ?? undefined;
     const to = searchParams.get('to') ?? undefined;
-    const records = await getCheckinRecords({ from, to });
+    let limit: number | undefined;
+    if (searchParams.has('limit')) {
+      const n = parseInt(searchParams.get('limit')!, 10);
+      if (Number.isFinite(n)) limit = Math.min(Math.max(n, 1), 500);
+    }
+    const records = await getCheckinRecords({
+      from,
+      to,
+      ...(limit !== undefined ? { limit } : {}),
+    });
     return NextResponse.json({ success: true, records });
   } catch (err: any) {
     console.error('[checkin-records GET]', err);

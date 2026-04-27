@@ -64,6 +64,13 @@ function addCalendarDaysToYmd(ymd: string, delta: number): string {
   return localYmd(dt);
 }
 
+/** Wider window than a single day so server merge still works when browsing nearby dates. */
+const SERVER_DATE_WINDOW_DAYS = 14;
+/** Max Firestore docs per poll — keeps Spark free-tier daily reads sustainable. */
+const SERVER_RECORD_LIMIT = 200;
+/** Poll interval (was 10s × 500 reads ≈ quota exhaustion). */
+const SERVER_POLL_MS = 45_000;
+
 function isoToLocalYmd(iso: string): string | undefined {
   if (!iso) return undefined;
   const d = new Date(iso);
@@ -192,7 +199,14 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
 
     const loadServer = async () => {
       try {
-        const res = await fetch('/api/checkin-records');
+        const fromYmd = addCalendarDaysToYmd(selectedDate, -SERVER_DATE_WINDOW_DAYS);
+        const toYmd = addCalendarDaysToYmd(selectedDate, SERVER_DATE_WINDOW_DAYS);
+        const params = new URLSearchParams({
+          from: fromYmd,
+          to: toYmd,
+          limit: String(SERVER_RECORD_LIMIT),
+        });
+        const res = await fetch(`/api/checkin-records?${params.toString()}`);
         if (!res.ok || cancelled) return;
         const data = await res.json();
         if (!data.success || !Array.isArray(data.records) || cancelled) return;
@@ -231,16 +245,16 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
     loadLocal();
     loadServer();
 
-    // Local: 3s, server: 10s
+    // Local: 3s; server: wide date window + low limit to avoid Firestore quota exhaustion
     const localId = setInterval(loadLocal, 3000);
-    const serverId = setInterval(loadServer, 10000);
+    const serverId = setInterval(loadServer, SERVER_POLL_MS);
 
     return () => {
       cancelled = true;
       clearInterval(localId);
       clearInterval(serverId);
     };
-  }, []);
+  }, [selectedDate]);
 
   useEffect(() => {
     let cancelled = false;

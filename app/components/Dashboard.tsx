@@ -57,6 +57,11 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
 
   const wideGuestTab = activeTab === 'arrivals' || activeTab === 'departures';
 
+  const firestoreQuotaExceeded =
+    !!firestoreStatus?.error &&
+    (/RESOURCE_EXHAUSTED/i.test(firestoreStatus.error) ||
+      /Quota exceeded/i.test(firestoreStatus.error));
+
   return (
     <>
       {/* `body` is `display:flex; justify-content:center` in globals.css — without width:100% this shell shrink-wraps to ~login width. */}
@@ -130,8 +135,23 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
             }}>
               <span style={{ fontSize: '18px', flexShrink: 0 }}>⚠️</span>
               <div>
-                <strong>Firestore is not connected — check-in data will NOT persist between page loads.</strong>
+                <strong>
+                  {firestoreQuotaExceeded
+                    ? 'Firestore daily quota exceeded — Google is temporarily blocking reads and writes for this project.'
+                    : 'Firestore is not connected — check-in data will NOT persist between page loads.'}
+                </strong>
                 <br />
+                {firestoreQuotaExceeded && (
+                  <>
+                    On the <strong>Spark (free)</strong> plan, Firestore has a fixed number of reads per day. The admin
+                    dashboard used to poll very often; that has been reduced in the latest deploy. In{' '}
+                    <a href="https://console.firebase.google.com/" target="_blank" rel="noopener noreferrer" style={{ color: '#7f1d1d', textDecoration: 'underline' }}>
+                      Firebase Console
+                    </a>
+                    , open your project → <strong>Usage and billing</strong> → upgrade to <strong>Blaze</strong> (pay-as-you-go)
+                    for higher limits, or wait until the daily quota resets.
+                  </>
+                )}
                 {firestoreStatus.phase === 'missing-env' && (
                   <>
                     The Firebase Admin SDK variables (<code>FIREBASE_PROJECT_ID</code>,{' '}
@@ -139,7 +159,8 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
                     Vercel under <em>Settings → Environment Variables</em>, then redeploy.
                   </>
                 )}
-                {(firestoreStatus.phase === 'init-failed' || firestoreStatus.phase === 'firestore-read') && (
+                {(firestoreStatus.phase === 'init-failed' ||
+                  (firestoreStatus.phase === 'firestore-read' && !firestoreQuotaExceeded)) && (
                   <>
                     Variables may be listed in Vercel, but the server cannot authenticate or read Firestore. This is usually a{' '}
                     <strong>bad <code>FIREBASE_PRIVATE_KEY</code> value</strong> (often shown as “Needs Attention”) or IAM/API access for the service account.
@@ -152,7 +173,8 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
                   </>
                 )}
                 <br />
-                Until Firestore connects, Arrivals and Departures stay empty across devices after cold starts.
+                {!firestoreQuotaExceeded &&
+                  'Until Firestore connects, Arrivals and Departures stay empty across devices after cold starts.'}
                 {firestoreStatus.error && (
                   <>
                     <br />
