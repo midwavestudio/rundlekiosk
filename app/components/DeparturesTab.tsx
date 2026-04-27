@@ -82,8 +82,8 @@ function addCalendarDaysToYmd(ymd: string, delta: number): string {
 }
 
 const SERVER_DATE_WINDOW_DAYS = 14;
-const SERVER_RECORD_LIMIT = 200;
-const SERVER_POLL_MS = 45_000;
+const SERVER_RECORD_LIMIT = 250;
+const SERVER_POLL_MS = 480_000;
 
 function isoToLocalYmd(iso: string): string | undefined {
   if (!iso) return undefined;

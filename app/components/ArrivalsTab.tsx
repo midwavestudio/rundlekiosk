@@ -66,10 +66,16 @@ function addCalendarDaysToYmd(ymd: string, delta: number): string {
 
 /** Wider window than a single day so server merge still works when browsing nearby dates. */
 const SERVER_DATE_WINDOW_DAYS = 14;
-/** Max Firestore docs per poll — keeps Spark free-tier daily reads sustainable. */
-const SERVER_RECORD_LIMIT = 200;
-/** Poll interval (was 10s × 500 reads ≈ quota exhaustion). */
-const SERVER_POLL_MS = 45_000;
+/**
+ * Max Firestore document reads per poll (one read per doc returned).
+ * ~900 check-ins/month can cluster in this window during busy stretches.
+ */
+const SERVER_RECORD_LIMIT = 250;
+/**
+ * Poll interval — tuned so worst-case reads stay under Firestore’s ~50k free reads/day
+ * on Blaze (250 docs × 86400s / 480000ms ≈ 45k) with headroom for other API traffic.
+ */
+const SERVER_POLL_MS = 480_000;
 
 function isoToLocalYmd(iso: string): string | undefined {
   if (!iso) return undefined;

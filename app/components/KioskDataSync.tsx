@@ -9,7 +9,7 @@ import { useEffect } from 'react';
  * Firestore store every time it runs, so the admin Arrivals / Departures tabs
  * reflect real data regardless of which device the guest checked in on.
  *
- * Runs immediately on mount, then every 5 minutes.
+ * Runs immediately on mount, then every 10 minutes (keeps Firestore read/write volume low).
  */
 export default function KioskDataSync() {
   useEffect(() => {
@@ -50,8 +50,8 @@ export default function KioskDataSync() {
     // Run immediately on mount
     sync();
 
-    // Then every 5 minutes
-    const interval = window.setInterval(sync, 5 * 60 * 1000);
+    // Then every 10 minutes — enough for recovery sync without adding meaningful read load
+    const interval = window.setInterval(sync, 10 * 60 * 1000);
     return () => window.clearInterval(interval);
   }, []);
 
