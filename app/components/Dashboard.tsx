@@ -366,109 +366,53 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
 }
 
 function DashboardTab({ firestoreStatus }: { firestoreStatus: FirebaseStatus | null }) {
-  interface GuestRecord {
-    checkInTime?: string;
-    checkOutTime?: string;
+  interface DashboardStats {
+    inHouse: number;
+    available: number;
+    arrivals: number;
+    departed: number;
   }
 
-  const [records, setRecords] = useState<GuestRecord[]>([]);
-
-  const localYmd = (d: Date = new Date()): string => {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
-  };
-
-  const isoToLocalYmd = (iso?: string): string | undefined => {
-    if (!iso) return undefined;
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return undefined;
-    return localYmd(d);
-  };
+  const [stats, setStats] = useState<DashboardStats>({
+    inHouse: 0,
+    available: 60,
+    arrivals: 0,
+    departed: 0,
+  });
 
   useEffect(() => {
     let cancelled = false;
 
-    const mergeGuestLists = (local: GuestRecord[], server: GuestRecord[]): GuestRecord[] => {
-      const keyOf = (g: GuestRecord): string => {
-        const inAt = String(g.checkInTime ?? '');
-        const outAt = String(g.checkOutTime ?? '');
-        return `${inAt}|${outAt}`;
-      };
-      const map = new Map<string, GuestRecord>();
-      for (const g of local) map.set(keyOf(g), g);
-      for (const g of server) map.set(keyOf(g), g); // server wins
-      return Array.from(map.values());
-    };
-
     const loadStats = async () => {
-      const localActive: GuestRecord[] = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
-      const localHistory: GuestRecord[] = JSON.parse(localStorage.getItem('checkOutHistory') || '[]');
-      const localRecords = mergeGuestLists(localActive, localHistory);
-
       try {
-        const today = localYmd(new Date());
-        const from = new Date();
-        from.setDate(from.getDate() - 14);
-        const to = new Date();
-        to.setDate(to.getDate() + 14);
-        const params = new URLSearchParams({
-          from: localYmd(from),
-          to: localYmd(to),
-          limit: '250',
-        });
-
-        const res = await fetch(`/api/checkin-records?${params.toString()}`);
-        if (!res.ok || cancelled) {
-          if (!cancelled) setRecords(localRecords);
-          return;
-        }
-
+        const res = await fetch('/api/admin/dashboard-stats');
+        if (!res.ok || cancelled) return;
         const data = await res.json();
-        if (!data.success || !Array.isArray(data.records) || cancelled) {
-          if (!cancelled) setRecords(localRecords);
-          return;
-        }
-
-        const serverRecords: GuestRecord[] = (data.records as any[]).map((r) => ({
-          checkInTime: r.checkInTime ? String(r.checkInTime) : undefined,
-          checkOutTime: r.checkOutTime ? String(r.checkOutTime) : undefined,
-        }));
-
-        const boundedServerRecords = serverRecords.filter((r) => {
-          const inYmd = isoToLocalYmd(r.checkInTime);
-          if (!inYmd) return false;
-          return inYmd >= localYmd(from) && inYmd <= localYmd(to);
+        if (!data.success || !data.stats || cancelled) return;
+        const next = data.stats as {
+          inHouse?: number;
+          available?: number;
+          arrivalsToday?: number;
+          departedToday?: number;
+        };
+        setStats({
+          inHouse: Math.max(0, Number(next.inHouse ?? 0)),
+          available: Math.max(0, Number(next.available ?? 0)),
+          arrivals: Math.max(0, Number(next.arrivalsToday ?? 0)),
+          departed: Math.max(0, Number(next.departedToday ?? 0)),
         });
-
-        if (!cancelled) {
-          setRecords(mergeGuestLists(localRecords, boundedServerRecords));
-        }
       } catch {
-        if (!cancelled) setRecords(localRecords);
+        // Keep last known stats on transient errors.
       }
     };
 
     loadStats();
-    const localId = setInterval(loadStats, 3000);
+    const localId = setInterval(loadStats, 30000);
     return () => {
       cancelled = true;
       clearInterval(localId);
     };
   }, []);
-
-  const todayYmd = localYmd(new Date());
-  const inHouseCount = records.filter((r) => !r.checkOutTime).length;
-  const todayArrivals = records.filter((r) => isoToLocalYmd(r.checkInTime) === todayYmd).length;
-  const todayDeparted = records.filter((r) => isoToLocalYmd(r.checkOutTime) === todayYmd).length;
-
-  const stats = {
-    inHouse: inHouseCount,
-    available: 60 - inHouseCount, // Assuming 60 total rooms
-    arrivals: todayArrivals,
-    departed: todayDeparted,
-  };
 
   return (
     <div>

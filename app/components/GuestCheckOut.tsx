@@ -59,6 +59,19 @@ function kioskLocalDateStr(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+function formatDisplayDate(value?: string): string {
+  if (!value) return '—';
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/;
+  const m = dateOnly.exec(value.trim());
+  if (m) {
+    const dt = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return value;
+  return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
 export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [guests, setGuests] = useState<CloudbedsGuest[]>([]);
@@ -321,7 +334,12 @@ export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutP
                     </div>
                     {guest.checkInDate && (
                       <div className="guest-details">
-                        Checked in: {guest.checkInDate}
+                        Checked in: {formatDisplayDate(guest.checkInDate)}
+                      </div>
+                    )}
+                    {guest.checkOutDate && (
+                      <div className="guest-details">
+                        Check-out: {formatDisplayDate(guest.checkOutDate)}
                       </div>
                     )}
                   </div>

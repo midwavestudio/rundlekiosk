@@ -12,6 +12,19 @@ export default function CheckOutModal({ reservation, onClose }: CheckOutModalPro
   const [step, setStep] = useState<'confirm' | 'processing' | 'success'>('confirm');
   const [isSameDay, setIsSameDay] = useState(false);
 
+  const formatDisplayDate = (value?: string) => {
+    if (!value) return '—';
+    const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/;
+    const m = dateOnly.exec(value.trim());
+    if (m) {
+      const dt = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+      return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    }
+    const dt = new Date(value);
+    if (Number.isNaN(dt.getTime())) return value;
+    return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  };
+
   const handleCheckOut = async () => {
     setStep('processing');
     
@@ -153,7 +166,9 @@ export default function CheckOutModal({ reservation, onClose }: CheckOutModalPro
                 <div style={{ fontSize: '14px', color: '#666' }}>
                   <div><strong>Reservation:</strong> {reservation.reservationId}</div>
                   <div>{displayRoomNumberLabel(reservation.roomNumber)}</div>
-                  <div><strong>Dates:</strong> {reservation.checkInDate} - {reservation.checkOutDate}</div>
+                  <div>
+                    <strong>Dates:</strong> {formatDisplayDate(reservation.checkInDate)} - {formatDisplayDate(reservation.checkOutDate)}
+                  </div>
                 </div>
               </div>
 
