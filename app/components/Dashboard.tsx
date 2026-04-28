@@ -7,10 +7,10 @@ import ArrivalsTab from './ArrivalsTab';
 import DeparturesTab from './DeparturesTab';
 import CheckInModal from './CheckInModal';
 import CheckOutModal from './CheckOutModal';
-import BulkCheckInTab from './BulkCheckInTab';
 import TyePlaceholdersTab from './TyePlaceholdersTab';
 import FeedbackTab from './FeedbackTab';
 import EventLogTab from './EventLogTab';
+import { loadReadEventIds, markEventsRead } from '@/lib/event-log-read';
 
 interface DashboardProps {
   user: User;
@@ -23,11 +23,16 @@ interface FirebaseStatus {
   phase?: 'missing-env' | 'init-failed' | 'firestore-read' | 'ok';
 }
 
+interface EventLogEntry {
+  id: string;
+}
+
 export default function Dashboard({ user, onLogout }: DashboardProps) {
   const [activeTab, setActiveTab] = useState<
-    'dashboard' | 'arrivals' | 'departures' | 'bulk-checkin' | 'tye-placeholders' | 'feedback' | 'event-log'
+    'dashboard' | 'arrivals' | 'departures' | 'tye-placeholders' | 'feedback' | 'event-log'
   >('dashboard');
   const [firestoreStatus, setFirestoreStatus] = useState<FirebaseStatus | null>(null);
+  const [eventLogUnreadCount, setEventLogUnreadCount] = useState(0);
 
   useEffect(() => {
     fetch('/api/admin/firebase-status')
@@ -41,6 +46,62 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
         })
       );
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const refreshErrorBadge = async () => {
+      try {
+        const res = await fetch('/api/event-log?limit=250');
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        const events: EventLogEntry[] = Array.isArray(data.events) ? data.events : [];
+
+        const readIds = loadReadEventIds();
+        const unread = events.reduce((count, ev) => (readIds.has(ev.id) ? count : count + 1), 0);
+        if (!cancelled) setEventLogUnreadCount(unread);
+      } catch {
+        // Ignore transient fetch errors and keep prior badge count.
+      }
+    };
+
+    refreshErrorBadge();
+    const pollId = setInterval(refreshErrorBadge, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(pollId);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (activeTab !== 'event-log') return;
+
+    let cancelled = false;
+
+    const markVisibleErrorsAsRead = async () => {
+      try {
+        const res = await fetch('/api/event-log?limit=250');
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        const events: EventLogEntry[] = Array.isArray(data.events) ? data.events : [];
+        if (events.length === 0 || cancelled) {
+          if (!cancelled) setEventLogUnreadCount(0);
+          return;
+        }
+
+        const existingRead = loadReadEventIds();
+        markEventsRead(events.map((ev) => ev.id), existingRead);
+        if (!cancelled) setEventLogUnreadCount(0);
+      } catch {
+        // Non-fatal; badge will refresh on next poll.
+      }
+    };
+
+    markVisibleErrorsAsRead();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab]);
   const [showCheckInModal, setShowCheckInModal] = useState(false);
   const [showCheckOutModal, setShowCheckOutModal] = useState(false);
   const [selectedReservation, setSelectedReservation] = useState<any>(null);
@@ -193,7 +254,7 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
             borderBottom: '2px solid #f0f0f0',
             padding: '0 20px'
           }}>
-            {['dashboard', 'arrivals', 'departures', 'bulk-checkin', 'tye-placeholders', 'feedback', 'event-log'].map((tab) => (
+            {['dashboard', 'arrivals', 'departures', 'tye-placeholders', 'feedback', 'event-log'].map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab as any)}
@@ -207,16 +268,39 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
                   cursor: 'pointer',
                   textTransform: 'capitalize',
                   fontSize: '16px',
-                  transition: 'all 0.3s'
+                  transition: 'all 0.3s',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '8px',
                 }}
               >
-                {tab === 'bulk-checkin'
-                  ? 'Bulk Check-In'
-                  : tab === 'tye-placeholders'
-                    ? 'Blocks'
-                    : tab === 'event-log'
-                      ? 'Error Log'
-                      : tab}
+                <span>
+                  {tab === 'tye-placeholders'
+                      ? 'Blocks'
+                      : tab === 'event-log'
+                        ? 'Error Log'
+                        : tab}
+                </span>
+                {tab === 'event-log' && eventLogUnreadCount > 0 && (
+                  <span
+                    style={{
+                      minWidth: '20px',
+                      height: '20px',
+                      borderRadius: '999px',
+                      background: '#dc2626',
+                      color: 'white',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      lineHeight: '20px',
+                      padding: '0 6px',
+                      textAlign: 'center',
+                    }}
+                    aria-label={`${eventLogUnreadCount} new errors`}
+                    title={`${eventLogUnreadCount} new errors`}
+                  >
+                    {eventLogUnreadCount}
+                  </span>
+                )}
               </button>
             ))}
           </div>
@@ -243,9 +327,6 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
             <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
               <DeparturesTab onCheckOut={handleCheckOut} />
             </div>
-          )}
-          {activeTab === 'bulk-checkin' && (
-            <BulkCheckInTab />
           )}
           {activeTab === 'tye-placeholders' && (
             <TyePlaceholdersTab />
@@ -285,33 +366,108 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
 }
 
 function DashboardTab({ firestoreStatus }: { firestoreStatus: FirebaseStatus | null }) {
-  // Get real stats from localStorage
-  const checkedInGuests = typeof window !== 'undefined' 
-    ? JSON.parse(localStorage.getItem('checkedInGuests') || '[]')
-    : [];
-  const checkOutHistory = typeof window !== 'undefined'
-    ? JSON.parse(localStorage.getItem('checkOutHistory') || '[]')
-    : [];
-  
-  // Today's check-ins
-  const today = new Date().toDateString();
-  const todayCheckIns = checkedInGuests.filter((guest: any) => {
-    const checkInDate = new Date(guest.checkInTime).toDateString();
-    return checkInDate === today;
-  });
-  
-  // Today's check-outs
-  const todayCheckOuts = checkOutHistory.filter((guest: any) => {
-    if (!guest.checkOutTime) return false;
-    const checkOutDate = new Date(guest.checkOutTime).toDateString();
-    return checkOutDate === today;
-  });
+  interface GuestRecord {
+    checkInTime?: string;
+    checkOutTime?: string;
+  }
+
+  const [records, setRecords] = useState<GuestRecord[]>([]);
+
+  const localYmd = (d: Date = new Date()): string => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+
+  const isoToLocalYmd = (iso?: string): string | undefined => {
+    if (!iso) return undefined;
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return undefined;
+    return localYmd(d);
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const mergeGuestLists = (local: GuestRecord[], server: GuestRecord[]): GuestRecord[] => {
+      const keyOf = (g: GuestRecord): string => {
+        const inAt = String(g.checkInTime ?? '');
+        const outAt = String(g.checkOutTime ?? '');
+        return `${inAt}|${outAt}`;
+      };
+      const map = new Map<string, GuestRecord>();
+      for (const g of local) map.set(keyOf(g), g);
+      for (const g of server) map.set(keyOf(g), g); // server wins
+      return Array.from(map.values());
+    };
+
+    const loadStats = async () => {
+      const localActive: GuestRecord[] = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
+      const localHistory: GuestRecord[] = JSON.parse(localStorage.getItem('checkOutHistory') || '[]');
+      const localRecords = mergeGuestLists(localActive, localHistory);
+
+      try {
+        const today = localYmd(new Date());
+        const from = new Date();
+        from.setDate(from.getDate() - 14);
+        const to = new Date();
+        to.setDate(to.getDate() + 14);
+        const params = new URLSearchParams({
+          from: localYmd(from),
+          to: localYmd(to),
+          limit: '250',
+        });
+
+        const res = await fetch(`/api/checkin-records?${params.toString()}`);
+        if (!res.ok || cancelled) {
+          if (!cancelled) setRecords(localRecords);
+          return;
+        }
+
+        const data = await res.json();
+        if (!data.success || !Array.isArray(data.records) || cancelled) {
+          if (!cancelled) setRecords(localRecords);
+          return;
+        }
+
+        const serverRecords: GuestRecord[] = (data.records as any[]).map((r) => ({
+          checkInTime: r.checkInTime ? String(r.checkInTime) : undefined,
+          checkOutTime: r.checkOutTime ? String(r.checkOutTime) : undefined,
+        }));
+
+        const boundedServerRecords = serverRecords.filter((r) => {
+          const inYmd = isoToLocalYmd(r.checkInTime);
+          if (!inYmd) return false;
+          return inYmd >= localYmd(from) && inYmd <= localYmd(to);
+        });
+
+        if (!cancelled) {
+          setRecords(mergeGuestLists(localRecords, boundedServerRecords));
+        }
+      } catch {
+        if (!cancelled) setRecords(localRecords);
+      }
+    };
+
+    loadStats();
+    const localId = setInterval(loadStats, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(localId);
+    };
+  }, []);
+
+  const todayYmd = localYmd(new Date());
+  const inHouseCount = records.filter((r) => !r.checkOutTime).length;
+  const todayArrivals = records.filter((r) => isoToLocalYmd(r.checkInTime) === todayYmd).length;
+  const todayDeparted = records.filter((r) => isoToLocalYmd(r.checkOutTime) === todayYmd).length;
 
   const stats = {
-    occupied: checkedInGuests.length,
-    available: 60 - checkedInGuests.length, // Assuming 60 total rooms
-    arrivals: todayCheckIns.length,
-    departures: todayCheckOuts.length
+    inHouse: inHouseCount,
+    available: 60 - inHouseCount, // Assuming 60 total rooms
+    arrivals: todayArrivals,
+    departed: todayDeparted,
   };
 
   return (
@@ -329,10 +485,10 @@ function DashboardTab({ firestoreStatus }: { firestoreStatus: FirebaseStatus | n
         gap: 'clamp(15px, 2vw, 25px)',
         marginBottom: 'clamp(20px, 3vw, 40px)'
       }}>
-        <StatCard icon="✓" label="Occupied" value={stats.occupied} color="#10b981" />
+        <StatCard icon="✓" label="In House" value={stats.inHouse} color="#10b981" />
         <StatCard icon="🏠" label="Available" value={stats.available} color="#3b82f6" />
         <StatCard icon="↓" label="Arrivals Today" value={stats.arrivals} color="#f59e0b" />
-        <StatCard icon="↑" label="Departures Today" value={stats.departures} color="#8b5cf6" />
+        <StatCard icon="↑" label="Departed" value={stats.departed} color="#8b5cf6" />
       </div>
 
       {/* System Status */}

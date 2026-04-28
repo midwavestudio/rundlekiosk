@@ -300,14 +300,9 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
   }, [checkedInGuests, checkOutHistory, roomNameById]);
 
   const dateFilteredRows = useMemo(() => {
-    const todayYmd = localYmd(new Date());
-    return rows.filter((r) => {
-      if (r.status === 'checked_out') {
-        return !!(r.checkOutIso && isoToLocalYmd(r.checkOutIso) === selectedDate);
-      }
-      if (selectedDate === todayYmd) return true;
-      return isoToLocalYmd(r.checkInIso) === selectedDate;
-    });
+    return rows.filter(
+      (r) => r.status === 'checked_out' && !!(r.checkOutIso && isoToLocalYmd(r.checkOutIso) === selectedDate)
+    );
   }, [rows, selectedDate]);
 
   const filteredRows = useMemo(() => {

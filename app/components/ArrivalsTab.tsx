@@ -598,12 +598,11 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
                 return (
                   <div
                     key={row.id}
-                    onClick={() => setSelectedRow(isSelected ? null : row)}
                     style={{
                       display: 'flex', alignItems: 'center', padding: '10px 0',
                       borderBottom: idx < sortedFilteredRows.length - 1 ? '1px solid #f3f4f6' : 'none',
                       background: isSelected ? '#eef2ff' : idx % 2 === 0 ? '#fff' : '#fafafa',
-                      cursor: 'pointer', transition: 'background 0.15s',
+                      cursor: 'default', transition: 'background 0.15s',
                     }}
                     onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = '#f5f7ff'; }}
                     onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = idx % 2 === 0 ? '#fff' : '#fafafa'; }}
@@ -616,7 +615,11 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
                     </div>
 
                     {/* Name + Host */}
-                    <div style={{ flex: '2 1 0', minWidth: '120px', padding: '0 12px' }}>
+                    <div
+                      onClick={() => setSelectedRow(isSelected ? null : row)}
+                      style={{ flex: '2 1 0', minWidth: '120px', padding: '0 12px', cursor: 'pointer' }}
+                      title="Open guest details"
+                    >
                       <div style={{ fontWeight: 600, fontSize: '14px', color: '#111' }}>{row.guestName}</div>
                       <div style={{ fontSize: '12px', color: '#9ca3af' }}>Host: TYE</div>
                     </div>

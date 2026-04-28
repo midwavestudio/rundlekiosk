@@ -4,6 +4,16 @@ import { useState, useEffect, useRef } from 'react';
 import type { User, Auth } from 'firebase/auth';
 import Dashboard from '../components/Dashboard';
 
+const ALLOWED_ADMIN_EMAILS = new Set([
+  'rundlekiosk@gmail.com',
+  'rundlesuites@gmail.com',
+  'midwavestudio@gmail.com',
+]);
+
+function normalizeEmail(value: string): string {
+  return value.trim().toLowerCase();
+}
+
 /**
  * Firebase client SDK must not run at module scope — Next.js pre-renders this page on the
  * server where browser-only APIs are missing, which caused TypeError: e[o] is not a function
@@ -57,6 +67,19 @@ export default function AdminPage() {
         await setPersistence(auth, browserLocalPersistence);
 
         unsubscribe = onAuthStateChanged(auth, (nextUser) => {
+          const normalizedUserEmail = normalizeEmail(nextUser?.email ?? '');
+          const allowedUser = !nextUser || ALLOWED_ADMIN_EMAILS.has(normalizedUserEmail);
+
+          if (nextUser && !allowedUser) {
+            void auth.signOut();
+            if (!cancelled) {
+              setUser(null);
+              setError('This account is not authorized for the admin dashboard.');
+              setInitializing(false);
+            }
+            return;
+          }
+
           if (!cancelled) {
             setUser(nextUser);
             setInitializing(false);
@@ -90,13 +113,19 @@ export default function AdminPage() {
     setError('');
 
     try {
+      const normalizedEmail = normalizeEmail(email);
+      if (!ALLOWED_ADMIN_EMAILS.has(normalizedEmail)) {
+        setError('This email is not authorized for the admin dashboard.');
+        return;
+      }
+
       const { signInWithEmailAndPassword, createUserWithEmailAndPassword } = await import(
         'firebase/auth'
       );
       if (isSignUp) {
-        await createUserWithEmailAndPassword(auth, email, password);
+        await createUserWithEmailAndPassword(auth, normalizedEmail, password);
       } else {
-        await signInWithEmailAndPassword(auth, email, password);
+        await signInWithEmailAndPassword(auth, normalizedEmail, password);
       }
     } catch (err: unknown) {
       const e = err as { code?: string; message?: string };
