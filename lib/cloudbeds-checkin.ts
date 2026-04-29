@@ -281,6 +281,13 @@ export type SettleReservationFolioOptions = {
    * throw for stale invoice reads (used by TYE assign-placeholder and performCloudbedsCheckIn).
    */
   trustStaleInvoiceAfterSuccessfulPayment?: boolean;
+  /**
+   * Shared state across multiple settleReservationFolio calls in one flow.
+   * Prevents duplicate posts when later calls read stale due values.
+   */
+  settleState?: {
+    lastPostedAmount?: number | null;
+  };
 };
 
 /**
@@ -308,6 +315,10 @@ export async function settleReservationFolio(
 
   /** If folio still shows the same dollars due after a successful post, Cloudbeds is likely exposing grandTotal-like fields as "due" — stop before duplicate CLC lines. */
   let amountPostedSuccessfully: number | null = null;
+  const previouslyPostedAmount =
+    options?.settleState?.lastPostedAmount != null
+      ? Number(options.settleState.lastPostedAmount)
+      : null;
 
   for (let round = 0; round < 4; round++) {
     let balance =
@@ -327,6 +338,29 @@ export async function settleReservationFolio(
     }
     if (balance <= 0.01) {
       log('4_settleFolio_done', { round, balance });
+      return;
+    }
+    if (
+      options?.trustStaleInvoiceAfterSuccessfulPayment &&
+      previouslyPostedAmount != null &&
+      Math.abs(balance - previouslyPostedAmount) < 0.05
+    ) {
+      for (let p = 0; p < 10; p++) {
+        await sleep(400);
+        const b = await readOutstandingBalance(apiV13, propertyID, apiKey, reservationID);
+        if (b <= 0.02) {
+          log('4_settleFolio_prior_post_stale_resolved_after_poll', {
+            attempts: p + 1,
+            balance: b,
+            lastPostedAmount: previouslyPostedAmount,
+          });
+          return;
+        }
+      }
+      log('4_settleFolio_prior_post_trust_exit_stale_invoice', {
+        balance,
+        lastPostedAmount: previouslyPostedAmount,
+      });
       return;
     }
     if (amountPostedSuccessfully != null && Math.abs(balance - amountPostedSuccessfully) < 0.05) {
@@ -372,6 +406,7 @@ export async function settleReservationFolio(
       if (r.ok) {
         paidThisRound = true;
         amountPostedSuccessfully = balance;
+        if (options?.settleState) options.settleState.lastPostedAmount = balance;
         await sleep(500);
         break;
       }
@@ -802,6 +837,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   const log = (step: string, request?: unknown, response?: unknown, error?: string) => {
     debugLog?.push({ step, request, response, error });
   };
+  const settleState: { lastPostedAmount?: number | null } = {};
 
   const CLOUDBEDS_API_KEY = process.env.CLOUDBEDS_API_KEY;
   const CLOUDBEDS_PROPERTY_ID = process.env.CLOUDBEDS_PROPERTY_ID;
@@ -1203,6 +1239,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       {
         amountDueHint: postReservationAmountHint,
         trustStaleInvoiceAfterSuccessfulPayment: true,
+        settleState,
       }
     );
     return {
@@ -1275,6 +1312,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     {
       amountDueHint: postReservationAmountHint,
       trustStaleInvoiceAfterSuccessfulPayment: true,
+      settleState,
     }
   );
 
@@ -1464,7 +1502,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     String(reservationID),
     `${guestFirstName} ${guestLastName}`,
     log,
-    { trustStaleInvoiceAfterSuccessfulPayment: true }
+    { trustStaleInvoiceAfterSuccessfulPayment: true, settleState }
   );
 
   const roomIdForCheckIn = String(roomIdForStayPeriod ?? actualRoomID);

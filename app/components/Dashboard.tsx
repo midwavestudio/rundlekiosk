@@ -98,11 +98,36 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
             justifyContent: 'space-between',
             alignItems: 'center'
           }}>
-            <div>
-              <h1 style={{ margin: 0, fontSize: '24px' }}>🏨 Rundle Kiosk</h1>
-              <p style={{ margin: '5px 0 0 0', opacity: 0.9, fontSize: '14px' }}>
-                {user.email}
-              </p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+              <a
+                href="/"
+                title="Back to guest kiosk"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: '38px',
+                  height: '38px',
+                  borderRadius: '9999px',
+                  border: '2px solid rgba(255,255,255,0.85)',
+                  color: 'white',
+                  textDecoration: 'none',
+                  background: 'rgba(255,255,255,0.12)',
+                  fontSize: '20px',
+                  lineHeight: 1,
+                  fontWeight: 700,
+                  flexShrink: 0,
+                }}
+                aria-label="Back to guest kiosk"
+              >
+                ←
+              </a>
+              <div>
+                <h1 style={{ margin: 0, fontSize: '24px' }}>🏨 Rundle Kiosk</h1>
+                <p style={{ margin: '5px 0 0 0', opacity: 0.9, fontSize: '14px' }}>
+                  {user.email}
+                </p>
+              </div>
             </div>
             <button
               onClick={onLogout}

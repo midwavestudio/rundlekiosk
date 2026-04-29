@@ -82,6 +82,7 @@ function reservationShowsGuestName(res: any, first: string, last: string): boole
  */
 export async function POST(request: NextRequest) {
   const debugLog: Array<{ step: string; request?: unknown; response?: unknown; error?: string }> = [];
+  const settleState: { lastPostedAmount?: number | null } = {};
   const log = (step: string, req?: unknown, res?: unknown, err?: string) => {
     debugLog.push({ step, request: req, response: res, error: err });
   };
@@ -355,7 +356,7 @@ export async function POST(request: NextRequest) {
       reservationID,
       `${guestFirst} ${guestLast}`,
       log,
-      { trustStaleInvoiceAfterSuccessfulPayment: true }
+      { trustStaleInvoiceAfterSuccessfulPayment: true, settleState }
     );
 
     // -----------------------------------------------------------------------
@@ -444,7 +445,7 @@ export async function POST(request: NextRequest) {
       reservationID,
       `${guestFirst} ${guestLast}`,
       log,
-      { trustStaleInvoiceAfterSuccessfulPayment: true }
+      { trustStaleInvoiceAfterSuccessfulPayment: true, settleState }
     );
 
     // -----------------------------------------------------------------------
@@ -527,7 +528,7 @@ export async function POST(request: NextRequest) {
           reservationID,
           `${guestFirst} ${guestLast}`,
           log,
-          { trustStaleInvoiceAfterSuccessfulPayment: true }
+          { trustStaleInvoiceAfterSuccessfulPayment: true, settleState }
         );
         ciResult = await doPutCheckedIn();
       }

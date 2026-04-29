@@ -5,6 +5,8 @@ import {
   getCheckinRecords,
   findByReservationID,
   upsertCheckinRecord,
+  deleteCheckinRecord,
+  deleteByReservationID,
 } from '@/lib/checkin-store';
 
 /**
@@ -112,6 +114,41 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ success: true, id });
   } catch (err: any) {
     console.error('[checkin-records PATCH]', err);
+    return NextResponse.json(
+      { success: false, error: err?.message ?? 'Server error' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * DELETE /api/checkin-records
+ * Body: { id? , reservationID? }
+ *
+ * Deletes a record by Firestore doc id or Cloudbeds reservation ID.
+ */
+export async function DELETE(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const id = body?.id ? String(body.id) : '';
+    const reservationID = body?.reservationID ? String(body.reservationID) : '';
+
+    if (!id && !reservationID) {
+      return NextResponse.json(
+        { success: false, error: 'Provide id or reservationID to identify the record' },
+        { status: 400 }
+      );
+    }
+
+    if (id) {
+      await deleteCheckinRecord(id);
+      return NextResponse.json({ success: true, deleted: true });
+    }
+
+    const deleted = await deleteByReservationID(reservationID);
+    return NextResponse.json({ success: true, deleted });
+  } catch (err: any) {
+    console.error('[checkin-records DELETE]', err);
     return NextResponse.json(
       { success: false, error: err?.message ?? 'Server error' },
       { status: 500 }

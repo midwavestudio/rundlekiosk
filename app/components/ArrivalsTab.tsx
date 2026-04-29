@@ -142,6 +142,16 @@ function initials(name: string): string {
   return name.split(' ').filter(Boolean).slice(0, 2).map(p => p[0]).join('').toUpperCase();
 }
 
+function confirmDeleteWithPhrase(message: string): boolean {
+  const typed = prompt(`${message}\n\nEnter the passcode:`);
+  if (typed === null) return false;
+  if ((typed ?? '').trim().toLowerCase() !== 'gj') {
+    alert('Deletion cancelled. Passcode did not match.');
+    return false;
+  }
+  return true;
+}
+
 const AVATAR_COLORS = ['#667eea', '#764ba2', '#f59e0b', '#10b981', '#3b82f6', '#ef4444', '#8b5cf6', '#06b6d4'];
 function avatarColor(name: string): string {
   let h = 0;
@@ -374,45 +384,65 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
 
   const handleDelete = async (row: Row) => {
     const msg = row.fromHistory
-      ? `Remove ${row.guestName} from this list? (They are already checked out; this only deletes the local history record.)`
+      ? `${row.guestName} is already checked out. This will remove the record from this list. Continue?`
       : `Delete reservation for ${row.guestName}? This will also remove it from Cloudbeds.`;
-    if (!confirm(msg)) return;
+    if (!confirmDeleteWithPhrase(msg)) return;
     try {
       if (!row.fromHistory && row.cloudbedsReservationID) {
         const res = await fetch(`/api/cloudbeds-delete?reservationID=${row.cloudbedsReservationID}`, { method: 'DELETE' });
         const result = await res.json();
         if (!result.success && !result.mockMode) throw new Error(result.error || 'Failed to delete from Cloudbeds');
       }
+      if (row.rawData._serverId || row.cloudbedsReservationID) {
+        const serverRes = await fetch('/api/checkin-records', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...(row.rawData._serverId ? { id: row.rawData._serverId } : {}),
+            ...(row.cloudbedsReservationID ? { reservationID: row.cloudbedsReservationID } : {}),
+          }),
+        });
+        if (!serverRes.ok) {
+          const data = await serverRes.json().catch(() => ({}));
+          throw new Error(data?.error || 'Failed to remove check-in record');
+        }
+      }
       if (row.fromHistory) {
-        const history: CheckedInGuest[] = JSON.parse(localStorage.getItem('checkOutHistory') || '[]');
-        const updated = history.filter((g) => {
+        const isTargetHistoryRecord = (g: CheckedInGuest) => {
           if (
             row.rawData.cloudbedsReservationID &&
             g.cloudbedsReservationID === row.rawData.cloudbedsReservationID
           ) {
-            return g.checkOutTime !== row.rawData.checkOutTime;
+            return g.checkOutTime === row.rawData.checkOutTime;
           }
-          return !(
+          return (
             g.firstName === row.rawData.firstName &&
             g.lastName === row.rawData.lastName &&
             g.checkInTime === row.rawData.checkInTime &&
             g.checkOutTime === row.rawData.checkOutTime
           );
-        });
-        localStorage.setItem('checkOutHistory', JSON.stringify(updated));
-        setCheckOutHistory(updated);
+        };
+
+        const history: CheckedInGuest[] = JSON.parse(localStorage.getItem('checkOutHistory') || '[]');
+        const updatedHistory = history.filter((g) => !isTargetHistoryRecord(g));
+        localStorage.setItem('checkOutHistory', JSON.stringify(updatedHistory));
+        setCheckOutHistory((prev) => prev.filter((g) => !isTargetHistoryRecord(g)));
       } else {
+        const isTargetActiveRecord = (g: CheckedInGuest) =>
+          !!(
+            row.rawData.cloudbedsReservationID &&
+            g.cloudbedsReservationID &&
+            g.cloudbedsReservationID === row.rawData.cloudbedsReservationID
+          ) || (
+            g.firstName === row.rawData.firstName &&
+            g.lastName === row.rawData.lastName &&
+            g.checkInTime === row.rawData.checkInTime
+          );
+
         const stored: CheckedInGuest[] = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
-        const updated = stored.filter(
-          (g) =>
-            !(
-              g.firstName === row.rawData.firstName &&
-              g.lastName === row.rawData.lastName &&
-              g.checkInTime === row.rawData.checkInTime
-            )
-        );
-        localStorage.setItem('checkedInGuests', JSON.stringify(updated));
-        setCheckedInGuests(updated);
+        const updatedStored = stored.filter((g) => !isTargetActiveRecord(g));
+        localStorage.setItem('checkedInGuests', JSON.stringify(updatedStored));
+        setCheckedInGuests((prev) => prev.filter((g) => !isTargetActiveRecord(g)));
       }
       if (selectedRow?.id === row.id) setSelectedRow(null);
       if (onDelete) onDelete(row);

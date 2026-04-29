@@ -59,6 +59,44 @@ function kioskLocalDateStr(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+function parseYmdLocal(ymd: string): Date | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;
+  const [y, m, d] = ymd.split('-').map(Number);
+  if (!y || !m || !d) return null;
+  const date = new Date(y, m - 1, d);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function dayDiffLocal(from: Date, to: Date): number {
+  const fromDay = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+  const toDay = new Date(to.getFullYear(), to.getMonth(), to.getDate());
+  const msPerDay = 24 * 60 * 60 * 1000;
+  return Math.round((toDay.getTime() - fromDay.getTime()) / msPerDay);
+}
+
+function dayOrdinal(n: number): string {
+  const mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 13) return `${n}th`;
+  switch (n % 10) {
+    case 1: return `${n}st`;
+    case 2: return `${n}nd`;
+    case 3: return `${n}rd`;
+    default: return `${n}th`;
+  }
+}
+
+function formatCheckInDateLabel(checkInDate: string): string {
+  const parsed = parseYmdLocal(checkInDate);
+  if (!parsed) return checkInDate;
+
+  const today = new Date();
+  const diff = dayDiffLocal(parsed, today);
+  if (diff === 0) return 'Today';
+  if (diff === 1) return 'Yesterday';
+
+  return `${parsed.toLocaleDateString('en-US', { month: 'long' })} ${dayOrdinal(parsed.getDate())}`;
+}
+
 export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [guests, setGuests] = useState<CloudbedsGuest[]>([]);
@@ -321,7 +359,7 @@ export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutP
                     </div>
                     {guest.checkInDate && (
                       <div className="guest-details">
-                        Checked in: {guest.checkInDate}
+                        Checked in: {formatCheckInDateLabel(guest.checkInDate)}
                       </div>
                     )}
                   </div>

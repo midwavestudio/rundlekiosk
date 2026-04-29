@@ -252,6 +252,22 @@ export async function updateCheckinRecord(
   if (idx >= 0) Object.assign(memStore[idx], updates);
 }
 
+/** Delete a check-in record by document ID. */
+export async function deleteCheckinRecord(id: string): Promise<void> {
+  const db = getDb();
+  if (db) {
+    try {
+      await db.collection(COLLECTION).doc(id).delete();
+      return;
+    } catch (err) {
+      console.error('[checkin-store] Firestore delete by id failed — deleting in-memory.', err);
+    }
+  }
+
+  const idx = memStore.findIndex((r) => r.id === id);
+  if (idx >= 0) memStore.splice(idx, 1);
+}
+
 /**
  * Find an existing record by Cloudbeds reservation ID.
  * Returns null if not found. Uses a simple equality query (no composite index needed).
@@ -275,6 +291,14 @@ export async function findByReservationID(
     }
   }
   return memStore.find((r) => r.cloudbedsReservationID === reservationID) ?? null;
+}
+
+/** Delete first matching record by Cloudbeds reservation ID. */
+export async function deleteByReservationID(reservationID: string): Promise<boolean> {
+  const existing = await findByReservationID(reservationID);
+  if (!existing) return false;
+  await deleteCheckinRecord(existing.id);
+  return true;
 }
 
 /**
