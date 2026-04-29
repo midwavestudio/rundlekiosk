@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { saveFeedback, getAllFeedback, updateFeedback } from '@/lib/feedback-store';
+import { saveFeedback, getAllFeedback, updateFeedback, deleteFeedback } from '@/lib/feedback-store';
 
 /** POST /api/feedback — guest submits a message */
 export async function POST(req: NextRequest) {
@@ -53,5 +53,21 @@ export async function PATCH(req: NextRequest) {
   } catch (err) {
     console.error('[feedback] PATCH error:', err);
     return NextResponse.json({ error: 'Failed to update feedback.' }, { status: 500 });
+  }
+}
+
+/** DELETE /api/feedback — admin removes a message */
+export async function DELETE(req: NextRequest) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const id = searchParams.get('id') ?? '';
+    if (!id) {
+      return NextResponse.json({ error: 'id query parameter is required.' }, { status: 400 });
+    }
+    await deleteFeedback(id);
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    console.error('[feedback] DELETE error:', err);
+    return NextResponse.json({ error: 'Failed to delete feedback.' }, { status: 500 });
   }
 }

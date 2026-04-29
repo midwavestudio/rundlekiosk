@@ -162,13 +162,13 @@ function avatarColor(name: string): string {
 
 function guestToRow(
   g: StoredGuest,
-  i: number,
+  stableKey: string,
   prefix: string,
   roomNameById: Record<string, string>
 ): Row {
   const checkInIso = g.checkInTime || '';
   return {
-    id: `${prefix}-${i}`,
+    id: `${prefix}:${stableKey}`,
     guestName: `${g.firstName} ${g.lastName}`.trim() || 'Guest',
     firstName: g.firstName,
     lastName: g.lastName,
@@ -218,6 +218,8 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
   const [exportFrom, setExportFrom] = useState(() => localYmd(new Date()));
   const [exportTo, setExportTo] = useState(() => localYmd(new Date()));
   const [showExportPanel, setShowExportPanel] = useState(false);
+  /** When true, list is sorted by departure/check activity descending (latest at top). */
+  const [newestFirst, setNewestFirst] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -312,18 +314,23 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
   }, []);
 
   const rows: Row[] = useMemo(() => {
-    const inRows = checkedInGuests.map((g, i) => guestToRow(g, i, 'in', roomNameById));
-    const outRows = checkOutHistory.map((g, i) => guestToRow(g, i, 'out', roomNameById));
-    return [
-      ...inRows,
-      ...outRows.slice().reverse(),
-    ];
+    const inRows = checkedInGuests.map((g) => guestToRow(g, guestDedupeKey(g), 'in', roomNameById));
+    const outRows = checkOutHistory.map((g) => guestToRow(g, guestDedupeKey(g), 'out', roomNameById));
+    return [...inRows, ...outRows];
   }, [checkedInGuests, checkOutHistory, roomNameById]);
 
   const dateFilteredRows = useMemo(() => {
-    return rows.filter(
-      (r) => r.status === 'checked_out' && !!(r.checkOutIso && isoToLocalYmd(r.checkOutIso) === selectedDate)
-    );
+    const todayYmd = localYmd(new Date());
+    return rows.filter((r) => {
+      if (r.status === 'checked_out') {
+        return !!(r.checkOutIso && isoToLocalYmd(r.checkOutIso) === selectedDate);
+      }
+      // Pending (still in house): show only when viewing today — same idea as arrivals “today’s activity”.
+      if (r.status === 'checked_in') {
+        return selectedDate === todayYmd;
+      }
+      return false;
+    });
   }, [rows, selectedDate]);
 
   const filteredRows = useMemo(() => {
@@ -338,11 +345,27 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
     );
   }, [dateFilteredRows, searchTerm]);
 
+  const sortedFilteredRows = useMemo(() => {
+    const copy = [...filteredRows];
+    copy.sort((a, b) => {
+      const sortIso = (row: Row) => row.checkOutIso || row.checkInIso;
+      const ta = new Date(sortIso(a)).getTime();
+      const tb = new Date(sortIso(b)).getTime();
+      const aBad = Number.isNaN(ta);
+      const bBad = Number.isNaN(tb);
+      if (aBad && bBad) return 0;
+      if (aBad) return 1;
+      if (bBad) return -1;
+      return newestFirst ? tb - ta : ta - tb;
+    });
+    return copy;
+  }, [filteredRows, newestFirst]);
+
   useEffect(() => {
-    if (selectedRow && !filteredRows.some((r) => r.id === selectedRow.id)) {
+    if (selectedRow && !sortedFilteredRows.some((r) => r.id === selectedRow.id)) {
       setSelectedRow(null);
     }
-  }, [filteredRows, selectedRow]);
+  }, [sortedFilteredRows, selectedRow]);
 
   useEffect(() => {
     if (!selectedRow) {
@@ -541,7 +564,7 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
         <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 700, color: '#111', whiteSpace: 'nowrap' }}>
           Departures
           <span style={{ marginLeft: '8px', fontSize: '14px', fontWeight: 500, color: '#6b7280', background: '#f3f4f6', borderRadius: '12px', padding: '2px 10px' }}>
-            {filteredRows.length}
+            {sortedFilteredRows.length}
           </span>
         </h2>
 
@@ -628,6 +651,30 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
             ›
           </button>
         </div>
+        <span style={{ width: '1px', height: '24px', background: '#e5e7eb', flexShrink: 0 }} aria-hidden />
+        <button
+          type="button"
+          aria-pressed={newestFirst}
+          aria-label={newestFirst ? 'Sort: latest departures first' : 'Sort: earliest departures first'}
+          onClick={() => setNewestFirst((v) => !v)}
+          title={newestFirst ? 'Showing latest first. Click for earliest first.' : 'Showing earliest first. Click for latest first.'}
+          style={{
+            padding: '8px 14px',
+            border: '1px solid #d1d5db',
+            borderRadius: '8px',
+            background: 'white',
+            cursor: 'pointer',
+            fontWeight: 600,
+            fontSize: '13px',
+            color: '#374151',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+          }}
+        >
+          <span aria-hidden>{newestFirst ? '↓' : '↑'}</span>
+          {newestFirst ? 'Latest first' : 'Earliest first'}
+        </button>
       </div>
 
       {/* ── Export Panel ── */}
@@ -672,7 +719,7 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
 
           {/* Rows */}
           <div style={{ flex: 1, overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: '0 0 8px 8px', background: 'white' }}>
-            {filteredRows.length === 0 ? (
+            {sortedFilteredRows.length === 0 ? (
               <div style={{ textAlign: 'center', padding: '60px 20px', color: '#9ca3af' }}>
                 <div style={{ fontSize: '40px', marginBottom: '8px' }}>📭</div>
                 <div style={{ fontSize: '14px' }}>
@@ -682,7 +729,7 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
                 </div>
               </div>
             ) : (
-              filteredRows.map((row, idx) => {
+              sortedFilteredRows.map((row, idx) => {
                 const isSelected = selectedRow?.id === row.id;
                 const isPending = row.status === 'checked_in';
                 return (
@@ -691,7 +738,7 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
                     onClick={() => setSelectedRow(isSelected ? null : row)}
                     style={{
                       display: 'flex', alignItems: 'center', padding: '10px 0',
-                      borderBottom: idx < filteredRows.length - 1 ? '1px solid #f3f4f6' : 'none',
+                      borderBottom: idx < sortedFilteredRows.length - 1 ? '1px solid #f3f4f6' : 'none',
                       background: isSelected ? '#f5f0ff' : idx % 2 === 0 ? '#fff' : '#fafafa',
                       cursor: 'pointer', transition: 'background 0.15s',
                     }}

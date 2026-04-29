@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { ADMIN_ACCENT, ADMIN_TINT_BG, ADMIN_TINT_BORDER } from '../lib/adminTheme';
-import { loadReadFeedbackIds, markFeedbackRead, markFeedbacksRead } from '@/lib/feedback-read';
+import { loadReadFeedbackIds, markFeedbackRead, markFeedbacksRead, removeFeedbackReadId } from '@/lib/feedback-read';
 
 interface FeedbackMessage {
   id: string;
@@ -67,6 +67,22 @@ export default function FeedbackTab() {
       );
     } catch {
       alert('Failed to update message. Please try again.');
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  async function deleteMessage(id: string) {
+    if (!confirm('Delete this message permanently? This cannot be undone.')) return;
+    setSaving(id);
+    try {
+      const res = await fetch(`/api/feedback?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error();
+      setMessages((prev) => prev.filter((m) => m.id !== id));
+      setReadIds((prev) => removeFeedbackReadId(id, prev));
+      setExpandedId((ex) => (ex === id ? null : ex));
+    } catch {
+      alert('Failed to delete message. Please try again.');
     } finally {
       setSaving(null);
     }
@@ -184,7 +200,11 @@ export default function FeedbackTab() {
           {filtered.map((msg) => {
             const isExpanded = expandedId === msg.id;
             const isRead = readIds.has(msg.id);
-            const sc = STATUS_COLORS[msg.status];
+            const showReadBadge = msg.status === 'new' && isRead;
+            const sc = showReadBadge
+              ? { bg: '#f3f4f6', color: '#6b7280' }
+              : STATUS_COLORS[msg.status];
+            const statusLabel = showReadBadge ? 'Read' : STATUS_LABELS[msg.status];
             const date = new Date(msg.submittedAt).toLocaleString('en-US', {
               month: 'short', day: 'numeric', year: 'numeric',
               hour: 'numeric', minute: '2-digit',
@@ -224,7 +244,7 @@ export default function FeedbackTab() {
                         color: sc.color,
                         whiteSpace: 'nowrap',
                       }}>
-                        {STATUS_LABELS[msg.status]}
+                        {statusLabel}
                       </span>
                       <span style={{ fontSize: '13px', color: '#999' }}>{date}</span>
                       {msg.name && (
@@ -246,9 +266,32 @@ export default function FeedbackTab() {
                       {msg.message}
                     </p>
                   </div>
-                  <span style={{ color: '#aaa', fontSize: '18px', flexShrink: 0, marginTop: '2px' }}>
-                    {isExpanded ? '▲' : '▼'}
-                  </span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                    <button
+                      type="button"
+                      disabled={saving === msg.id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void deleteMessage(msg.id);
+                      }}
+                      style={{
+                        padding: '6px 10px',
+                        borderRadius: '8px',
+                        border: '1px solid #fecaca',
+                        background: '#fff',
+                        color: '#b91c1c',
+                        fontWeight: 600,
+                        fontSize: '12px',
+                        cursor: saving === msg.id ? 'not-allowed' : 'pointer',
+                        opacity: saving === msg.id ? 0.5 : 1,
+                      }}
+                    >
+                      Delete
+                    </button>
+                    <span style={{ color: '#aaa', fontSize: '18px', marginTop: '2px' }}>
+                      {isExpanded ? '▲' : '▼'}
+                    </span>
+                  </div>
                 </div>
 
                 {/* Expanded actions */}
@@ -277,7 +320,7 @@ export default function FeedbackTab() {
                       onBlur={(e) => { e.target.style.borderColor = '#e5e7eb'; }}
                     />
 
-                    <div style={{ display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
                       {(['new', 'reviewed', 'resolved'] as const).filter((s) => s !== msg.status).map((s) => (
                         <button
                           key={s}
@@ -315,6 +358,23 @@ export default function FeedbackTab() {
                         }}
                       >
                         {saving === msg.id ? 'Saving…' : 'Save Notes'}
+                      </button>
+                      <button
+                        disabled={saving === msg.id}
+                        onClick={() => deleteMessage(msg.id)}
+                        style={{
+                          padding: '8px 16px',
+                          borderRadius: '8px',
+                          border: '2px solid #fecaca',
+                          background: '#fef2f2',
+                          color: '#b91c1c',
+                          fontWeight: 600,
+                          fontSize: '13px',
+                          cursor: saving === msg.id ? 'not-allowed' : 'pointer',
+                          opacity: saving === msg.id ? 0.7 : 1,
+                        }}
+                      >
+                        Delete
                       </button>
                     </div>
                   </div>

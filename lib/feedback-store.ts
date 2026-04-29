@@ -143,3 +143,18 @@ export async function updateFeedback(
     memoryStore.set(id, { ...existing, ...updates });
   }
 }
+
+/** Permanently remove a feedback message. */
+export async function deleteFeedback(id: string): Promise<void> {
+  const db = getDb();
+  if (db) {
+    try {
+      await db.collection(COLLECTION).doc(id).delete();
+      return;
+    } catch (err) {
+      console.error('[feedback] Firestore delete failed — removing from in-memory store if present.', err);
+    }
+  }
+
+  memoryStore.delete(id);
+}

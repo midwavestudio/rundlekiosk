@@ -41,3 +41,10 @@ export function markFeedbacksRead(ids: Iterable<string>, current: Set<string>): 
   return next;
 }
 
+export function removeFeedbackReadId(id: string, current: Set<string>): Set<string> {
+  const next = new Set(current);
+  next.delete(id);
+  persistReadFeedbackIds(next);
+  return next;
+}
+
