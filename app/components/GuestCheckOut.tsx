@@ -59,7 +59,6 @@ function kioskLocalDateStr(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
-<<<<<<< HEAD
 function parseYmdLocal(ymd: string): Date | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;
   const [y, m, d] = ymd.split('-').map(Number);
@@ -96,7 +95,8 @@ function formatCheckInDateLabel(checkInDate: string): string {
   if (diff === 1) return 'Yesterday';
 
   return `${parsed.toLocaleDateString('en-US', { month: 'long' })} ${dayOrdinal(parsed.getDate())}`;
-=======
+}
+
 function formatDisplayDate(value?: string): string {
   if (!value) return '—';
   const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -108,7 +108,6 @@ function formatDisplayDate(value?: string): string {
   const dt = new Date(value);
   if (Number.isNaN(dt.getTime())) return value;
   return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
->>>>>>> c74b33562a52e34f5afa4b2d58d8f09916ef7fca
 }
 
 export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutProps) {
@@ -373,16 +372,12 @@ export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutP
                     </div>
                     {guest.checkInDate && (
                       <div className="guest-details">
-<<<<<<< HEAD
                         Checked in: {formatCheckInDateLabel(guest.checkInDate)}
-=======
-                        Checked in: {formatDisplayDate(guest.checkInDate)}
                       </div>
                     )}
                     {guest.checkOutDate && (
                       <div className="guest-details">
                         Check-out: {formatDisplayDate(guest.checkOutDate)}
->>>>>>> c74b33562a52e34f5afa4b2d58d8f09916ef7fca
                       </div>
                     )}
                   </div>
