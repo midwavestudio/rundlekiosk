@@ -412,9 +412,7 @@ export default function TyePlaceholdersTab() {
             (data.totalSkipped > 0 ? ` Skipped ${data.totalSkipped} (already blocked).` : '') +
             (data.totalFailed > 0 ? ` ${data.totalFailed} could not be created.` : '')
         );
-        if (failedRows.length === 0) {
-          setSelectedRoomIDs(new Set());
-        }
+        setSelectedRoomIDs(new Set());
         await Promise.all([fetchSummary(), fetchRooms()]);
       } else if ((data.totalFailed ?? 0) > 0 || failedRows.length > 0) {
         setError(
@@ -424,6 +422,7 @@ export default function TyePlaceholdersTab() {
         );
       } else if ((data.totalSkipped ?? 0) > 0) {
         setStatusMessage(`All selected rooms were already blocked (${data.totalSkipped}). Nothing new to create.`);
+        setSelectedRoomIDs(new Set());
         await Promise.all([fetchSummary(), fetchRooms()]);
       } else {
         setError(

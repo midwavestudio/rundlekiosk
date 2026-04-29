@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { ADMIN_ACCENT, ADMIN_TINT_BG, ADMIN_TINT_BORDER } from '../lib/adminTheme';
+import { loadReadFeedbackIds, markFeedbackRead, markFeedbacksRead } from '@/lib/feedback-read';
 
 interface FeedbackMessage {
   id: string;
@@ -32,6 +33,7 @@ export default function FeedbackTab() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [notesInput, setNotesInput] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<string | null>(null);
+  const [readIds, setReadIds] = useState<Set<string>>(new Set());
 
   const fetchMessages = useCallback(async () => {
     setLoading(true);
@@ -49,6 +51,7 @@ export default function FeedbackTab() {
   }, []);
 
   useEffect(() => { fetchMessages(); }, [fetchMessages]);
+  useEffect(() => { setReadIds(loadReadFeedbackIds()); }, []);
 
   async function updateMessage(id: string, status: FeedbackMessage['status'], notes?: string) {
     setSaving(id);
@@ -70,7 +73,12 @@ export default function FeedbackTab() {
   }
 
   const filtered = filter === 'all' ? messages : messages.filter((m) => m.status === filter);
-  const newCount = messages.filter((m) => m.status === 'new').length;
+  const unreadCount = messages.reduce((n, m) => (readIds.has(m.id) ? n : n + 1), 0);
+
+  const handleMarkAllShownRead = () => {
+    if (messages.length === 0) return;
+    setReadIds((prev) => markFeedbacksRead(messages.map((m) => m.id), prev));
+  };
 
   return (
     <div>
@@ -79,7 +87,7 @@ export default function FeedbackTab() {
         <div>
           <h2 style={{ margin: 0, fontSize: 'clamp(20px, 2.5vw, 28px)', color: '#333' }}>
             Guest Feedback
-            {newCount > 0 && (
+            {unreadCount > 0 && (
               <span style={{
                 marginLeft: '10px',
                 background: '#f59e0b',
@@ -90,12 +98,29 @@ export default function FeedbackTab() {
                 borderRadius: '12px',
                 verticalAlign: 'middle',
               }}>
-                {newCount} new
+                {unreadCount} unread
               </span>
             )}
           </h2>
           <p style={{ margin: '4px 0 0', color: '#888', fontSize: '14px' }}>Messages submitted by guests through the kiosk</p>
         </div>
+        <button
+          onClick={handleMarkAllShownRead}
+          disabled={messages.length === 0 || unreadCount === 0}
+          style={{
+            padding: '9px 18px',
+            border: `2px solid ${ADMIN_TINT_BORDER}`,
+            borderRadius: '8px',
+            background: 'white',
+            color: ADMIN_ACCENT,
+            fontWeight: 600,
+            fontSize: '14px',
+            cursor: messages.length === 0 || unreadCount === 0 ? 'not-allowed' : 'pointer',
+            opacity: messages.length === 0 || unreadCount === 0 ? 0.5 : 1,
+          }}
+        >
+          Mark all shown as read
+        </button>
         <button
           onClick={fetchMessages}
           style={{
@@ -179,7 +204,13 @@ export default function FeedbackTab() {
                 {/* Card header — always visible */}
                 <div
                   style={{ padding: '16px 20px', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px' }}
-                  onClick={() => setExpandedId(isExpanded ? null : msg.id)}
+                  onClick={() => {
+                    const nextExpanded = isExpanded ? null : msg.id;
+                    setExpandedId(nextExpanded);
+                    if (nextExpanded) {
+                      setReadIds((prev) => markFeedbackRead(msg.id, prev));
+                    }
+                  }}
                 >
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px', flexWrap: 'wrap' }}>

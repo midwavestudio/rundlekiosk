@@ -7,10 +7,11 @@ import ArrivalsTab from './ArrivalsTab';
 import DeparturesTab from './DeparturesTab';
 import CheckInModal from './CheckInModal';
 import CheckOutModal from './CheckOutModal';
-import BulkCheckInTab from './BulkCheckInTab';
 import TyePlaceholdersTab from './TyePlaceholdersTab';
 import FeedbackTab from './FeedbackTab';
 import EventLogTab from './EventLogTab';
+import { loadReadEventIds, markEventsRead } from '@/lib/event-log-read';
+import { loadReadFeedbackIds, markFeedbacksRead } from '@/lib/feedback-read';
 
 interface DashboardProps {
   user: User;
@@ -23,11 +24,21 @@ interface FirebaseStatus {
   phase?: 'missing-env' | 'init-failed' | 'firestore-read' | 'ok';
 }
 
+interface EventLogEntry {
+  id: string;
+}
+
+interface FeedbackEntry {
+  id: string;
+}
+
 export default function Dashboard({ user, onLogout }: DashboardProps) {
   const [activeTab, setActiveTab] = useState<
-    'dashboard' | 'arrivals' | 'departures' | 'bulk-checkin' | 'tye-placeholders' | 'feedback' | 'event-log'
+    'dashboard' | 'arrivals' | 'departures' | 'tye-placeholders' | 'feedback' | 'event-log'
   >('dashboard');
   const [firestoreStatus, setFirestoreStatus] = useState<FirebaseStatus | null>(null);
+  const [eventLogUnreadCount, setEventLogUnreadCount] = useState(0);
+  const [feedbackUnreadCount, setFeedbackUnreadCount] = useState(0);
 
   useEffect(() => {
     fetch('/api/admin/firebase-status')
@@ -41,6 +52,115 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
         })
       );
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const refreshErrorBadge = async () => {
+      try {
+        const res = await fetch('/api/event-log?limit=250');
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        const events: EventLogEntry[] = Array.isArray(data.events) ? data.events : [];
+
+        const readIds = loadReadEventIds();
+        const unread = events.reduce((count, ev) => (readIds.has(ev.id) ? count : count + 1), 0);
+        if (!cancelled) setEventLogUnreadCount(unread);
+      } catch {
+        // Ignore transient fetch errors and keep prior badge count.
+      }
+    };
+
+    refreshErrorBadge();
+    const pollId = setInterval(refreshErrorBadge, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(pollId);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const refreshFeedbackBadge = async () => {
+      try {
+        const res = await fetch('/api/feedback');
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        const messages: FeedbackEntry[] = Array.isArray(data.messages) ? data.messages : [];
+        const readIds = loadReadFeedbackIds();
+        const unread = messages.reduce((count, m) => (readIds.has(m.id) ? count : count + 1), 0);
+        if (!cancelled) setFeedbackUnreadCount(unread);
+      } catch {
+        // Ignore transient fetch errors and keep prior badge count.
+      }
+    };
+
+    refreshFeedbackBadge();
+    const pollId = setInterval(refreshFeedbackBadge, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(pollId);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (activeTab !== 'event-log') return;
+
+    let cancelled = false;
+
+    const markVisibleErrorsAsRead = async () => {
+      try {
+        const res = await fetch('/api/event-log?limit=250');
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        const events: EventLogEntry[] = Array.isArray(data.events) ? data.events : [];
+        if (events.length === 0 || cancelled) {
+          if (!cancelled) setEventLogUnreadCount(0);
+          return;
+        }
+
+        const existingRead = loadReadEventIds();
+        markEventsRead(events.map((ev) => ev.id), existingRead);
+        if (!cancelled) setEventLogUnreadCount(0);
+      } catch {
+        // Non-fatal; badge will refresh on next poll.
+      }
+    };
+
+    markVisibleErrorsAsRead();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab !== 'feedback') return;
+
+    let cancelled = false;
+    const markVisibleFeedbackAsRead = async () => {
+      try {
+        const res = await fetch('/api/feedback');
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        const messages: FeedbackEntry[] = Array.isArray(data.messages) ? data.messages : [];
+        if (messages.length === 0 || cancelled) {
+          if (!cancelled) setFeedbackUnreadCount(0);
+          return;
+        }
+        const existingRead = loadReadFeedbackIds();
+        markFeedbacksRead(messages.map((m) => m.id), existingRead);
+        if (!cancelled) setFeedbackUnreadCount(0);
+      } catch {
+        // Non-fatal; badge will refresh on next poll.
+      }
+    };
+
+    markVisibleFeedbackAsRead();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab]);
   const [showCheckInModal, setShowCheckInModal] = useState(false);
   const [showCheckOutModal, setShowCheckOutModal] = useState(false);
   const [selectedReservation, setSelectedReservation] = useState<any>(null);
@@ -218,7 +338,7 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
             borderBottom: '2px solid #f0f0f0',
             padding: '0 20px'
           }}>
-            {['dashboard', 'arrivals', 'departures', 'bulk-checkin', 'tye-placeholders', 'feedback', 'event-log'].map((tab) => (
+            {['dashboard', 'arrivals', 'departures', 'tye-placeholders', 'feedback', 'event-log'].map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab as any)}
@@ -232,16 +352,59 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
                   cursor: 'pointer',
                   textTransform: 'capitalize',
                   fontSize: '16px',
-                  transition: 'all 0.3s'
+                  transition: 'all 0.3s',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '8px',
                 }}
               >
-                {tab === 'bulk-checkin'
-                  ? 'Bulk Check-In'
-                  : tab === 'tye-placeholders'
-                    ? 'Blocks'
-                    : tab === 'event-log'
-                      ? 'Error Log'
-                      : tab}
+                <span>
+                  {tab === 'tye-placeholders'
+                      ? 'Blocks'
+                      : tab === 'event-log'
+                        ? 'Error Log'
+                        : tab}
+                </span>
+                {tab === 'event-log' && eventLogUnreadCount > 0 && (
+                  <span
+                    style={{
+                      minWidth: '20px',
+                      height: '20px',
+                      borderRadius: '999px',
+                      background: '#dc2626',
+                      color: 'white',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      lineHeight: '20px',
+                      padding: '0 6px',
+                      textAlign: 'center',
+                    }}
+                    aria-label={`${eventLogUnreadCount} new errors`}
+                    title={`${eventLogUnreadCount} new errors`}
+                  >
+                    {eventLogUnreadCount}
+                  </span>
+                )}
+                {tab === 'feedback' && feedbackUnreadCount > 0 && (
+                  <span
+                    style={{
+                      minWidth: '20px',
+                      height: '20px',
+                      borderRadius: '999px',
+                      background: '#dc2626',
+                      color: 'white',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      lineHeight: '20px',
+                      padding: '0 6px',
+                      textAlign: 'center',
+                    }}
+                    aria-label={`${feedbackUnreadCount} new feedback messages`}
+                    title={`${feedbackUnreadCount} new feedback messages`}
+                  >
+                    {feedbackUnreadCount}
+                  </span>
+                )}
               </button>
             ))}
           </div>
@@ -268,9 +431,6 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
             <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
               <DeparturesTab onCheckOut={handleCheckOut} />
             </div>
-          )}
-          {activeTab === 'bulk-checkin' && (
-            <BulkCheckInTab />
           )}
           {activeTab === 'tye-placeholders' && (
             <TyePlaceholdersTab />
@@ -310,34 +470,53 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
 }
 
 function DashboardTab({ firestoreStatus }: { firestoreStatus: FirebaseStatus | null }) {
-  // Get real stats from localStorage
-  const checkedInGuests = typeof window !== 'undefined' 
-    ? JSON.parse(localStorage.getItem('checkedInGuests') || '[]')
-    : [];
-  const checkOutHistory = typeof window !== 'undefined'
-    ? JSON.parse(localStorage.getItem('checkOutHistory') || '[]')
-    : [];
-  
-  // Today's check-ins
-  const today = new Date().toDateString();
-  const todayCheckIns = checkedInGuests.filter((guest: any) => {
-    const checkInDate = new Date(guest.checkInTime).toDateString();
-    return checkInDate === today;
-  });
-  
-  // Today's check-outs
-  const todayCheckOuts = checkOutHistory.filter((guest: any) => {
-    if (!guest.checkOutTime) return false;
-    const checkOutDate = new Date(guest.checkOutTime).toDateString();
-    return checkOutDate === today;
+  interface DashboardStats {
+    inHouse: number;
+    available: number;
+    arrivals: number;
+    departed: number;
+  }
+
+  const [stats, setStats] = useState<DashboardStats>({
+    inHouse: 0,
+    available: 60,
+    arrivals: 0,
+    departed: 0,
   });
 
-  const stats = {
-    occupied: checkedInGuests.length,
-    available: 60 - checkedInGuests.length, // Assuming 60 total rooms
-    arrivals: todayCheckIns.length,
-    departures: todayCheckOuts.length
-  };
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadStats = async () => {
+      try {
+        const res = await fetch('/api/admin/dashboard-stats');
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (!data.success || !data.stats || cancelled) return;
+        const next = data.stats as {
+          inHouse?: number;
+          available?: number;
+          arrivalsToday?: number;
+          departedToday?: number;
+        };
+        setStats({
+          inHouse: Math.max(0, Number(next.inHouse ?? 0)),
+          available: Math.max(0, Number(next.available ?? 0)),
+          arrivals: Math.max(0, Number(next.arrivalsToday ?? 0)),
+          departed: Math.max(0, Number(next.departedToday ?? 0)),
+        });
+      } catch {
+        // Keep last known stats on transient errors.
+      }
+    };
+
+    loadStats();
+    const localId = setInterval(loadStats, 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(localId);
+    };
+  }, []);
 
   return (
     <div>
@@ -354,10 +533,10 @@ function DashboardTab({ firestoreStatus }: { firestoreStatus: FirebaseStatus | n
         gap: 'clamp(15px, 2vw, 25px)',
         marginBottom: 'clamp(20px, 3vw, 40px)'
       }}>
-        <StatCard icon="✓" label="Occupied" value={stats.occupied} color="#10b981" />
+        <StatCard icon="✓" label="In House" value={stats.inHouse} color="#10b981" />
         <StatCard icon="🏠" label="Available" value={stats.available} color="#3b82f6" />
         <StatCard icon="↓" label="Arrivals Today" value={stats.arrivals} color="#f59e0b" />
-        <StatCard icon="↑" label="Departures Today" value={stats.departures} color="#8b5cf6" />
+        <StatCard icon="↑" label="Departed" value={stats.departed} color="#8b5cf6" />
       </div>
 
       {/* System Status */}
