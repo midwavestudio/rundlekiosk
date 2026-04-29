@@ -107,6 +107,11 @@ export async function PATCH(request: NextRequest) {
     if (body.cloudbedsReservationID !== undefined) updates.cloudbedsReservationID = String(body.cloudbedsReservationID);
     if (body.cloudbedsGuestID !== undefined) updates.cloudbedsGuestID = String(body.cloudbedsGuestID);
     if (body.roomNumber !== undefined) updates.roomNumber = String(body.roomNumber);
+    if (body.firstName !== undefined) updates.firstName = String(body.firstName);
+    if (body.lastName !== undefined) updates.lastName = String(body.lastName);
+    if (body.clcNumber !== undefined) updates.clcNumber = String(body.clcNumber);
+    if (body.phoneNumber !== undefined) updates.phoneNumber = String(body.phoneNumber);
+    if (body.class !== undefined) updates.class = String(body.class);
 
     await updateCheckinRecord(id, updates);
     return NextResponse.json({ success: true, id });

@@ -11,6 +11,7 @@ import TyePlaceholdersTab from './TyePlaceholdersTab';
 import FeedbackTab from './FeedbackTab';
 import EventLogTab from './EventLogTab';
 import { loadReadEventIds, markEventsRead } from '@/lib/event-log-read';
+import { loadReadFeedbackIds, markFeedbacksRead } from '@/lib/feedback-read';
 
 interface DashboardProps {
   user: User;
@@ -27,12 +28,17 @@ interface EventLogEntry {
   id: string;
 }
 
+interface FeedbackEntry {
+  id: string;
+}
+
 export default function Dashboard({ user, onLogout }: DashboardProps) {
   const [activeTab, setActiveTab] = useState<
     'dashboard' | 'arrivals' | 'departures' | 'tye-placeholders' | 'feedback' | 'event-log'
   >('dashboard');
   const [firestoreStatus, setFirestoreStatus] = useState<FirebaseStatus | null>(null);
   const [eventLogUnreadCount, setEventLogUnreadCount] = useState(0);
+  const [feedbackUnreadCount, setFeedbackUnreadCount] = useState(0);
 
   useEffect(() => {
     fetch('/api/admin/firebase-status')
@@ -74,6 +80,31 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+
+    const refreshFeedbackBadge = async () => {
+      try {
+        const res = await fetch('/api/feedback');
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        const messages: FeedbackEntry[] = Array.isArray(data.messages) ? data.messages : [];
+        const readIds = loadReadFeedbackIds();
+        const unread = messages.reduce((count, m) => (readIds.has(m.id) ? count : count + 1), 0);
+        if (!cancelled) setFeedbackUnreadCount(unread);
+      } catch {
+        // Ignore transient fetch errors and keep prior badge count.
+      }
+    };
+
+    refreshFeedbackBadge();
+    const pollId = setInterval(refreshFeedbackBadge, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(pollId);
+    };
+  }, []);
+
+  useEffect(() => {
     if (activeTab !== 'event-log') return;
 
     let cancelled = false;
@@ -98,6 +129,34 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
     };
 
     markVisibleErrorsAsRead();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab !== 'feedback') return;
+
+    let cancelled = false;
+    const markVisibleFeedbackAsRead = async () => {
+      try {
+        const res = await fetch('/api/feedback');
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        const messages: FeedbackEntry[] = Array.isArray(data.messages) ? data.messages : [];
+        if (messages.length === 0 || cancelled) {
+          if (!cancelled) setFeedbackUnreadCount(0);
+          return;
+        }
+        const existingRead = loadReadFeedbackIds();
+        markFeedbacksRead(messages.map((m) => m.id), existingRead);
+        if (!cancelled) setFeedbackUnreadCount(0);
+      } catch {
+        // Non-fatal; badge will refresh on next poll.
+      }
+    };
+
+    markVisibleFeedbackAsRead();
     return () => {
       cancelled = true;
     };
@@ -299,6 +358,26 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
                     title={`${eventLogUnreadCount} new errors`}
                   >
                     {eventLogUnreadCount}
+                  </span>
+                )}
+                {tab === 'feedback' && feedbackUnreadCount > 0 && (
+                  <span
+                    style={{
+                      minWidth: '20px',
+                      height: '20px',
+                      borderRadius: '999px',
+                      background: '#dc2626',
+                      color: 'white',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      lineHeight: '20px',
+                      padding: '0 6px',
+                      textAlign: 'center',
+                    }}
+                    aria-label={`${feedbackUnreadCount} new feedback messages`}
+                    title={`${feedbackUnreadCount} new feedback messages`}
+                  >
+                    {feedbackUnreadCount}
                   </span>
                 )}
               </button>

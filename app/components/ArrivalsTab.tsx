@@ -43,6 +43,15 @@ interface Row {
   rawData: CheckedInGuest;
 }
 
+interface EditGuestForm {
+  firstName: string;
+  lastName: string;
+  phoneNumber: string;
+  clcNumber: string;
+  class: 'TYE' | 'MOW';
+  roomNumber: string;
+}
+
 interface RoomDirectoryEntry {
   roomID: string;
   roomName: string;
@@ -181,6 +190,8 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
   const [roomNameById, setRoomNameById] = useState<Record<string, string>>({});
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedRow, setSelectedRow] = useState<Row | null>(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editForm, setEditForm] = useState<EditGuestForm | null>(null);
 
   /** Which calendar day’s check-ins to list (local) — defaults to today. */
   const [selectedDate, setSelectedDate] = useState<string>(() => localYmd(new Date()));
@@ -355,6 +366,22 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
     }
   }, [filteredRows, selectedRow]);
 
+  useEffect(() => {
+    if (!selectedRow) {
+      setIsEditing(false);
+      setEditForm(null);
+      return;
+    }
+    setEditForm({
+      firstName: selectedRow.firstName || '',
+      lastName: selectedRow.lastName || '',
+      phoneNumber: selectedRow.phoneNumber === '—' ? '' : selectedRow.phoneNumber || '',
+      clcNumber: selectedRow.clcNumber === '—' ? '' : selectedRow.clcNumber || '',
+      class: selectedRow.class === 'MOW' ? 'MOW' : 'TYE',
+      roomNumber: selectedRow.rawData.roomNumber || '',
+    });
+  }, [selectedRow]);
+
   const exportRows = useMemo(() => {
     if (!exportFrom || !exportTo) return rows;
     const from = new Date(exportFrom + 'T00:00:00');
@@ -418,6 +445,82 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
       if (onDelete) onDelete(row);
     } catch (err: any) {
       alert(`Delete failed: ${err.message}`);
+    }
+  };
+
+  const handleSaveEdit = async () => {
+    if (!selectedRow || !editForm) return;
+
+    const nextGuest: CheckedInGuest = {
+      ...selectedRow.rawData,
+      firstName: editForm.firstName.trim(),
+      lastName: editForm.lastName.trim(),
+      phoneNumber: editForm.phoneNumber.trim(),
+      clcNumber: editForm.clcNumber.trim(),
+      class: editForm.class,
+      roomNumber: editForm.roomNumber.trim(),
+    };
+
+    const matchGuest = (g: CheckedInGuest) => {
+      if (
+        selectedRow.rawData.cloudbedsReservationID &&
+        g.cloudbedsReservationID === selectedRow.rawData.cloudbedsReservationID
+      ) {
+        return true;
+      }
+      return (
+        g.firstName === selectedRow.rawData.firstName &&
+        g.lastName === selectedRow.rawData.lastName &&
+        g.checkInTime === selectedRow.rawData.checkInTime &&
+        g.checkOutTime === selectedRow.rawData.checkOutTime
+      );
+    };
+
+    if (selectedRow.fromHistory) {
+      const updated = checkOutHistory.map((g) => (matchGuest(g) ? nextGuest : g));
+      setCheckOutHistory(updated);
+      localStorage.setItem('checkOutHistory', JSON.stringify(updated));
+    } else {
+      const updated = checkedInGuests.map((g) => (matchGuest(g) ? nextGuest : g));
+      setCheckedInGuests(updated);
+      localStorage.setItem('checkedInGuests', JSON.stringify(updated));
+    }
+
+    setSelectedRow((prev) =>
+      prev
+        ? {
+            ...prev,
+            firstName: nextGuest.firstName,
+            lastName: nextGuest.lastName,
+            guestName: `${nextGuest.firstName} ${nextGuest.lastName}`.trim(),
+            phoneNumber: nextGuest.phoneNumber || '—',
+            clcNumber: nextGuest.clcNumber || '—',
+            class: nextGuest.class || '—',
+            roomNumber: resolveRoomNumberLabel(nextGuest.roomNumber, roomNameById),
+            rawData: nextGuest,
+          }
+        : prev
+    );
+
+    setIsEditing(false);
+
+    if (selectedRow.rawData._serverId || selectedRow.rawData.cloudbedsReservationID) {
+      fetch('/api/checkin-records', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...(selectedRow.rawData._serverId ? { id: selectedRow.rawData._serverId } : {}),
+          ...(selectedRow.rawData.cloudbedsReservationID
+            ? { reservationID: selectedRow.rawData.cloudbedsReservationID }
+            : {}),
+          firstName: nextGuest.firstName,
+          lastName: nextGuest.lastName,
+          phoneNumber: nextGuest.phoneNumber,
+          clcNumber: nextGuest.clcNumber,
+          class: nextGuest.class,
+          roomNumber: nextGuest.roomNumber,
+        }),
+      }).catch(() => {});
     }
   };
 
@@ -680,26 +783,83 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
             </div>
 
             {/* Fields */}
-            {[
-              { label: 'Full Name', value: selectedRow.guestName },
-              { label: 'Phone Number', value: selectedRow.phoneNumber },
-              { label: 'CLC Number', value: selectedRow.clcNumber },
-              { label: 'Room', value: selectedRow.roomNumber },
-              { label: 'Class', value: selectedRow.class },
-              { label: 'Signed In', value: `${selectedRow.checkInDate}, ${selectedRow.checkInTime}` },
-              ...(selectedRow.checkOutIso
-                ? [{ label: 'Checked Out', value: `${fmtDate(selectedRow.checkOutIso)}, ${fmtTime(selectedRow.checkOutIso)}` }]
-                : []),
-              ...(selectedRow.cloudbedsReservationID ? [{ label: 'Reservation ID', value: selectedRow.cloudbedsReservationID }] : []),
-            ].map(({ label, value }) => (
-              <div key={label}>
-                <div style={{ fontSize: '11px', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '4px' }}>{label}</div>
-                <div style={{ padding: '8px 12px', border: '1px solid #e5e7eb', borderRadius: '6px', fontSize: '14px', color: '#374151', background: '#fafafa', wordBreak: 'break-all' }}>{value}</div>
-              </div>
-            ))}
+            {isEditing && editForm ? (
+              <>
+                {[
+                  { label: 'First Name', key: 'firstName' as const },
+                  { label: 'Last Name', key: 'lastName' as const },
+                  { label: 'Phone Number', key: 'phoneNumber' as const },
+                  { label: 'CLC Number', key: 'clcNumber' as const },
+                  { label: 'Room', key: 'roomNumber' as const },
+                ].map(({ label, key }) => (
+                  <div key={label}>
+                    <div style={{ fontSize: '11px', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '4px' }}>{label}</div>
+                    <input
+                      value={editForm[key]}
+                      onChange={(e) => setEditForm((prev) => (prev ? { ...prev, [key]: e.target.value } : prev))}
+                      style={{ width: '100%', padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '14px', color: '#374151' }}
+                    />
+                  </div>
+                ))}
+                <div>
+                  <div style={{ fontSize: '11px', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '4px' }}>Class</div>
+                  <select
+                    value={editForm.class}
+                    onChange={(e) => setEditForm((prev) => (prev ? { ...prev, class: e.target.value as 'TYE' | 'MOW' } : prev))}
+                    style={{ width: '100%', padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '14px', color: '#374151' }}
+                  >
+                    <option value="TYE">TYE</option>
+                    <option value="MOW">MOW</option>
+                  </select>
+                </div>
+              </>
+            ) : (
+              <>
+                {[
+                { label: 'Full Name', value: selectedRow.guestName },
+                { label: 'Phone Number', value: selectedRow.phoneNumber },
+                { label: 'CLC Number', value: selectedRow.clcNumber },
+                { label: 'Room', value: selectedRow.roomNumber },
+                { label: 'Class', value: selectedRow.class },
+                { label: 'Signed In', value: `${selectedRow.checkInDate}, ${selectedRow.checkInTime}` },
+                ...(selectedRow.checkOutIso
+                  ? [{ label: 'Checked Out', value: `${fmtDate(selectedRow.checkOutIso)}, ${fmtTime(selectedRow.checkOutIso)}` }]
+                  : []),
+                ...(selectedRow.cloudbedsReservationID ? [{ label: 'Reservation ID', value: selectedRow.cloudbedsReservationID }] : []),
+              ].map(({ label, value }) => (
+                <div key={label}>
+                  <div style={{ fontSize: '11px', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '4px' }}>{label}</div>
+                  <div style={{ padding: '8px 12px', border: '1px solid #e5e7eb', borderRadius: '6px', fontSize: '14px', color: '#374151', background: '#fafafa', wordBreak: 'break-all' }}>{value}</div>
+                </div>
+              ))}
+              </>
+            )}
 
             {/* Actions */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px' }}>
+              {isEditing ? (
+                <>
+                  <button
+                    onClick={handleSaveEdit}
+                    style={{ padding: '10px', background: '#16a34a', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 600, fontSize: '14px' }}
+                  >
+                    Save Changes
+                  </button>
+                  <button
+                    onClick={() => setIsEditing(false)}
+                    style={{ padding: '10px', background: 'white', color: '#374151', border: '1px solid #d1d5db', borderRadius: '8px', cursor: 'pointer', fontWeight: 600, fontSize: '14px' }}
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={() => setIsEditing(true)}
+                  style={{ padding: '10px', background: '#f59e0b', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 600, fontSize: '14px' }}
+                >
+                  Edit Guest
+                </button>
+              )}
               {!selectedRow.fromHistory && (
               <button
                 onClick={() => onCheckIn({ ...selectedRow, rawData: selectedRow.rawData })}
