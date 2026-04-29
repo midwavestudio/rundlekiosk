@@ -361,6 +361,8 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
                 <span>
                   {tab === 'tye-placeholders'
                       ? 'Blocks'
+                      : tab === 'feedback'
+                        ? 'Messages'
                       : tab === 'event-log'
                         ? 'Error Log'
                         : tab}

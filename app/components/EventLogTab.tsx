@@ -14,6 +14,19 @@ interface EventLogEntry {
   occurredAt: string;
 }
 
+function dedupeEvents(entries: EventLogEntry[]): EventLogEntry[] {
+  const seen = new Set<string>();
+  const unique: EventLogEntry[] = [];
+  for (const ev of entries) {
+    // Collapse repeated logs with same source + message + structured detail.
+    const key = `${ev.source}||${ev.message}||${ev.detailJson ?? ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(ev);
+  }
+  return unique;
+}
+
 const LEVEL_STYLE: Record<string, { bg: string; color: string }> = {
   error: { bg: '#fee2e2', color: '#991b1b' },
   warn: { bg: '#fef3c7', color: '#92400e' },
@@ -22,6 +35,35 @@ const LEVEL_STYLE: Record<string, { bg: string; color: string }> = {
 
 function decodeBasicEntities(text: string): string {
   return text.replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
+}
+
+function simplifyErrorMessage(message: string): string {
+  const msg = decodeBasicEntities(message || '');
+  if (!msg) return 'Unexpected system error.';
+
+  const rules: Array<{ pattern: RegExp; replacement: string }> = [
+    {
+      pattern: /Invalid Parameter Format:\s*rooms\[0\]\[room\s*TypeID\]\s*is required\./i,
+      replacement: 'Overbooking: selected room type is unavailable.',
+    },
+    {
+      pattern: /could not accommodate your request|room .* not available|not available for/i,
+      replacement: 'Overbooking: selected room is not available.',
+    },
+    {
+      pattern: /remaining balance|collect the full amount|prior to checking in/i,
+      replacement: 'Payment required before check-in.',
+    },
+    {
+      pattern: /failed to delete from cloudbeds|cloudbeds delete/i,
+      replacement: 'Could not delete reservation in Cloudbeds.',
+    },
+  ];
+
+  for (const rule of rules) {
+    if (rule.pattern.test(msg)) return rule.replacement;
+  }
+  return msg;
 }
 
 const btnSecondary: CSSProperties = {
@@ -53,7 +95,8 @@ export default function EventLogTab() {
       const res = await fetch('/api/event-log?limit=250');
       if (!res.ok) throw new Error('Failed to load');
       const data = await res.json();
-      setEvents(data.events ?? []);
+      const raw: EventLogEntry[] = Array.isArray(data.events) ? data.events : [];
+      setEvents(dedupeEvents(raw));
     } catch {
       setError('Could not load the error log. Try again.');
     } finally {
@@ -226,7 +269,7 @@ export default function EventLogTab() {
                       <span style={{ fontSize: '12px', color: '#555', fontFamily: 'ui-monospace, monospace' }}>{ev.source}</span>
                     </div>
                     <div style={{ fontSize: '15px', color: isRead ? '#4b5563' : '#111', lineHeight: 1.45 }}>
-                      {decodeBasicEntities(ev.message)}
+                      {simplifyErrorMessage(ev.message)}
                     </div>
                     <span style={{ fontSize: '12px', color: '#999' }}>{expanded ? 'Hide detail ▲' : 'Show detail ▼'}</span>
                   </button>

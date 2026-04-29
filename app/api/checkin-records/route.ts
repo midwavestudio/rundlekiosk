@@ -145,12 +145,15 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
+    let deleted = false;
     if (id) {
       await deleteCheckinRecord(id);
-      return NextResponse.json({ success: true, deleted: true });
+      deleted = true;
     }
-
-    const deleted = await deleteByReservationID(reservationID);
+    if (reservationID) {
+      const byReservation = await deleteByReservationID(reservationID);
+      deleted = deleted || byReservation;
+    }
     return NextResponse.json({ success: true, deleted });
   } catch (err: any) {
     console.error('[checkin-records DELETE]', err);

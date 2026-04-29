@@ -293,12 +293,29 @@ export async function findByReservationID(
   return memStore.find((r) => r.cloudbedsReservationID === reservationID) ?? null;
 }
 
-/** Delete first matching record by Cloudbeds reservation ID. */
+/** Delete all matching records by Cloudbeds reservation ID. */
 export async function deleteByReservationID(reservationID: string): Promise<boolean> {
-  const existing = await findByReservationID(reservationID);
-  if (!existing) return false;
-  await deleteCheckinRecord(existing.id);
-  return true;
+  const db = getDb();
+  if (db) {
+    try {
+      const snap = await db
+        .collection(COLLECTION)
+        .where('cloudbedsReservationID', '==', reservationID)
+        .get();
+      if (snap.empty) return false;
+      const batch = db.batch();
+      for (const doc of snap.docs) batch.delete(doc.ref);
+      await batch.commit();
+      return true;
+    } catch (err) {
+      console.error('[checkin-store] deleteByReservationID failed in Firestore — deleting in-memory.', err);
+    }
+  }
+  const before = memStore.length;
+  for (let i = memStore.length - 1; i >= 0; i--) {
+    if (memStore[i].cloudbedsReservationID === reservationID) memStore.splice(i, 1);
+  }
+  return memStore.length < before;
 }
 
 /**

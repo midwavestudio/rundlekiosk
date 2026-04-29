@@ -86,7 +86,7 @@ export default function FeedbackTab() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px', flexWrap: 'wrap', gap: '12px' }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 'clamp(20px, 2.5vw, 28px)', color: '#333' }}>
-            Guest Feedback
+            Messages
             {unreadCount > 0 && (
               <span style={{
                 marginLeft: '10px',
@@ -183,6 +183,7 @@ export default function FeedbackTab() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           {filtered.map((msg) => {
             const isExpanded = expandedId === msg.id;
+            const isRead = readIds.has(msg.id);
             const sc = STATUS_COLORS[msg.status];
             const date = new Date(msg.submittedAt).toLocaleString('en-US', {
               month: 'short', day: 'numeric', year: 'numeric',
@@ -193,10 +194,10 @@ export default function FeedbackTab() {
               <div
                 key={msg.id}
                 style={{
-                  border: msg.status === 'new' ? `2px solid #f59e0b` : '2px solid #e5e7eb',
+                  border: isRead ? '2px solid #e5e7eb' : `2px solid #f59e0b`,
                   borderRadius: '12px',
                   overflow: 'hidden',
-                  background: 'white',
+                  background: isRead ? '#fafafa' : 'white',
                   transition: 'box-shadow 0.2s',
                   boxShadow: isExpanded ? '0 4px 20px rgba(0,0,0,0.1)' : 'none',
                 }}

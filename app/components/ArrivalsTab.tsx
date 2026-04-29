@@ -708,7 +708,6 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
             <div style={{ flex: '2 1 0', minWidth: '120px', padding: '0 12px', fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Name</div>
             <div style={{ flex: '1 1 0', minWidth: '90px', padding: '0 12px', fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>CLC Number</div>
             <div style={{ flex: '1 1 0', minWidth: '80px', padding: '0 12px', fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Room</div>
-            <div style={{ flex: '0.7 1 0', minWidth: '60px', padding: '0 12px', fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Class</div>
             <div style={{ flex: '1.5 1 0', minWidth: '140px', padding: '0 12px', fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Check-in</div>
             <div style={{ flex: '1.5 1 0', minWidth: '140px', padding: '0 12px', fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Check-out</div>
             <div style={{ width: '48px', flexShrink: 0 }} />
@@ -759,9 +758,6 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
 
                     <div style={{ flex: '1 1 0', minWidth: '90px', padding: '0 12px', fontSize: '14px', color: '#374151' }}>{row.clcNumber}</div>
                     <div style={{ flex: '1 1 0', minWidth: '80px', padding: '0 12px', fontSize: '14px', color: '#374151', fontWeight: 500 }}>{row.roomNumber}</div>
-                    <div style={{ flex: '0.7 1 0', minWidth: '60px', padding: '0 12px' }}>
-                      <span style={{ fontSize: '12px', fontWeight: 600, padding: '2px 8px', borderRadius: '12px', background: '#fef3c7', color: '#92400e' }}>{row.class}</span>
-                    </div>
                     <div style={{ flex: '1.5 1 0', minWidth: '140px', padding: '0 12px', fontSize: '13px', color: '#374151' }}>
                       <span style={{ whiteSpace: 'nowrap' }}>{row.checkInDate}</span>
                       <span style={{ color: '#9ca3af', margin: '0 4px' }}>·</span>
