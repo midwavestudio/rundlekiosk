@@ -141,6 +141,18 @@ button:disabled {
   transform: none;
 }
 
+/* Admin dashboard uses many inline-styled utility buttons/tabs.
+   Reset the login-form global button sizing/effects inside admin shell. */
+.admin-dashboard-shell button {
+  width: auto;
+}
+
+.admin-dashboard-shell button:hover,
+.admin-dashboard-shell button:active {
+  transform: none;
+  box-shadow: none;
+}
+
 .error {
   background: #fee;
   color: #c33;

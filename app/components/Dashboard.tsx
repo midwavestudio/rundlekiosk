@@ -10,7 +10,7 @@ import CheckOutModal from './CheckOutModal';
 import TyePlaceholdersTab from './TyePlaceholdersTab';
 import FeedbackTab from './FeedbackTab';
 import EventLogTab from './EventLogTab';
-import { loadReadEventIds, markEventsRead } from '@/lib/event-log-read';
+import { loadReadEventIds, markEventsRead, recordErrorLogVisit, loadErrorLogLastVisited } from '@/lib/event-log-read';
 import { loadReadFeedbackIds, markFeedbacksRead } from '@/lib/feedback-read';
 
 interface DashboardProps {
@@ -26,6 +26,7 @@ interface FirebaseStatus {
 
 interface EventLogEntry {
   id: string;
+  occurredAt?: string;
 }
 
 interface FeedbackEntry {
@@ -64,7 +65,15 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
         const events: EventLogEntry[] = Array.isArray(data.events) ? data.events : [];
 
         const readIds = loadReadEventIds();
-        const unread = events.reduce((count, ev) => (readIds.has(ev.id) ? count : count + 1), 0);
+        const lastVisited = loadErrorLogLastVisited();
+        const lastVisitedTime = lastVisited ? new Date(lastVisited).getTime() : null;
+
+        const unread = events.reduce((count, ev) => {
+          if (readIds.has(ev.id)) return count;
+          // Treat events that existed before the last visit as already seen
+          if (lastVisitedTime && new Date(ev.occurredAt ?? 0).getTime() <= lastVisitedTime) return count;
+          return count + 1;
+        }, 0);
         if (!cancelled) setEventLogUnreadCount(unread);
       } catch {
         // Ignore transient fetch errors and keep prior badge count.
@@ -107,6 +116,10 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
   useEffect(() => {
     if (activeTab !== 'event-log') return;
 
+    // Record the visit so the badge knows events up to now are not "new"
+    recordErrorLogVisit();
+    setEventLogUnreadCount(0);
+
     let cancelled = false;
 
     const markVisibleErrorsAsRead = async () => {
@@ -115,16 +128,12 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
         if (!res.ok || cancelled) return;
         const data = await res.json();
         const events: EventLogEntry[] = Array.isArray(data.events) ? data.events : [];
-        if (events.length === 0 || cancelled) {
-          if (!cancelled) setEventLogUnreadCount(0);
-          return;
-        }
+        if (events.length === 0 || cancelled) return;
 
         const existingRead = loadReadEventIds();
         markEventsRead(events.map((ev) => ev.id), existingRead);
-        if (!cancelled) setEventLogUnreadCount(0);
       } catch {
-        // Non-fatal; badge will refresh on next poll.
+        // Non-fatal; IDs will still be excluded by the timestamp cutoff.
       }
     };
 
@@ -202,9 +211,9 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
           width: '100%',
           margin: '0 auto',
           background: 'white',
-          borderRadius: '20px',
+          borderRadius: '16px',
           overflow: 'hidden',
-          boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3)',
+          boxShadow: '0 8px 32px rgba(0, 0, 0, 0.18), 0 2px 8px rgba(0,0,0,0.08)',
           height: wideGuestTab ? 'calc(100vh - 16px)' : 'calc(100vh - 30px)',
           display: 'flex',
           flexDirection: 'column'
@@ -212,13 +221,14 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
           {/* Header */}
           <div style={{
             background: ADMIN_GRADIENT,
-            padding: '20px 30px',
+            padding: '14px 24px',
             color: 'white',
             display: 'flex',
             justifyContent: 'space-between',
-            alignItems: 'center'
+            alignItems: 'center',
+            gap: '12px',
           }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
               <a
                 href="/"
                 title="Back to guest kiosk"
@@ -226,25 +236,26 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
                   display: 'inline-flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  width: '38px',
-                  height: '38px',
+                  width: '34px',
+                  height: '34px',
                   borderRadius: '9999px',
-                  border: '2px solid rgba(255,255,255,0.85)',
+                  border: '1.5px solid rgba(255,255,255,0.7)',
                   color: 'white',
                   textDecoration: 'none',
-                  background: 'rgba(255,255,255,0.12)',
-                  fontSize: '20px',
+                  background: 'rgba(255,255,255,0.1)',
+                  fontSize: '18px',
                   lineHeight: 1,
                   fontWeight: 700,
                   flexShrink: 0,
+                  transition: 'background 0.15s',
                 }}
                 aria-label="Back to guest kiosk"
               >
                 ←
               </a>
               <div>
-                <h1 style={{ margin: 0, fontSize: '24px' }}>🏨 Rundle Kiosk</h1>
-                <p style={{ margin: '5px 0 0 0', opacity: 0.9, fontSize: '14px' }}>
+                <h1 style={{ margin: 0, fontSize: '20px', fontWeight: 700, letterSpacing: '-0.01em' }}>Rundle Kiosk</h1>
+                <p style={{ margin: '2px 0 0', opacity: 0.75, fontSize: '12px', letterSpacing: '0.01em' }}>
                   {user.email}
                 </p>
               </div>
@@ -252,16 +263,21 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
             <button
               onClick={onLogout}
               style={{
-                background: 'rgba(255,255,255,0.2)',
-                color: 'white',
-                border: '2px solid white',
-                padding: '10px 20px',
-                borderRadius: '8px',
+                width: 'auto',
+                background: 'rgba(255,255,255,0.12)',
+                color: 'rgba(255,255,255,0.92)',
+                border: '1px solid rgba(255,255,255,0.4)',
+                padding: '6px 14px',
+                borderRadius: '6px',
                 cursor: 'pointer',
-                fontSize: '14px'
+                fontSize: '13px',
+                fontWeight: 500,
+                letterSpacing: '0.01em',
+                whiteSpace: 'nowrap',
+                transition: 'background 0.15s',
               }}
             >
-              Sign Out
+              Sign out
             </button>
           </div>
 
@@ -335,37 +351,43 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
           {/* Tabs */}
           <div style={{
             display: 'flex',
-            borderBottom: '2px solid #f0f0f0',
-            padding: '0 20px'
+            borderBottom: '1px solid #e8e8e8',
+            padding: '0 20px',
+            background: '#fafafa',
+            overflowX: 'auto',
           }}>
             {['dashboard', 'arrivals', 'departures', 'tye-placeholders', 'feedback', 'event-log'].map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab as any)}
                 style={{
-                  padding: '15px 25px',
+                  width: 'auto',
+                  padding: '12px 18px',
                   background: 'transparent',
                   border: 'none',
-                  borderBottom: activeTab === tab ? `3px solid ${ADMIN_ACCENT}` : '3px solid transparent',
-                  color: activeTab === tab ? ADMIN_ACCENT : '#666',
-                  fontWeight: activeTab === tab ? '600' : '400',
+                  borderBottom: activeTab === tab ? `2px solid ${ADMIN_ACCENT}` : '2px solid transparent',
+                  color: activeTab === tab ? ADMIN_ACCENT : '#6b7280',
+                  fontWeight: activeTab === tab ? 600 : 400,
                   cursor: 'pointer',
-                  textTransform: 'capitalize',
-                  fontSize: '16px',
-                  transition: 'all 0.3s',
+                  fontSize: '14px',
+                  transition: 'color 0.15s',
                   display: 'inline-flex',
                   alignItems: 'center',
-                  gap: '8px',
+                  gap: '7px',
+                  whiteSpace: 'nowrap',
+                  flexShrink: 0,
                 }}
               >
                 <span>
                   {tab === 'tye-placeholders'
-                      ? 'Blocks'
-                      : tab === 'feedback'
-                        ? 'Messages'
+                    ? 'Blocks'
+                    : tab === 'feedback'
+                      ? 'Messages'
                       : tab === 'event-log'
                         ? 'Error Log'
-                        : tab}
+                        : tab === 'dashboard'
+                          ? 'Dashboard'
+                          : tab.charAt(0).toUpperCase() + tab.slice(1)}
                 </span>
                 {tab === 'event-log' && eventLogUnreadCount > 0 && (
                   <span
@@ -523,32 +545,34 @@ function DashboardTab({ firestoreStatus }: { firestoreStatus: FirebaseStatus | n
   return (
     <div>
       <h2 style={{ 
-        marginBottom: 'clamp(20px, 3vw, 40px)', 
-        color: '#333',
-        fontSize: 'clamp(24px, 3vw, 32px)'
-      }}>Dashboard Overview</h2>
+        marginBottom: 'clamp(16px, 2.5vw, 32px)', 
+        color: '#111',
+        fontSize: 'clamp(20px, 2.5vw, 26px)',
+        fontWeight: 700,
+        letterSpacing: '-0.01em',
+      }}>Overview</h2>
       
       {/* Stats Grid */}
       <div style={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(min(200px, 100%), 1fr))',
-        gap: 'clamp(15px, 2vw, 25px)',
-        marginBottom: 'clamp(20px, 3vw, 40px)'
+        gridTemplateColumns: 'repeat(auto-fit, minmax(min(180px, 100%), 1fr))',
+        gap: 'clamp(12px, 1.5vw, 20px)',
+        marginBottom: 'clamp(16px, 2.5vw, 32px)',
       }}>
-        <StatCard icon="✓" label="In House" value={stats.inHouse} color="#10b981" />
-        <StatCard icon="🏠" label="Available" value={stats.available} color="#3b82f6" />
-        <StatCard icon="↓" label="Arrivals Today" value={stats.arrivals} color="#f59e0b" />
-        <StatCard icon="↑" label="Departed" value={stats.departed} color="#8b5cf6" />
+        <StatCard label="In House" value={stats.inHouse} color="#10b981" />
+        <StatCard label="Available" value={stats.available} color="#3b82f6" />
+        <StatCard label="Arrivals Today" value={stats.arrivals} color="#f59e0b" />
+        <StatCard label="Departed Today" value={stats.departed} color="#8b5cf6" />
       </div>
 
       {/* System Status */}
       <div style={{
-        background: '#f9fafb',
-        padding: '20px',
+        background: '#f8f9fa',
+        border: '1px solid #eaecef',
+        padding: '20px 24px',
         borderRadius: '12px',
-        marginTop: '20px'
       }}>
-        <h3 style={{ marginBottom: '15px', color: '#333' }}>System Status</h3>
+        <h3 style={{ margin: '0 0 14px', color: '#374151', fontSize: '14px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>System Status</h3>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           <StatusRow label="Cloudbeds PMS" status="Connected" />
           <StatusRow label="CLC Portal" status="Demo Mode" warning />
@@ -560,7 +584,7 @@ function DashboardTab({ firestoreStatus }: { firestoreStatus: FirebaseStatus | n
                 ? 'Checking…'
                 : firestoreStatus.connected
                   ? 'Connected'
-                  : 'NOT CONNECTED'
+                  : 'Not Connected'
             }
             warning={firestoreStatus !== null && !firestoreStatus.connected}
             error={firestoreStatus !== null && !firestoreStatus.connected}
@@ -571,30 +595,28 @@ function DashboardTab({ firestoreStatus }: { firestoreStatus: FirebaseStatus | n
   );
 }
 
-function StatCard({ icon, label, value, color }: any) {
+function StatCard({ label, value, color }: { label: string; value: number; color: string }) {
   return (
     <div style={{
       background: 'white',
-      border: `2px solid ${color}20`,
-      borderRadius: '12px',
-      padding: 'clamp(16px, 2.5vw, 28px)',
-      textAlign: 'center',
-      minHeight: '140px',
+      border: '1px solid #eaecef',
+      borderTop: `3px solid ${color}`,
+      borderRadius: '10px',
+      padding: 'clamp(14px, 2vw, 22px)',
       display: 'flex',
       flexDirection: 'column',
-      justifyContent: 'center'
+      gap: '6px',
     }}>
-      <div style={{ fontSize: 'clamp(28px, 4vw, 40px)', marginBottom: '10px' }}>{icon}</div>
+      <div style={{ fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
       <div style={{ 
-        fontSize: 'clamp(32px, 5vw, 48px)', 
-        fontWeight: 'bold', 
+        fontSize: 'clamp(28px, 4vw, 40px)', 
+        fontWeight: 700, 
         color, 
-        marginBottom: '5px',
-        lineHeight: 1
+        lineHeight: 1,
+        letterSpacing: '-0.02em',
       }}>
         {value}
       </div>
-      <div style={{ fontSize: 'clamp(13px, 1.5vw, 16px)', color: '#666' }}>{label}</div>
     </div>
   );
 }

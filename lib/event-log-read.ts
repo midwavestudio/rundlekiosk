@@ -1,6 +1,7 @@
 /** Browser persistence for which error-log entries the admin has marked as read. */
 
 const STORAGE_KEY = 'rundlekiosk_event_log_read_ids';
+const LAST_VISITED_KEY = 'rundlekiosk_event_log_last_visited';
 const MAX_IDS = 4000;
 
 export function loadReadEventIds(): Set<string> {
@@ -39,4 +40,29 @@ export function markEventsRead(ids: Iterable<string>, current: Set<string>): Set
   for (const id of ids) next.add(id);
   persistReadEventIds(next);
   return next;
+}
+
+/**
+ * Record the ISO timestamp of when the admin last visited the error log tab.
+ * Events that occurred before this timestamp are treated as already-seen.
+ */
+export function recordErrorLogVisit(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(LAST_VISITED_KEY, new Date().toISOString());
+  } catch {
+    /* quota or private mode */
+  }
+}
+
+/**
+ * Return the ISO timestamp of the last error log visit, or null if never visited.
+ */
+export function loadErrorLogLastVisited(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return localStorage.getItem(LAST_VISITED_KEY);
+  } catch {
+    return null;
+  }
 }
