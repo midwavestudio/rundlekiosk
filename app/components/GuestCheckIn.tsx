@@ -151,7 +151,17 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
       void (async () => {
         // Match dropdown value (Cloudbeds roomID) to the row so we persist human roomName for lists/exports.
         const selectedRoom = availableRooms.find((r) => String(r.roomID) === String(roomNumber));
-        const checkInTime = new Date().toISOString();
+
+        // Derive all date/time values from a single anchor so checkInTime and checkInDateYmd
+        // are always consistent. Using kioskLocalDateYmd prevents UTC-offset date drift where
+        // a late-night check-in (e.g. 10:59 PM local) would produce a next-day UTC date.
+        const checkInAnchor = new Date();
+        const checkInTime = checkInAnchor.toISOString();
+        const checkInYmd = kioskLocalDateYmd(checkInAnchor);
+        const checkOutNight = new Date(checkInAnchor);
+        checkOutNight.setDate(checkOutNight.getDate() + 1);
+        const checkOutYmd = kioskLocalDateYmd(checkOutNight);
+
         const checkInData: GuestData = {
           firstName,
           lastName,
@@ -173,12 +183,6 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
 
         const roomIdentifier = selectedRoom ? selectedRoom.roomID : roomNumber;
         console.log('Checking in with room:', { roomID: roomIdentifier, roomName: selectedRoom?.roomName });
-
-        const checkInAnchor = new Date();
-        const checkOutNight = new Date(checkInAnchor);
-        checkOutNight.setDate(checkOutNight.getDate() + 1);
-        const checkInYmd = kioskLocalDateYmd(checkInAnchor);
-        const checkOutYmd = kioskLocalDateYmd(checkOutNight);
         const placeholderReservationID = selectedRoom?.placeholderReservationID;
 
         const submittedFields = {
@@ -201,7 +205,7 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
           const serverRes = await fetch('/api/checkin-records', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...checkInData, source: 'kiosk' }),
+            body: JSON.stringify({ ...checkInData, checkInDateYmd: checkInYmd, source: 'kiosk' }),
           });
           const serverData = await serverRes.json();
           if (serverData.success) serverRecordId = serverData.id as string;

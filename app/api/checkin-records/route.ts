@@ -65,6 +65,11 @@ export async function POST(request: NextRequest) {
       class: String(body.class ?? 'TYE'),
       roomNumber: String(body.roomNumber ?? ''),
       checkInTime: body.checkInTime ? String(body.checkInTime) : new Date().toISOString(),
+      // Honour the client-supplied local calendar date so late-night check-ins
+      // (e.g. 10:59 PM local) are not shifted to the next UTC calendar day.
+      ...(body.checkInDateYmd && /^\d{4}-\d{2}-\d{2}$/.test(String(body.checkInDateYmd))
+        ? { checkInDateYmd: String(body.checkInDateYmd) }
+        : {}),
       ...(body.checkOutTime ? { checkOutTime: String(body.checkOutTime) } : {}),
       ...(body.cloudbedsReservationID ? { cloudbedsReservationID: String(body.cloudbedsReservationID) } : {}),
       ...(body.cloudbedsGuestID ? { cloudbedsGuestID: String(body.cloudbedsGuestID) } : {}),

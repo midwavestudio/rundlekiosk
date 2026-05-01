@@ -25,6 +25,7 @@ interface CheckedInGuest {
 
 interface Row {
   id: string;
+  markKey: string;
   guestName: string;
   firstName: string;
   lastName: string;
@@ -172,6 +173,12 @@ function guestMatchKey(g: Pick<CheckedInGuest, 'firstName' | 'lastName' | 'check
   return `${g.firstName}|${g.lastName}|${g.checkInTime}`;
 }
 
+/** Stable key for row-level "checked visually" UI state. */
+function rowMarkKey(g: CheckedInGuest): string {
+  if (g.cloudbedsReservationID) return `res:${g.cloudbedsReservationID}`;
+  return `time:${guestMatchKey(g)}`;
+}
+
 /** Stable dedup key used to merge local + server records without duplicates. */
 function guestDedupeKey(g: CheckedInGuest): string {
   if (g.cloudbedsReservationID) return `res:${g.cloudbedsReservationID}`;
@@ -211,6 +218,16 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
   const [showExportPanel, setShowExportPanel] = useState(false);
   /** When true, list is sorted by check-in time descending (latest at top). */
   const [newestFirst, setNewestFirst] = useState(true);
+  /** Visual-only "already checked by me" marker, grouped by selected date. */
+  const [mutedRowsByDate, setMutedRowsByDate] = useState<Record<string, string[]>>(() => {
+    try {
+      const raw = localStorage.getItem('arrivalsMutedRowsByDate');
+      const parsed = raw ? JSON.parse(raw) : {};
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -313,6 +330,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
 
     const toRow = (g: CheckedInGuest, id: string, fromHistory: boolean): Row => ({
       id,
+      markKey: rowMarkKey(g),
       guestName: `${g.firstName} ${g.lastName}`.trim(),
       firstName: g.firstName,
       lastName: g.lastName,
@@ -369,6 +387,39 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
     });
     return copy;
   }, [filteredRows, newestFirst]);
+
+  const mutedMarkKeySet = useMemo(
+    () => new Set(mutedRowsByDate[selectedDate] ?? []),
+    [mutedRowsByDate, selectedDate]
+  );
+
+  const toggleMutedRow = (markKey: string) => {
+    setMutedRowsByDate((prev) => {
+      const current = new Set(prev[selectedDate] ?? []);
+      if (current.has(markKey)) current.delete(markKey);
+      else current.add(markKey);
+      const next = { ...prev, [selectedDate]: Array.from(current) };
+      try {
+        localStorage.setItem('arrivalsMutedRowsByDate', JSON.stringify(next));
+      } catch {
+        // Non-fatal: visual marker remains for this session.
+      }
+      return next;
+    });
+  };
+
+  const resetMutedRows = () => {
+    setMutedRowsByDate((prev) => {
+      if (!prev[selectedDate]?.length) return prev;
+      const next = { ...prev, [selectedDate]: [] };
+      try {
+        localStorage.setItem('arrivalsMutedRowsByDate', JSON.stringify(next));
+      } catch {
+        // Ignore storage errors; in-memory state is still reset.
+      }
+      return next;
+    });
+  };
 
   useEffect(() => {
     if (selectedRow && !filteredRows.some((r) => r.id === selectedRow.id)) {
@@ -673,6 +724,24 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
           <span aria-hidden>{newestFirst ? '↓' : '↑'}</span>
           {newestFirst ? 'Latest first' : 'Earliest first'}
         </button>
+        <button
+          type="button"
+          onClick={resetMutedRows}
+          disabled={!mutedRowsByDate[selectedDate]?.length}
+          title="Reset checked row highlight markers"
+          style={{
+            padding: '8px 14px',
+            border: '1px solid #d1d5db',
+            borderRadius: '8px',
+            background: mutedRowsByDate[selectedDate]?.length ? '#fff' : '#f3f4f6',
+            cursor: mutedRowsByDate[selectedDate]?.length ? 'pointer' : 'not-allowed',
+            fontWeight: 600,
+            fontSize: '13px',
+            color: mutedRowsByDate[selectedDate]?.length ? '#374151' : '#9ca3af',
+          }}
+        >
+          Reset Row Marks
+        </button>
       </div>
 
       {/* ── Export Panel ── */}
@@ -727,48 +796,61 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
             ) : (
               sortedFilteredRows.map((row, idx) => {
                 const isSelected = selectedRow?.id === row.id;
+                const isMuted = mutedMarkKeySet.has(row.markKey);
+                const rowBackground = isMuted
+                  ? '#e5e7eb'
+                  : isSelected
+                    ? '#eef2ff'
+                    : idx % 2 === 0
+                      ? '#fff'
+                      : '#fafafa';
+                const primaryText = isMuted ? '#6b7280' : '#111';
+                const secondaryText = isMuted ? '#9ca3af' : '#374151';
                 return (
                   <div
                     key={row.id}
                     style={{
                       display: 'flex', alignItems: 'center', padding: '10px 0',
                       borderBottom: idx < sortedFilteredRows.length - 1 ? '1px solid #f3f4f6' : 'none',
-                      background: isSelected ? '#eef2ff' : idx % 2 === 0 ? '#fff' : '#fafafa',
+                      background: rowBackground,
                       cursor: 'default', transition: 'background 0.15s',
+                      opacity: isMuted ? 0.8 : 1,
                     }}
-                    onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = '#f5f7ff'; }}
-                    onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = idx % 2 === 0 ? '#fff' : '#fafafa'; }}
+                    onClick={() => toggleMutedRow(row.markKey)}
                   >
                     {/* Avatar */}
                     <div style={{ width: '44px', flexShrink: 0, display: 'flex', justifyContent: 'center' }}>
-                      <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: avatarColor(row.guestName), color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 700 }}>
+                      <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: avatarColor(row.guestName), color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 700, opacity: isMuted ? 0.65 : 1 }}>
                         {initials(row.guestName)}
                       </div>
                     </div>
 
                     {/* Name + Host */}
                     <div
-                      onClick={() => setSelectedRow(isSelected ? null : row)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedRow(isSelected ? null : row);
+                      }}
                       style={{ flex: '2 1 0', minWidth: '120px', padding: '0 12px', cursor: 'pointer' }}
                       title="Open guest details"
                     >
-                      <div style={{ fontWeight: 600, fontSize: '14px', color: '#111' }}>{row.guestName}</div>
+                      <div style={{ fontWeight: 600, fontSize: '14px', color: primaryText }}>{row.guestName}</div>
                       <div style={{ fontSize: '12px', color: '#9ca3af' }}>Host: TYE</div>
                     </div>
 
-                    <div style={{ flex: '1 1 0', minWidth: '90px', padding: '0 12px', fontSize: '14px', color: '#374151' }}>{row.clcNumber}</div>
-                    <div style={{ flex: '1 1 0', minWidth: '80px', padding: '0 12px', fontSize: '14px', color: '#374151', fontWeight: 500 }}>{row.roomNumber}</div>
-                    <div style={{ flex: '1.5 1 0', minWidth: '140px', padding: '0 12px', fontSize: '13px', color: '#374151' }}>
+                    <div style={{ flex: '1 1 0', minWidth: '90px', padding: '0 12px', fontSize: '14px', color: secondaryText }}>{row.clcNumber}</div>
+                    <div style={{ flex: '1 1 0', minWidth: '80px', padding: '0 12px', fontSize: '14px', color: secondaryText, fontWeight: 500 }}>{row.roomNumber}</div>
+                    <div style={{ flex: '1.5 1 0', minWidth: '140px', padding: '0 12px', fontSize: '13px', color: secondaryText }}>
                       <span style={{ whiteSpace: 'nowrap' }}>{row.checkInDate}</span>
                       <span style={{ color: '#9ca3af', margin: '0 4px' }}>·</span>
-                      <span style={{ fontWeight: 600, color: '#111' }}>{row.checkInTime}</span>
+                      <span style={{ fontWeight: 600, color: primaryText }}>{row.checkInTime}</span>
                     </div>
-                    <div style={{ flex: '1.5 1 0', minWidth: '140px', padding: '0 12px', fontSize: '13px', color: '#374151' }}>
+                    <div style={{ flex: '1.5 1 0', minWidth: '140px', padding: '0 12px', fontSize: '13px', color: secondaryText }}>
                       {row.checkOutIso ? (
                         <>
                           <span style={{ whiteSpace: 'nowrap' }}>{fmtDate(row.checkOutIso)}</span>
                           <span style={{ color: '#9ca3af', margin: '0 4px' }}>·</span>
-                          <span style={{ fontWeight: 600, color: '#111' }}>{fmtTime(row.checkOutIso)}</span>
+                          <span style={{ fontWeight: 600, color: primaryText }}>{fmtTime(row.checkOutIso)}</span>
                         </>
                       ) : (
                         <span style={{ color: '#9ca3af' }}>—</span>

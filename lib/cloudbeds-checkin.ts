@@ -524,7 +524,14 @@ function findRoomByKey(rooms: any[], roomKey: string): any | undefined {
     a.replace(/-/g, '').toLowerCase() === b.replace(/-/g, '').toLowerCase();
   const keyLower = roomKey.toLowerCase();
 
-  return rooms.find((r: any) => {
+  // Run matching in descending priority tiers so that an exact ID/name match always
+  // wins over a weaker suffix or digits-only match. Previously all checks were in a
+  // single ||  chain, which meant a room earlier in the API response array could
+  // steal a match via the digits fallback even when a correct exact match existed
+  // further down the list (e.g. room 207's ID digits matching key "305").
+
+  // Tier 1: exact ID or case-insensitive full name match.
+  const tier1 = rooms.find((r: any) => {
     const idStr = r.roomID != null ? String(r.roomID) : '';
     const idAlt = r.id != null ? String(r.id) : '';
     const nameStr = (r.roomName != null ? String(r.roomName) : '').trim();
@@ -537,7 +544,18 @@ function findRoomByKey(rooms: any[], roomKey: string): any | undefined {
       nameStr.toLowerCase() === keyLower ||
       nameAlt.toLowerCase() === keyLower ||
       nameStr === roomKey ||
-      nameAlt === roomKey ||
+      nameAlt === roomKey
+    );
+  });
+  if (tier1) return tier1;
+
+  // Tier 2: normalised name match (strips "Room " prefix) or suffix match.
+  const tier2 = rooms.find((r: any) => {
+    const idStr = r.roomID != null ? String(r.roomID) : '';
+    const idAlt = r.id != null ? String(r.id) : '';
+    const nameStr = (r.roomName != null ? String(r.roomName) : '').trim();
+    const nameAlt = (r.name != null ? String(r.name) : '').trim();
+    return (
       norm(nameStr) === roomKey ||
       norm(nameAlt) === roomKey ||
       nameStr.endsWith(roomKey) ||
@@ -545,12 +563,24 @@ function findRoomByKey(rooms: any[], roomKey: string): any | undefined {
       stripTrailingLetter(idStr) === roomKey ||
       stripTrailingLetter(idAlt) === roomKey ||
       stripTrailingLetter(nameStr) === roomKey ||
-      stripTrailingLetter(nameAlt) === roomKey ||
-      (keyDigits &&
-        (digits(idStr) === keyDigits ||
-          digits(idAlt) === keyDigits ||
-          digits(nameStr) === keyDigits ||
-          digits(nameAlt) === keyDigits))
+      stripTrailingLetter(nameAlt) === roomKey
+    );
+  });
+  if (tier2) return tier2;
+
+  // Tier 3: digits-only fallback — only reached when no exact or normalised match
+  // exists. Skipped entirely when the key contains no digits to avoid false positives.
+  if (!keyDigits) return undefined;
+  return rooms.find((r: any) => {
+    const idStr = r.roomID != null ? String(r.roomID) : '';
+    const idAlt = r.id != null ? String(r.id) : '';
+    const nameStr = (r.roomName != null ? String(r.roomName) : '').trim();
+    const nameAlt = (r.name != null ? String(r.name) : '').trim();
+    return (
+      digits(idStr) === keyDigits ||
+      digits(idAlt) === keyDigits ||
+      digits(nameStr) === keyDigits ||
+      digits(nameAlt) === keyDigits
     );
   });
 }
