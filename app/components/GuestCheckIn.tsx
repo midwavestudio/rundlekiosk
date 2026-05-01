@@ -200,6 +200,7 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
         };
 
         // Save to server-side store so all admin devices see this check-in.
+        // IMPORTANT: if this fails, we log ALL guest data to the event log so no check-in is ever silently lost.
         let serverRecordId: string | null = null;
         try {
           const serverRes = await fetch('/api/checkin-records', {
@@ -208,9 +209,25 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
             body: JSON.stringify({ ...checkInData, checkInDateYmd: checkInYmd, source: 'kiosk' }),
           });
           const serverData = await serverRes.json();
-          if (serverData.success) serverRecordId = serverData.id as string;
-        } catch {
-          // Non-fatal — local record is already saved.
+          if (serverData.success) {
+            serverRecordId = serverData.id as string;
+          } else {
+            // Server rejected the record — log every field so it can be manually recovered.
+            postKioskEvent('kiosk:check-in', `Check-in record failed to save to database: ${serverData.error ?? 'unknown error'}`, {
+              ...submittedFields,
+              checkInTime,
+              roomDisplayName: selectedRoom?.roomName ?? roomIdentifier,
+              serverRecordFailure: true,
+            });
+          }
+        } catch (serverErr: any) {
+          // Network error reaching the server record API — log so data is never lost.
+          postKioskEvent('kiosk:check-in', `Check-in record could not be saved (network error): ${serverErr?.message ?? 'unknown'}`, {
+            ...submittedFields,
+            checkInTime,
+            roomDisplayName: selectedRoom?.roomName ?? roomIdentifier,
+            serverRecordFailure: true,
+          });
         }
 
         // Attempt Cloudbeds check-in.

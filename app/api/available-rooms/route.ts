@@ -3,6 +3,18 @@ import { getAvailablePlaceholdersByDate } from '@/lib/tye-placeholder-store';
 
 export const dynamic = 'force-dynamic';
 
+/** Excluded from kiosk room picker — match `roomID` or `roomName` exactly (case-insensitive). */
+const KIOSK_ROOM_PICKER_EXCLUSIONS = ['227', 'CON', '303'];
+
+function isExcludedFromKioskPicker(room: { roomID: string; roomName: string }): boolean {
+  const id = room.roomID.trim().toUpperCase();
+  const name = room.roomName.trim().toUpperCase();
+  return KIOSK_ROOM_PICKER_EXCLUSIONS.some((ex) => {
+    const e = ex.trim().toUpperCase();
+    return e !== '' && (id === e || name === e);
+  });
+}
+
 /**
  * Merge every `data[].rooms` array from getRooms — Cloudbeds returns one object per room type;
  * using only `data[0].rooms` hides all other types (e.g. only Queen + first type showed in the dropdown).
@@ -340,8 +352,10 @@ export async function GET(request: NextRequest) {
         .filter((room: any) => room && room.roomBlocked !== true)
         .map(formatRoom)
         .filter((r: any) => r.roomID !== 'unknown' && !r.roomName.includes('(Remove BE)') && !r.roomTypeName.includes('(Remove BE)'))
+        .filter((r: any) => !isExcludedFromKioskPicker(r))
         .filter((r, i, arr) => arr.findIndex((x) => x.roomID === r.roomID) === i);
       rooms = await mergePlaceholderRooms(rooms, today);
+      rooms = rooms.filter((r) => !isExcludedFromKioskPicker(r));
       return NextResponse.json({
         success: true,
         rooms,

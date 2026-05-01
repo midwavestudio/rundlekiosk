@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { reservationHasTyeRatePlan } from '@/lib/cloudbeds-tye';
 import { getCheckinRecords } from '@/lib/checkin-store';
 
 export const dynamic = 'force-dynamic';
@@ -84,41 +85,51 @@ async function fetchAllRoomsCount(apiBase: string, propertyID: string, headers: 
   return seen.size;
 }
 
-async function fetchCheckedInCount(
+async function fetchStayingCheckedInOccupancy(
   apiBase: string,
   propertyID: string,
   headers: HeadersInit,
   todayYmd: string
-): Promise<number> {
-  const seen = new Set<string>();
+): Promise<{ totalInHouse: number; tyeInHouse: number }> {
+  const seenTotal = new Set<string>();
+  const seenTye = new Set<string>();
   const pageSize = 500;
   let pageNumber = 1;
   const maxPages = 50;
 
   for (;;) {
-    const url = `${apiBase}/getReservations?propertyID=${encodeURIComponent(propertyID)}&status=checked_in&pageNumber=${pageNumber}&pageSize=${pageSize}`;
+    const qs = new URLSearchParams({
+      propertyID,
+      status: 'checked_in',
+      pageNumber: String(pageNumber),
+      pageSize: String(pageSize),
+      includeAllRooms: 'true',
+      sortByRecent: 'true',
+    });
+    const url = `${apiBase}/getReservations?${qs.toString()}`;
     const res = await fetch(url, { method: 'GET', headers });
     if (!res.ok) break;
     const data = await res.json();
     const list = extractReservationList(data) as Reservation[];
     if (list.length === 0) break;
 
-    let newCount = 0;
+    let newTotal = 0;
     for (const r of list) {
       const out = String(r.endDate ?? r.checkOutDate ?? '').trim();
       if (out && out < todayYmd) continue;
       const id = String(r.reservationID ?? '').trim();
-      if (!id || seen.has(id)) continue;
-      seen.add(id);
-      newCount++;
+      if (!id || seenTotal.has(id)) continue;
+      seenTotal.add(id);
+      newTotal++;
+      if (reservationHasTyeRatePlan(r)) seenTye.add(id);
     }
-    if (newCount === 0 && list.length < pageSize) break;
+    if (newTotal === 0 && list.length < pageSize) break;
     if (list.length < pageSize) break;
     pageNumber++;
     if (pageNumber > maxPages) break;
   }
 
-  return seen.size;
+  return { totalInHouse: seenTotal.size, tyeInHouse: seenTye.size };
 }
 
 export async function GET(_request: NextRequest) {
@@ -136,15 +147,19 @@ export async function GET(_request: NextRequest) {
       'Content-Type': 'application/json',
     };
 
+    /** TYE rate plan / TYE source — shown on the In House stat card */
     let inHouse = 0;
+    /** All checked-in stays still on-property — drives Available rooms */
+    let totalOccupied = 0;
     let totalRooms = 60;
 
     if (CLOUDBEDS_API_KEY && CLOUDBEDS_PROPERTY_ID) {
-      const [checkedInCount, roomCount] = await Promise.all([
-        fetchCheckedInCount(apiV13, CLOUDBEDS_PROPERTY_ID, headers, todayYmd),
+      const [occupancy, roomCount] = await Promise.all([
+        fetchStayingCheckedInOccupancy(apiV13, CLOUDBEDS_PROPERTY_ID, headers, todayYmd),
         fetchAllRoomsCount(apiV13, CLOUDBEDS_PROPERTY_ID, headers),
       ]);
-      inHouse = checkedInCount;
+      inHouse = occupancy.tyeInHouse;
+      totalOccupied = occupancy.totalInHouse;
       if (roomCount > 0) totalRooms = roomCount;
     }
 
@@ -159,7 +174,7 @@ export async function GET(_request: NextRequest) {
       stats: {
         inHouse,
         totalRooms,
-        available: Math.max(totalRooms - inHouse, 0),
+        available: Math.max(totalRooms - totalOccupied, 0),
         arrivalsToday,
         departedToday,
       },

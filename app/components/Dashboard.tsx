@@ -10,7 +10,12 @@ import CheckOutModal from './CheckOutModal';
 import TyePlaceholdersTab from './TyePlaceholdersTab';
 import FeedbackTab from './FeedbackTab';
 import EventLogTab from './EventLogTab';
+<<<<<<< Updated upstream
 import { loadReadEventIds, markEventsRead, recordErrorLogVisit, loadErrorLogLastVisited } from '@/lib/event-log-read';
+=======
+import { dedupeEvents } from '@/lib/event-log-dedupe';
+import { loadReadEventIds, markEventsRead } from '@/lib/event-log-read';
+>>>>>>> Stashed changes
 import { loadReadFeedbackIds, markFeedbacksRead } from '@/lib/feedback-read';
 
 interface DashboardProps {
@@ -26,6 +31,12 @@ interface FirebaseStatus {
 
 interface EventLogEntry {
   id: string;
+<<<<<<< Updated upstream
+=======
+  source?: string;
+  message?: string;
+  detailJson?: string;
+>>>>>>> Stashed changes
   occurredAt?: string;
 }
 
@@ -62,7 +73,16 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
         const res = await fetch('/api/event-log?limit=250');
         if (!res.ok || cancelled) return;
         const data = await res.json();
-        const events: EventLogEntry[] = Array.isArray(data.events) ? data.events : [];
+        const raw: EventLogEntry[] = Array.isArray(data.events) ? data.events : [];
+        const events = dedupeEvents(
+          raw.map((ev) => ({
+            id: ev.id,
+            source: String(ev.source ?? ''),
+            message: String(ev.message ?? ''),
+            detailJson: ev.detailJson,
+            occurredAt: String(ev.occurredAt ?? ''),
+          }))
+        );
 
         const readIds = loadReadEventIds();
         const lastVisited = loadErrorLogLastVisited();
@@ -235,6 +255,7 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
                 style={{
                   display: 'inline-flex',
                   alignItems: 'center',
+<<<<<<< Updated upstream
                   justifyContent: 'center',
                   width: '34px',
                   height: '34px',
@@ -248,22 +269,44 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
                   fontWeight: 700,
                   flexShrink: 0,
                   transition: 'background 0.15s',
+=======
+                  gap: '6px',
+                  padding: '7px 14px',
+                  borderRadius: '8px',
+                  border: '1.5px solid rgba(255,255,255,0.55)',
+                  color: 'white',
+                  textDecoration: 'none',
+                  background: 'rgba(255,255,255,0.15)',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  flexShrink: 0,
+                  letterSpacing: '0.02em',
+                  whiteSpace: 'nowrap',
+>>>>>>> Stashed changes
                 }}
                 aria-label="Back to guest kiosk"
               >
-                ←
+                ← Kiosk
               </a>
+<<<<<<< Updated upstream
               <div>
                 <h1 style={{ margin: 0, fontSize: '20px', fontWeight: 700, letterSpacing: '-0.01em' }}>Rundle Kiosk</h1>
                 <p style={{ margin: '2px 0 0', opacity: 0.75, fontSize: '12px', letterSpacing: '0.01em' }}>
+=======
+              <div style={{ minWidth: 0 }}>
+                <h1 style={{ margin: 0, fontSize: '24px', color: 'white' }}>Rundle Kiosk</h1>
+                <p style={{ margin: '5px 0 0 0', opacity: 0.9, fontSize: '14px', color: 'white' }}>
+>>>>>>> Stashed changes
                   {user.email}
                 </p>
               </div>
             </div>
             <button
+              type="button"
               onClick={onLogout}
               style={{
                 width: 'auto',
+<<<<<<< Updated upstream
                 background: 'rgba(255,255,255,0.12)',
                 color: 'rgba(255,255,255,0.92)',
                 border: '1px solid rgba(255,255,255,0.4)',
@@ -275,6 +318,18 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
                 letterSpacing: '0.01em',
                 whiteSpace: 'nowrap',
                 transition: 'background 0.15s',
+=======
+                flexShrink: 0,
+                alignSelf: 'center',
+                background: 'rgba(255,255,255,0.2)',
+                color: 'white',
+                border: '2px solid white',
+                padding: '7px 14px',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                fontSize: '13px',
+                fontWeight: 600,
+>>>>>>> Stashed changes
               }}
             >
               Sign out
@@ -559,10 +614,17 @@ function DashboardTab({ firestoreStatus }: { firestoreStatus: FirebaseStatus | n
         gap: 'clamp(12px, 1.5vw, 20px)',
         marginBottom: 'clamp(16px, 2.5vw, 32px)',
       }}>
+<<<<<<< Updated upstream
         <StatCard label="In House" value={stats.inHouse} color="#10b981" />
         <StatCard label="Available" value={stats.available} color="#3b82f6" />
         <StatCard label="Arrivals Today" value={stats.arrivals} color="#f59e0b" />
         <StatCard label="Departed Today" value={stats.departed} color="#8b5cf6" />
+=======
+        <StatCard icon="✓" label="In House (TYE)" value={stats.inHouse} color="#10b981" />
+        <StatCard icon="🏠" label="Available" value={stats.available} color="#3b82f6" />
+        <StatCard icon="↓" label="Arrivals Today" value={stats.arrivals} color="#f59e0b" />
+        <StatCard icon="↑" label="Departed" value={stats.departed} color="#8b5cf6" />
+>>>>>>> Stashed changes
       </div>
 
       {/* System Status */}

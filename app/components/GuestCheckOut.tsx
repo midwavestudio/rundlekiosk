@@ -168,12 +168,61 @@ export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutP
     setError('');
 
     const checkoutAt = new Date();
+    const checkoutIso = checkoutAt.toISOString();
     const checkoutPayload = {
       reservationID: selectedGuest.cloudbedsReservationID,
-      checkoutAtIso: checkoutAt.toISOString(),
+      checkoutAtIso: checkoutIso,
       checkoutDate: kioskLocalDateStr(checkoutAt),
       checkInDate: selectedGuest.checkInDate || undefined,
     };
+
+    // Record the checkout time locally BEFORE calling Cloudbeds so it is
+    // always persisted regardless of whether the Cloudbeds request succeeds.
+    try {
+      const raw = localStorage.getItem('checkedInGuests');
+      const stored: any[] = JSON.parse(raw || '[]');
+      const idx = stored.findIndex(
+        (g: any) => String(g.cloudbedsReservationID) === selectedGuest.cloudbedsReservationID
+      );
+      const checkOutHistory = JSON.parse(localStorage.getItem('checkOutHistory') || '[]');
+      if (idx >= 0) {
+        checkOutHistory.push({ ...stored[idx], checkOutTime: checkoutIso });
+      } else {
+        const { firstName, lastName } = namesForKioskHistory(selectedGuest);
+        checkOutHistory.push({
+          firstName,
+          lastName,
+          clcNumber: '',
+          phoneNumber: '',
+          class: 'TYE',
+          checkInTime: '',
+          roomNumber: selectedGuest.roomNumber,
+          cloudbedsReservationID: selectedGuest.cloudbedsReservationID,
+          cloudbedsGuestID: selectedGuest.cloudbedsGuestID,
+          checkOutTime: checkoutIso,
+        });
+      }
+      localStorage.setItem('checkOutHistory', JSON.stringify(checkOutHistory));
+      const updated = stored.filter(
+        (g: any) => String(g.cloudbedsReservationID) !== selectedGuest.cloudbedsReservationID
+      );
+      localStorage.setItem('checkedInGuests', JSON.stringify(updated));
+    } catch {
+      // localStorage is not critical; ignore
+    }
+
+    // Update the server-side record immediately so admin Arrivals / Departures
+    // show the checkout time even if the Cloudbeds call below fails.
+    if (selectedGuest.cloudbedsReservationID) {
+      fetch('/api/checkin-records', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reservationID: selectedGuest.cloudbedsReservationID,
+          checkOutTime: checkoutIso,
+        }),
+      }).catch(() => {});
+    }
 
     try {
       const res = await fetch('/api/cloudbeds-checkout', {
@@ -204,53 +253,6 @@ export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutP
 
       setDaysStayed(typeof data.daysStayed === 'number' ? data.daysStayed : null);
       setIsSameDay(data.isSameDay === true);
-
-      // Always append to checkOutHistory so admin Departures shows the checkout even with no kiosk check-in row
-      try {
-        const raw = localStorage.getItem('checkedInGuests');
-        const stored: any[] = JSON.parse(raw || '[]');
-        const idx = stored.findIndex(
-          (g: any) => String(g.cloudbedsReservationID) === selectedGuest.cloudbedsReservationID
-        );
-        const checkoutIso = checkoutAt.toISOString();
-        const checkOutHistory = JSON.parse(localStorage.getItem('checkOutHistory') || '[]');
-        if (idx >= 0) {
-          checkOutHistory.push({ ...stored[idx], checkOutTime: checkoutIso });
-        } else {
-          const { firstName, lastName } = namesForKioskHistory(selectedGuest);
-          checkOutHistory.push({
-            firstName,
-            lastName,
-            clcNumber: '',
-            phoneNumber: '',
-            class: 'TYE',
-            checkInTime: '',
-            roomNumber: selectedGuest.roomNumber,
-            cloudbedsReservationID: selectedGuest.cloudbedsReservationID,
-            cloudbedsGuestID: selectedGuest.cloudbedsGuestID,
-            checkOutTime: checkoutIso,
-          });
-        }
-        localStorage.setItem('checkOutHistory', JSON.stringify(checkOutHistory));
-        const updated = stored.filter(
-          (g: any) => String(g.cloudbedsReservationID) !== selectedGuest.cloudbedsReservationID
-        );
-        localStorage.setItem('checkedInGuests', JSON.stringify(updated));
-      } catch {
-        // localStorage is not critical; ignore
-      }
-
-      // Update the server-side record so admin Arrivals / Departures show checkout time.
-      if (selectedGuest.cloudbedsReservationID) {
-        fetch('/api/checkin-records', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            reservationID: selectedGuest.cloudbedsReservationID,
-            checkOutTime: checkoutAt.toISOString(),
-          }),
-        }).catch(() => {});
-      }
 
       setSuccess(true);
       setTimeout(() => {
@@ -302,7 +304,7 @@ export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutP
           ← Back
         </button>
         <h1>Guest Check-Out</h1>
-        <p className="subtitle">Search by your name to check out</p>
+        <p className="subtitle"><strong>Please let us know if your name doesn&apos;t show</strong></p>
       </div>
 
       {error && <div className="error-message">{error}</div>}

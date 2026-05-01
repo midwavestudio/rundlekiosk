@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, type CSSProperties } from 'react';
 import { ADMIN_ACCENT, ADMIN_TINT_BORDER } from '../lib/adminTheme';
 import { EventDetailReadable } from '@/lib/event-log-detail-format';
+import { dedupeEvents, simplifyErrorMessage } from '@/lib/event-log-dedupe';
 import { loadReadEventIds, markEventRead, markEventsRead } from '@/lib/event-log-read';
 
 interface EventLogEntry {
@@ -14,57 +15,11 @@ interface EventLogEntry {
   occurredAt: string;
 }
 
-function dedupeEvents(entries: EventLogEntry[]): EventLogEntry[] {
-  const seen = new Set<string>();
-  const unique: EventLogEntry[] = [];
-  for (const ev of entries) {
-    // Collapse repeated logs with same source + message + structured detail.
-    const key = `${ev.source}||${ev.message}||${ev.detailJson ?? ''}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    unique.push(ev);
-  }
-  return unique;
-}
-
 const LEVEL_STYLE: Record<string, { bg: string; color: string }> = {
   error: { bg: '#fee2e2', color: '#991b1b' },
   warn: { bg: '#fef3c7', color: '#92400e' },
   info: { bg: '#e0f2fe', color: '#075985' },
 };
-
-function decodeBasicEntities(text: string): string {
-  return text.replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
-}
-
-function simplifyErrorMessage(message: string): string {
-  const msg = decodeBasicEntities(message || '');
-  if (!msg) return 'Unexpected system error.';
-
-  const rules: Array<{ pattern: RegExp; replacement: string }> = [
-    {
-      pattern: /Invalid Parameter Format:\s*rooms\[0\]\[room\s*TypeID\]\s*is required\./i,
-      replacement: 'Overbooking: selected room type is unavailable.',
-    },
-    {
-      pattern: /could not accommodate your request|room .* not available|not available for/i,
-      replacement: 'Overbooking: selected room is not available.',
-    },
-    {
-      pattern: /remaining balance|collect the full amount|prior to checking in/i,
-      replacement: 'Payment required before check-in.',
-    },
-    {
-      pattern: /failed to delete from cloudbeds|cloudbeds delete/i,
-      replacement: 'Could not delete reservation in Cloudbeds.',
-    },
-  ];
-
-  for (const rule of rules) {
-    if (rule.pattern.test(msg)) return rule.replacement;
-  }
-  return msg;
-}
 
 const btnSecondary: CSSProperties = {
   padding: '8px 14px',
