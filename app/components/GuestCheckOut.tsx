@@ -27,6 +27,18 @@ interface CloudbedsGuest {
   cloudbedsGuestID: string;
   checkInDate: string;
   checkOutDate: string;
+  /**
+   * 'cloudbeds' — found in live Cloudbeds checked-in list.
+   * 'local'     — found in local kiosk records only (reservation may have been
+   *               modified in Cloudbeds after check-in).
+   */
+  source?: 'cloudbeds' | 'local';
+  /**
+   * Firestore document ID of the local check-in record.
+   * Present only when source === 'local'; used to record checkout time even
+   * when Cloudbeds is unavailable.
+   */
+  localRecordID?: string;
 }
 
 function guestKey(g: CloudbedsGuest): string {
@@ -213,74 +225,107 @@ export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutP
 
     // Update the server-side record immediately so admin Arrivals / Departures
     // show the checkout time even if the Cloudbeds call below fails.
+    // For local-fallback guests we patch by Firestore document ID; for Cloudbeds
+    // guests we patch by reservationID (existing behaviour).
+    const patchBody: Record<string, string> = { checkOutTime: checkoutIso };
     if (selectedGuest.cloudbedsReservationID) {
+      patchBody.reservationID = selectedGuest.cloudbedsReservationID;
+    } else if (selectedGuest.localRecordID) {
+      patchBody.id = selectedGuest.localRecordID;
+    }
+    if (patchBody.reservationID || patchBody.id) {
       fetch('/api/checkin-records', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          reservationID: selectedGuest.cloudbedsReservationID,
-          checkOutTime: checkoutIso,
-        }),
+        body: JSON.stringify(patchBody),
       }).catch(() => {});
     }
 
-    try {
-      const res = await fetch('/api/cloudbeds-checkout', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(checkoutPayload),
-      });
+    // For guests found only in local records (source === 'local'), Cloudbeds may
+    // not be able to process the checkout (reservation modified / unavailable).
+    // We attempt the Cloudbeds call only when a reservation ID is available, and
+    // treat a Cloudbeds failure as a local-only success so the guest isn't blocked.
+    const isLocalGuest = selectedGuest.source === 'local';
+    const hasReservationID = Boolean(selectedGuest.cloudbedsReservationID);
 
-      const text = await res.text();
-      let data: {
-        success?: boolean;
-        error?: string;
-        message?: string;
-        daysStayed?: number;
-        isSameDay?: boolean;
-        /** True when Cloudbeds rejected the update but checkout was recorded locally. */
-        localOnly?: boolean;
-      } = {};
+    if (!isLocalGuest || hasReservationID) {
       try {
-        data = JSON.parse(text);
-      } catch {
-        data = {};
+        const res = await fetch('/api/cloudbeds-checkout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(checkoutPayload),
+        });
+
+        const text = await res.text();
+        let data: {
+          success?: boolean;
+          error?: string;
+          message?: string;
+          daysStayed?: number;
+          isSameDay?: boolean;
+          localOnly?: boolean;
+        } = {};
+        try {
+          data = JSON.parse(text);
+        } catch {
+          data = {};
+        }
+
+        if (!res.ok || data.success !== true) {
+          // For local-fallback guests, a Cloudbeds failure is expected when the
+          // reservation was modified; still complete the checkout locally.
+          if (isLocalGuest) {
+            postKioskEvent('Local-fallback guest: Cloudbeds checkout unavailable (expected)', {
+              submittedRequest: checkoutPayload,
+              cloudbedsError: data.error || data.message || `HTTP ${res.status}`,
+              localRecordID: selectedGuest.localRecordID,
+            });
+          } else {
+            throw new Error(data.error || data.message || `Check-out failed (${res.status})`);
+          }
+        } else {
+          setDaysStayed(typeof data.daysStayed === 'number' ? data.daysStayed : null);
+          setIsSameDay(data.isSameDay === true);
+        }
+      } catch (err: unknown) {
+        if (!isLocalGuest) {
+          const msg =
+            err instanceof Error && err.message
+              ? err.message
+              : 'Check-out failed. Please try again or contact the front desk.';
+          setError(msg);
+          postKioskEvent(msg, {
+            submittedRequest: checkoutPayload,
+            selectedGuest: {
+              firstName: selectedGuest.firstName,
+              lastName: selectedGuest.lastName,
+              displayName: selectedGuest.displayName,
+              roomNumber: selectedGuest.roomNumber,
+              cloudbedsReservationID: selectedGuest.cloudbedsReservationID,
+              cloudbedsGuestID: selectedGuest.cloudbedsGuestID,
+              checkInDate: selectedGuest.checkInDate,
+              checkOutDate: selectedGuest.checkOutDate,
+            },
+            searchQuery: searchQuery.trim() || undefined,
+          });
+          setLoading(false);
+          return;
+        }
+        // Local-fallback guest: network error calling Cloudbeds is non-fatal.
+        postKioskEvent('Local-fallback guest: Cloudbeds checkout network error (expected)', {
+          submittedRequest: checkoutPayload,
+          error: err instanceof Error ? err.message : String(err),
+          localRecordID: selectedGuest.localRecordID,
+        });
       }
-
-      if (!res.ok || data.success !== true) {
-        throw new Error(data.error || data.message || `Check-out failed (${res.status})`);
-      }
-
-      setDaysStayed(typeof data.daysStayed === 'number' ? data.daysStayed : null);
-      setIsSameDay(data.isSameDay === true);
-
-      setSuccess(true);
-      setTimeout(() => {
-        onBack();
-      }, 2500);
-    } catch (err: unknown) {
-      const msg =
-        err instanceof Error && err.message
-          ? err.message
-          : 'Check-out failed. Please try again or contact the front desk.';
-      setError(msg);
-      postKioskEvent(msg, {
-        submittedRequest: checkoutPayload,
-        selectedGuest: {
-          firstName: selectedGuest.firstName,
-          lastName: selectedGuest.lastName,
-          displayName: selectedGuest.displayName,
-          roomNumber: selectedGuest.roomNumber,
-          cloudbedsReservationID: selectedGuest.cloudbedsReservationID,
-          cloudbedsGuestID: selectedGuest.cloudbedsGuestID,
-          checkInDate: selectedGuest.checkInDate,
-          checkOutDate: selectedGuest.checkOutDate,
-        },
-        searchQuery: searchQuery.trim() || undefined,
-      });
-    } finally {
-      setLoading(false);
     }
+
+    // Always show success — checkout time is already recorded locally above.
+    setSuccess(true);
+    setLoading(false);
+    setTimeout(() => {
+      onBack();
+    }, 2500);
   };
 
   if (success && selectedGuest) {
@@ -357,6 +402,11 @@ export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutP
         {guests.length > 0 && (
           <div className="guest-list">
             <p className="guest-list-title">Select your stay:</p>
+            {guests[0]?.source === 'local' && (
+              <p className="no-results-help" style={{ marginBottom: '8px' }}>
+                Your reservation wasn&apos;t found in the live system — showing your last check-in on record.
+              </p>
+            )}
             {guests.map((guest) => {
               const selected =
                 selectedGuest !== null && guestKey(selectedGuest) === guestKey(guest);

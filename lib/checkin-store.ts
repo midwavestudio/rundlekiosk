@@ -319,6 +319,56 @@ export async function deleteByReservationID(reservationID: string): Promise<bool
 }
 
 /**
+ * Search active (not yet checked-out) records by partial name match.
+ *
+ * Fetches a recent page from Firestore and filters in JS because Firestore
+ * does not support case-insensitive substring queries. The `limit` param
+ * caps how many records are fetched before filtering (default 500).
+ *
+ * Returns records whose firstName or lastName contains the query token(s),
+ * ordered most-recently checked-in first.
+ */
+export async function findActiveByName(
+  query: string,
+  limit = 500
+): Promise<CheckinRecord[]> {
+  const normalize = (s: string) => s.trim().toLowerCase();
+  const q = normalize(query);
+  if (q.length < 2) return [];
+
+  const tokens = q.split(/\s+/).filter((t) => t.length >= 2);
+
+  function matches(record: CheckinRecord): boolean {
+    if (record.checkOutTime) return false;
+    const full = normalize(`${record.firstName} ${record.lastName}`);
+    if (tokens.length === 0) return false;
+    if (tokens.length === 1) {
+      return (
+        normalize(record.firstName).includes(tokens[0]) ||
+        normalize(record.lastName).includes(tokens[0])
+      );
+    }
+    return tokens.every((t) => full.includes(t));
+  }
+
+  const cap = Math.min(limit, 1000);
+  const db = getDb();
+  if (db) {
+    try {
+      const snap = await db
+        .collection(COLLECTION)
+        .orderBy('checkInTime', 'desc')
+        .limit(cap)
+        .get();
+      return snap.docs.map(docToRecord).filter(matches);
+    } catch (err) {
+      console.error('[checkin-store] findActiveByName Firestore failed — using in-memory.', err);
+    }
+  }
+  return memStore.slice(0, cap).filter(matches);
+}
+
+/**
  * Find an existing record by firstName + lastName + checkInTime.
  * Used for dedup when cloudbedsReservationID is not yet known.
  */

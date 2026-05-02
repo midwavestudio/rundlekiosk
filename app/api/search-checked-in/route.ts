@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { findActiveByName } from '@/lib/checkin-store';
 
 /**
  * Search currently checked-in reservations by name for kiosk checkout.
+ *
+ * Primary source: Cloudbeds getReservations (status=checked_in).
+ * Fallback source: local Firestore kiosk_checkin_records (guests who checked
+ * in via the kiosk but whose reservation is no longer queryable from Cloudbeds,
+ * e.g. because the reservation was modified after check-in).  Fallback results
+ * carry `source: 'local'` so the UI can display a contextual note.
  *
  * Important: Cloudbeds getReservations uses firstName / lastName filters (not guestName).
  * We keep requests small to avoid provider-side "could not accommodate your request" errors.
@@ -144,8 +151,35 @@ export async function GET(request: NextRequest) {
         cloudbedsGuestID: String(r.guestID ?? ''),
         checkInDate: r.startDate ?? r.checkInDate ?? '',
         checkOutDate: r.endDate ?? r.checkOutDate ?? '',
+        source: 'cloudbeds' as const,
       };
     });
+
+    // When Cloudbeds returns no matches, fall back to locally stored check-in
+    // records so guests who were checked in via the kiosk but whose reservation
+    // is no longer visible in Cloudbeds can still check out.
+    if (guests.length === 0) {
+      try {
+        const localRecords = await findActiveByName(name);
+        const localGuests = localRecords.map((r) => ({
+          firstName: r.firstName,
+          lastName: r.lastName,
+          displayName: [r.firstName, r.lastName].filter(Boolean).join(' ') || 'Guest',
+          roomNumber: r.roomNumber ?? '',
+          cloudbedsReservationID: r.cloudbedsReservationID ?? '',
+          cloudbedsGuestID: r.cloudbedsGuestID ?? '',
+          checkInDate: r.checkInDateYmd ?? r.checkInTime?.slice(0, 10) ?? '',
+          checkOutDate: '',
+          /** Firestore document ID — used to record checkout when no Cloudbeds reservation ID. */
+          localRecordID: r.id,
+          source: 'local' as const,
+        }));
+        return NextResponse.json({ success: true, guests: localGuests });
+      } catch (localErr) {
+        console.error('search-checked-in local fallback error:', localErr);
+        // Return the empty Cloudbeds result rather than surfacing the error.
+      }
+    }
 
     return NextResponse.json({ success: true, guests });
   } catch (err) {
