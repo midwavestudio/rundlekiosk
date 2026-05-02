@@ -427,7 +427,7 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
       </form>
 
       <div className="kiosk-footer">
-        <p>All fields marked with * are required</p>
+        <p>Please remember to check out</p>
         {onOpenFeedback && (
           <div className="kiosk-footer-feedback">
             <p>Any issues?</p>

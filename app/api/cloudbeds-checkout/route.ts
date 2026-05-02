@@ -318,8 +318,11 @@ async function unassignRoom(
 
 export async function POST(request: NextRequest) {
   let submittedRequestLog: Record<string, unknown> | null = null;
+  /** Kiosk local-name fallback: Cloudbeds failure is expected — avoid duplicate admin error logs. */
+  let localFallbackCheckout = false;
   try {
     const body = await request.json();
+    localFallbackCheckout = body.localFallbackCheckout === true;
     const { reservationID, checkoutAtIso, checkoutDate: bodyCheckoutDate, checkInDate: bodyCheckInDate } = body;
     submittedRequestLog = {
       reservationID: reservationID != null ? String(reservationID) : null,
@@ -622,14 +625,21 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      logCheckOutFailure({
-        reservationID: String(reservationID),
-        checkoutDate,
-        isSameDay,
-        error: msg,
-        debugLog: log,
-        submittedRequest: submittedRequestLog,
-      });
+      if (!localFallbackCheckout) {
+        logCheckOutFailure({
+          reservationID: String(reservationID),
+          checkoutDate,
+          isSameDay,
+          error: msg,
+          debugLog: log,
+          submittedRequest: submittedRequestLog,
+        });
+      } else {
+        console.warn(
+          '[cloudbeds-checkout] local-fallback attempt failed (checkout still recorded locally)',
+          JSON.stringify({ reservationID, checkoutDate, error: msg })
+        );
+      }
       return NextResponse.json(
         { success: false, error: msg, debugLog: log },
         { status: 422 }
@@ -651,10 +661,14 @@ export async function POST(request: NextRequest) {
       checkOutAt: new Date(checkOutMs).toISOString(),
     });
   } catch (error: any) {
-    logCheckOutFailure({
-      error: error.message || 'Unhandled exception in checkout',
-      submittedRequest: submittedRequestLog,
-    });
+    if (!localFallbackCheckout) {
+      logCheckOutFailure({
+        error: error.message || 'Unhandled exception in checkout',
+        submittedRequest: submittedRequestLog,
+      });
+    } else {
+      console.warn('[cloudbeds-checkout] local-fallback checkout exception (ignored for error log)', error?.message);
+    }
     return NextResponse.json(
       { success: false, error: error.message || 'Failed to check out from Cloudbeds' },
       { status: 500 }
