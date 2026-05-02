@@ -360,12 +360,32 @@ export async function findActiveByName(
         .orderBy('checkInTime', 'desc')
         .limit(cap)
         .get();
-      return snap.docs.map(docToRecord).filter(matches);
+      const all = snap.docs.map(docToRecord).filter(matches);
+      // Return only the single most-recent record per unique guest identity
+      // (firstName + lastName) so the kiosk shows one card per person, not
+      // every past stay they ever had.
+      return dedupByName(all);
     } catch (err) {
       console.error('[checkin-store] findActiveByName Firestore failed — using in-memory.', err);
     }
   }
-  return memStore.slice(0, cap).filter(matches);
+  return dedupByName(memStore.slice(0, cap).filter(matches));
+}
+
+/**
+ * Keep only the most-recent record per unique first+last name combination.
+ * The input must already be ordered most-recent-first.
+ */
+function dedupByName(records: CheckinRecord[]): CheckinRecord[] {
+  const seen = new Set<string>();
+  const out: CheckinRecord[] = [];
+  for (const r of records) {
+    const key = `${r.firstName.trim().toLowerCase()}|${r.lastName.trim().toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(r);
+  }
+  return out;
 }
 
 /**
