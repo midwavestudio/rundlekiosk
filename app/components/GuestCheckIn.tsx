@@ -230,73 +230,108 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
           });
         }
 
-        // Attempt Cloudbeds check-in.
-        try {
-          const cloudbedsResponse = await fetch('/api/cloudbeds-checkin', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              firstName,
-              lastName,
-              phoneNumber,
-              roomName: roomIdentifier,
-              roomNameHint: selectedRoom?.roomName,
-              clcNumber,
-              classType: 'TYE',
-              email: buildGuestSyntheticEmail(firstName, lastName),
-              checkInDate: checkInYmd,
-              checkOutDate: checkOutYmd,
-              ...(placeholderReservationID ? { placeholderReservationID } : {}),
-            }),
-          });
+        // Attempt Cloudbeds check-in with automatic retry (up to 3 attempts, exponential backoff).
+        // Retries handle transient network errors, service worker interference in PWA mode,
+        // and brief Cloudbeds API unavailability without ever losing a reservation.
+        const cloudbedsCheckInBody = JSON.stringify({
+          firstName,
+          lastName,
+          phoneNumber,
+          roomName: roomIdentifier,
+          roomNameHint: selectedRoom?.roomName,
+          clcNumber,
+          classType: 'TYE',
+          email: buildGuestSyntheticEmail(firstName, lastName),
+          checkInDate: checkInYmd,
+          checkOutDate: checkOutYmd,
+          ...(placeholderReservationID ? { placeholderReservationID } : {}),
+        });
 
-          const responseText = await cloudbedsResponse.text();
-          let cloudbedsResult: Record<string, unknown> = {};
-          try {
-            cloudbedsResult = JSON.parse(responseText) as Record<string, unknown>;
-          } catch { /* non-JSON response — treat as failure below */ }
+        const MAX_CHECKIN_ATTEMPTS = 3;
+        let cloudbedsAttempt = 0;
+        let cloudbedsSucceeded = false;
 
-          if (!cloudbedsResponse.ok || cloudbedsResult.success !== true) {
-            const errMsg =
-              (typeof cloudbedsResult.error === 'string' && cloudbedsResult.error) ||
-              (typeof cloudbedsResult.message === 'string' && cloudbedsResult.message) ||
-              `Cloudbeds check-in failed (HTTP ${cloudbedsResponse.status})`;
-            console.error('[CHECK-IN] Cloudbeds failure logged to admin, not shown to guest:', errMsg);
-            postKioskEvent('kiosk:check-in', decodeCloudbedsUserMessage(errMsg), {
-              ...submittedFields,
-              cloudbedsFailure: true,
-            });
-          } else {
-            console.log('Cloudbeds check-in successful:', cloudbedsResult);
-            const guestID = cloudbedsResult.guestID as string | undefined;
-            const reservationID = cloudbedsResult.reservationID as string | undefined;
-            try {
-              const stored: GuestData[] = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
-              const idx = stored.findLastIndex((g) => g.checkInTime === checkInTime);
-              if (idx >= 0) {
-                stored[idx] = { ...stored[idx], cloudbedsGuestID: guestID, cloudbedsReservationID: reservationID };
-                localStorage.setItem('checkedInGuests', JSON.stringify(stored));
-              }
-            } catch { /* non-fatal */ }
-            if (serverRecordId) {
-              fetch('/api/checkin-records', {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  id: serverRecordId,
-                  cloudbedsReservationID: reservationID,
-                  cloudbedsGuestID: guestID,
-                }),
-              }).catch(() => {});
-            }
+        while (cloudbedsAttempt < MAX_CHECKIN_ATTEMPTS && !cloudbedsSucceeded) {
+          if (cloudbedsAttempt > 0) {
+            // Exponential backoff: 2s, 4s before 2nd and 3rd attempts.
+            await new Promise((r) => setTimeout(r, 2000 * cloudbedsAttempt));
           }
-        } catch (cloudbedsErr: any) {
-          const errMsg = cloudbedsErr?.message || 'Network error during Cloudbeds check-in';
-          console.error('[CHECK-IN] Network error logged to admin, not shown to guest:', errMsg);
-          postKioskEvent('kiosk:check-in', errMsg, {
-            ...submittedFields,
-            networkError: true,
-          });
+          cloudbedsAttempt += 1;
+          try {
+            const cloudbedsResponse = await fetch('/api/cloudbeds-checkin', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: cloudbedsCheckInBody,
+            });
+
+            const responseText = await cloudbedsResponse.text();
+            let cloudbedsResult: Record<string, unknown> = {};
+            try {
+              cloudbedsResult = JSON.parse(responseText) as Record<string, unknown>;
+            } catch { /* non-JSON response — treat as failure below */ }
+
+            if (!cloudbedsResponse.ok || cloudbedsResult.success !== true) {
+              const errMsg =
+                (typeof cloudbedsResult.error === 'string' && cloudbedsResult.error) ||
+                (typeof cloudbedsResult.message === 'string' && cloudbedsResult.message) ||
+                `Cloudbeds check-in failed (HTTP ${cloudbedsResponse.status})`;
+
+              const isRetryableStatus =
+                cloudbedsResponse.status === 0 ||
+                cloudbedsResponse.status >= 500 ||
+                cloudbedsResponse.status === 429;
+
+              if (cloudbedsAttempt < MAX_CHECKIN_ATTEMPTS && isRetryableStatus) {
+                console.warn(`[CHECK-IN] Cloudbeds attempt ${cloudbedsAttempt} failed (retrying):`, errMsg);
+                continue;
+              }
+
+              console.error('[CHECK-IN] Cloudbeds failure logged to admin, not shown to guest:', errMsg);
+              postKioskEvent('kiosk:check-in', decodeCloudbedsUserMessage(errMsg), {
+                ...submittedFields,
+                cloudbedsFailure: true,
+                attempts: cloudbedsAttempt,
+              });
+            } else {
+              cloudbedsSucceeded = true;
+              console.log(`Cloudbeds check-in successful (attempt ${cloudbedsAttempt}):`, cloudbedsResult);
+              const guestID = cloudbedsResult.guestID as string | undefined;
+              const reservationID = cloudbedsResult.reservationID as string | undefined;
+              const reservationStatus = cloudbedsResult.reservationStatus as string | undefined;
+              try {
+                const stored: GuestData[] = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
+                const idx = stored.findLastIndex((g) => g.checkInTime === checkInTime);
+                if (idx >= 0) {
+                  stored[idx] = { ...stored[idx], cloudbedsGuestID: guestID, cloudbedsReservationID: reservationID };
+                  localStorage.setItem('checkedInGuests', JSON.stringify(stored));
+                }
+              } catch { /* non-fatal */ }
+              if (serverRecordId) {
+                fetch('/api/checkin-records', {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    id: serverRecordId,
+                    cloudbedsReservationID: reservationID,
+                    cloudbedsGuestID: guestID,
+                    ...(reservationStatus ? { reservationStatus } : {}),
+                  }),
+                }).catch(() => {});
+              }
+            }
+          } catch (cloudbedsErr: any) {
+            const errMsg = cloudbedsErr?.message || 'Network error during Cloudbeds check-in';
+            if (cloudbedsAttempt < MAX_CHECKIN_ATTEMPTS) {
+              console.warn(`[CHECK-IN] Network error on attempt ${cloudbedsAttempt} (retrying):`, errMsg);
+              continue;
+            }
+            console.error('[CHECK-IN] Network error logged to admin, not shown to guest:', errMsg);
+            postKioskEvent('kiosk:check-in', errMsg, {
+              ...submittedFields,
+              networkError: true,
+              attempts: cloudbedsAttempt,
+            });
+          }
         }
       })();
     }, 0);

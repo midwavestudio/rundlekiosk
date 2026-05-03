@@ -91,6 +91,11 @@ export async function POST(request: NextRequest) {
  *
  * Updates an existing record identified by `id` (Firestore doc ID) or
  * `reservationID` (Cloudbeds reservation ID).
+ *
+ * When recording a checkout (checkOutTime is provided) and no existing record
+ * is found, a new stub record is created so the checkout time is never lost —
+ * this handles the case where the Cloudbeds reservation ID was modified after
+ * kiosk check-in and the original Firestore record has no reservationID link.
  */
 export async function PATCH(request: NextRequest) {
   try {
@@ -100,13 +105,6 @@ export async function PATCH(request: NextRequest) {
     if (!id && body.reservationID) {
       const existing = await findByReservationID(String(body.reservationID));
       if (existing) id = existing.id;
-    }
-
-    if (!id) {
-      return NextResponse.json(
-        { success: false, error: 'Provide id or reservationID to identify the record' },
-        { status: 400 }
-      );
     }
 
     const updates: Record<string, unknown> = {};
@@ -119,6 +117,49 @@ export async function PATCH(request: NextRequest) {
     if (body.clcNumber !== undefined) updates.clcNumber = String(body.clcNumber);
     if (body.phoneNumber !== undefined) updates.phoneNumber = String(body.phoneNumber);
     if (body.class !== undefined) updates.class = String(body.class);
+    if (body.reservationStatus !== undefined) updates.reservationStatus = String(body.reservationStatus);
+
+    if (!id) {
+      // No existing record found. If we have a checkout time to record, create a
+      // stub record so the departure is never silently lost.  This covers guests
+      // whose Cloudbeds reservation was created or modified after kiosk check-in
+      // so the original Firestore record has no cloudbedsReservationID link.
+      if (body.checkOutTime) {
+        // Derive a usable checkInTime: prefer explicit checkInTime, then convert
+        // checkInDate (YYYY-MM-DD) to a noon ISO string, then fall back to now.
+        let checkInTime: string;
+        if (body.checkInTime) {
+          checkInTime = String(body.checkInTime);
+        } else if (body.checkInDate && /^\d{4}-\d{2}-\d{2}$/.test(String(body.checkInDate))) {
+          checkInTime = `${String(body.checkInDate)}T12:00:00.000Z`;
+        } else {
+          checkInTime = new Date().toISOString();
+        }
+        const newId = await saveCheckinRecord({
+          firstName: String(body.firstName ?? '').trim() || 'Unknown',
+          lastName: String(body.lastName ?? '').trim(),
+          clcNumber: String(body.clcNumber ?? ''),
+          phoneNumber: String(body.phoneNumber ?? ''),
+          class: String(body.class ?? 'TYE'),
+          roomNumber: String(body.roomNumber ?? ''),
+          checkInTime,
+          ...(body.checkInDate && /^\d{4}-\d{2}-\d{2}$/.test(String(body.checkInDate))
+            ? { checkInDateYmd: String(body.checkInDate) }
+            : {}),
+          checkOutTime: String(body.checkOutTime),
+          ...(body.reservationID ? { cloudbedsReservationID: String(body.reservationID) } : {}),
+          ...(body.cloudbedsReservationID ? { cloudbedsReservationID: String(body.cloudbedsReservationID) } : {}),
+          ...(body.cloudbedsGuestID ? { cloudbedsGuestID: String(body.cloudbedsGuestID) } : {}),
+          source: 'kiosk:checkout-stub',
+        });
+        console.log('[checkin-records PATCH] No existing record found — created checkout stub:', newId, { reservationID: body.reservationID });
+        return NextResponse.json({ success: true, id: newId, created: true });
+      }
+      return NextResponse.json(
+        { success: false, error: 'Provide id or reservationID to identify the record' },
+        { status: 400 }
+      );
+    }
 
     await updateCheckinRecord(id, updates);
     return NextResponse.json({ success: true, id });

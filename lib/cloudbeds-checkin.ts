@@ -626,8 +626,6 @@ function findTyeRateForRoomType(rates: any[], roomTypeID: string | number | null
   return { allRatesForRoomType, tyeRate };
 }
 
-const TYE_RATE_LOOKUP_FAILED_MSG =
-  'TYE rate plan was not found for this room type in Cloudbeds.';
 
 /** Identifies the unassigned room *line* on the reservation for postRoomAssign (not the physical room id from getRooms). */
 function extractReservationRoomLineId(root: any): string | null {
@@ -1004,6 +1002,37 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
           anchorEnd
         );
         tyeRate = findTyeRateForRoomType(anchorRates, roomTypeID).tyeRate;
+        // If still not found for this room type, try other room types in the anchor window.
+        // Some room types (e.g. double queen) may have the TYE plan listed under a different
+        // roomTypeID in getRatePlans — use the rate plan row from any matching TYE entry.
+        if (!tyeRate) {
+          tyeRate = anchorRates.find((rate: any) => {
+            const planID = String(rate.ratePlanID ?? rate.rate_plan_id ?? rate.ratePlan_id ?? '');
+            const planName = String(rate.ratePlanName ?? rate.name ?? '').toLowerCase();
+            return planID === '227753' || Number(planID) === 227753 || planName.includes('tye');
+          });
+          if (tyeRate) {
+            log('2_getRatePlans_tye_cross_type_fallback', {
+              note: `TYE rate not found for roomTypeID=${roomTypeID}; using TYE rate from a different room type as plan-ID fallback`,
+              tyeRatePlanID: tyeRate.ratePlanID ?? tyeRate.rate_plan_id ?? tyeRate.ratePlan_id,
+            });
+          }
+        }
+      }
+      // Final fallback: if still no TYE rate found in any room type, try the stay-window rates
+      // across all room types before giving up.
+      if (!tyeRate) {
+        tyeRate = stayRates.find((rate: any) => {
+          const planID = String(rate.ratePlanID ?? rate.rate_plan_id ?? rate.ratePlan_id ?? '');
+          const planName = String(rate.ratePlanName ?? rate.name ?? '').toLowerCase();
+          return planID === '227753' || Number(planID) === 227753 || planName.includes('tye');
+        });
+        if (tyeRate) {
+          log('2_getRatePlans_tye_stay_window_cross_type_fallback', {
+            note: `TYE rate found in stay-window rates for a different room type`,
+            tyeRatePlanID: tyeRate.ratePlanID ?? tyeRate.rate_plan_id ?? tyeRate.ratePlan_id,
+          });
+        }
       }
     }
 
@@ -1011,7 +1040,14 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       rateID = tyeRate.rateID ?? tyeRate.rate_id ?? tyeRate.id;
       ratePlanID = tyeRate.ratePlanID ?? tyeRate.rate_plan_id ?? tyeRate.ratePlan_id ?? 227753;
     } else if (wantTye) {
-      throw new Error(TYE_RATE_LOOKUP_FAILED_MSG);
+      // TYE rate plan not found in Cloudbeds for any room type — use the known plan ID directly.
+      // This ensures double queen and other room types that may not be listed under roomTypeID
+      // in getRatePlans still get the correct TYE rate applied rather than failing entirely.
+      log('2_getRatePlans_tye_plan_id_direct_fallback', {
+        roomTypeID,
+        note: 'TYE rate plan not found via getRatePlans for any room type — using ratePlanID 227753 directly',
+      });
+      ratePlanID = 227753;
     } else if (allRatesForRoomType.length > 0) {
       const available = allRatesForRoomType.filter(
         (rate: any) => (rate.roomsAvailable == null || rate.roomsAvailable > 0) && !rate.roomBlocked
@@ -1021,8 +1057,14 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       ratePlanID = fallback.ratePlanID ?? fallback.rate_plan_id ?? fallback.ratePlan_id;
     }
   } catch (e: unknown) {
-    if (e instanceof Error && e.message === TYE_RATE_LOOKUP_FAILED_MSG) {
-      throw e;
+    if (wantTye && ratePlanID == null) {
+      // Rate lookup threw unexpectedly — still proceed with the known TYE plan ID so
+      // the reservation is created rather than failing silently.
+      log('2_getRatePlans_error_tye_fallback', {
+        error: e instanceof Error ? e.message : String(e),
+        note: 'Using ratePlanID 227753 as fallback after getRatePlans error',
+      });
+      ratePlanID = 227753;
     }
     // Non-TYE or transient errors: proceed without rate (legacy behavior)
   }

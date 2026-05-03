@@ -230,21 +230,40 @@ export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutP
 
     // Update the server-side record immediately so admin Arrivals / Departures
     // show the checkout time even if the Cloudbeds call below fails.
-    // For local-fallback guests we patch by Firestore document ID; for Cloudbeds
-    // guests we patch by reservationID (existing behaviour).
-    const patchBody: Record<string, string> = { checkOutTime: checkoutIso };
+    // Pass full guest context so the server can create a stub record if no
+    // existing Firestore document is found (e.g. the Cloudbeds reservation was
+    // modified after kiosk check-in and the record has no reservationID link).
+    const patchBody: Record<string, string> = {
+      checkOutTime: checkoutIso,
+      // Include guest fields for stub creation when no record is found by ID.
+      firstName: selectedGuest.firstName ?? '',
+      lastName: selectedGuest.lastName ?? '',
+      roomNumber: selectedGuest.roomNumber ?? '',
+      checkInDate: selectedGuest.checkInDate ?? '',
+    };
     if (selectedGuest.cloudbedsReservationID) {
       patchBody.reservationID = selectedGuest.cloudbedsReservationID;
-    } else if (selectedGuest.localRecordID) {
+    }
+    if (selectedGuest.localRecordID) {
       patchBody.id = selectedGuest.localRecordID;
     }
-    if (patchBody.reservationID || patchBody.id) {
-      fetch('/api/checkin-records', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(patchBody),
-      }).catch(() => {});
+    if (selectedGuest.cloudbedsGuestID) {
+      patchBody.cloudbedsGuestID = selectedGuest.cloudbedsGuestID;
     }
+    // Always fire this — even when no ID is available, the server will create a
+    // stub checkout record so the departure time is never silently lost.
+    fetch('/api/checkin-records', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patchBody),
+    }).catch((patchErr) => {
+      postKioskEvent('Failed to record checkout time to server', {
+        reservationID: selectedGuest.cloudbedsReservationID,
+        localRecordID: selectedGuest.localRecordID,
+        checkoutIso,
+        error: patchErr?.message ?? String(patchErr),
+      });
+    });
 
     // For guests found only in local records (source === 'local'), Cloudbeds may
     // not be able to process the checkout (reservation modified / unavailable).
