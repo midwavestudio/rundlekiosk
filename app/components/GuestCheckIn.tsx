@@ -276,9 +276,11 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
                 (typeof cloudbedsResult.message === 'string' && cloudbedsResult.message) ||
                 `Cloudbeds check-in failed (HTTP ${cloudbedsResponse.status})`;
 
+              // Only retry on true network failures (status 0) or rate limits (429).
+              // Do NOT retry 5xx server errors — the server may have already created the reservation
+              // in Cloudbeds before the failure, and retrying would create a duplicate.
               const isRetryableStatus =
                 cloudbedsResponse.status === 0 ||
-                cloudbedsResponse.status >= 500 ||
                 cloudbedsResponse.status === 429;
 
               if (cloudbedsAttempt < MAX_CHECKIN_ATTEMPTS && isRetryableStatus) {

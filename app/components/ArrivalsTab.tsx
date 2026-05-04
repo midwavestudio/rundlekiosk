@@ -362,16 +362,18 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
   );
 
   const filteredRows = useMemo(() => {
-    if (!searchTerm.trim()) return rowsForSelectedDate;
-    const q = searchTerm.toLowerCase();
-    return rowsForSelectedDate.filter(r =>
+    const q = searchTerm.trim().toLowerCase();
+    if (!q) return rowsForSelectedDate;
+    // When a search term is active, search across all loaded dates so guests can be found
+    // regardless of which day is selected in the date picker.
+    return rows.filter(r =>
       r.guestName.toLowerCase().includes(q) ||
       r.clcNumber.toLowerCase().includes(q) ||
       r.phoneNumber.includes(q) ||
       r.roomNumber.toLowerCase().includes(q) ||
       (r.rawData.roomNumber || '').toLowerCase().includes(q)
     );
-  }, [rowsForSelectedDate, searchTerm]);
+  }, [rows, rowsForSelectedDate, searchTerm]);
 
   const sortedFilteredRows = useMemo(() => {
     const copy = [...filteredRows];
@@ -789,7 +791,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
                 <div style={{ fontSize: '40px', marginBottom: '8px' }}>📭</div>
                 <div style={{ fontSize: '14px' }}>
                   {searchTerm
-                    ? 'No guests match your search for this date'
+                    ? 'No guests match your search'
                     : 'No check-ins for this date'}
                 </div>
               </div>

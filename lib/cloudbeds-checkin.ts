@@ -1132,6 +1132,119 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     return reservationParams;
   };
 
+  // Step 3 (pre-check): Before creating a new reservation, search Cloudbeds for an existing one
+  // matching this guest + check-in date. This is the idempotency guard — if a prior attempt
+  // already created a reservation (e.g. the server succeeded but the response was lost and the
+  // client retried), we reuse that reservation instead of creating a duplicate.
+  if (!stopAfterReservationCreate) {
+    try {
+      const dupeParams = new URLSearchParams({
+        propertyID: CLOUDBEDS_PROPERTY_ID,
+        guestFirstName: guestFirstName,
+        guestLastName: guestLastName,
+        startDate: checkInDate,
+        endDate: checkOutDate,
+        statuses: 'confirmed,checked_in',
+        resultsFrom: '0',
+        resultsMax: '5',
+      });
+      log('3_precheck_existing_reservation_request', {
+        guestFirstName,
+        guestLastName,
+        startDate: checkInDate,
+        endDate: checkOutDate,
+      });
+      const dupeRes = await fetch(`${apiV13}/getReservations?${dupeParams.toString()}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/json' },
+      });
+      if (dupeRes.ok) {
+        const dupeJson = await dupeRes.json();
+        const existingList: any[] = Array.isArray(dupeJson?.data)
+          ? dupeJson.data
+          : Array.isArray(dupeJson?.reservations)
+          ? dupeJson.reservations
+          : [];
+        const nameMatch = existingList.find((r: any) => {
+          const fn = String(r.guestFirstName ?? r.firstName ?? '').trim().toLowerCase();
+          const ln = String(r.guestLastName ?? r.lastName ?? '').trim().toLowerCase();
+          return fn === guestFirstName.toLowerCase() && ln === guestLastName.toLowerCase();
+        });
+        if (nameMatch) {
+          const existingResID = String(nameMatch.reservationID ?? nameMatch.id ?? '');
+          const existingGuestID = String(nameMatch.guestID ?? nameMatch.guest?.guestID ?? '');
+          const existingRoom = String(
+            nameMatch.roomName ?? nameMatch.room?.roomName ?? nameMatch.rooms?.[0]?.roomName ?? selectedRoomName ?? roomName
+          );
+          log('3_precheck_existing_reservation_found', {
+            reservationID: existingResID,
+            status: nameMatch.status ?? nameMatch.reservationStatus,
+            roomName: existingRoom,
+            note: 'Reusing existing reservation — skipping postReservation to prevent duplicate',
+          });
+          if (existingResID) {
+            // Resume from the existing reservation: settle folio + assign room + check in.
+            const existingReservationData = nameMatch;
+            const existingSubResID = existingReservationData.unassigned?.[0]?.subReservationID ?? existingResID;
+            const existingHasUnassigned = !!(existingReservationData.unassigned?.length > 0);
+            const amountHint = extractPostReservationAmountHint(existingReservationData);
+            await settleReservationFolio(
+              apiV13,
+              CLOUDBEDS_PROPERTY_ID,
+              CLOUDBEDS_API_KEY,
+              existingResID,
+              `${guestFirstName} ${guestLastName}`,
+              log,
+              { amountDueHint: amountHint, trustStaleInvoiceAfterSuccessfulPayment: true, settleState }
+            );
+            if (existingHasUnassigned) {
+              const roomIdsForExisting = [...new Set([roomIdForStayPeriod, actualRoomID].filter(Boolean).map(String))];
+              for (const rid of roomIdsForExisting) {
+                const assignP = new URLSearchParams({
+                  propertyID: CLOUDBEDS_PROPERTY_ID,
+                  reservationID: existingResID,
+                  subReservationID: existingSubResID,
+                  newRoomID: rid,
+                  roomTypeID: String(roomTypeID),
+                  adjustPrice: 'true',
+                });
+                const assignRes = await fetch(`${apiV13}/postRoomAssign`, {
+                  method: 'POST',
+                  headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+                  body: assignP.toString(),
+                });
+                if (assignRes.ok) break;
+              }
+            }
+            const ciP = new URLSearchParams({
+              propertyID: CLOUDBEDS_PROPERTY_ID,
+              reservationID: existingResID,
+              status: 'checked_in',
+            });
+            await fetch(`${apiV13}/putReservation`, {
+              method: 'PUT',
+              headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: ciP.toString(),
+            });
+            return {
+              success: true,
+              guestID: existingGuestID || undefined,
+              reservationID: existingResID,
+              roomName: existingRoom,
+              message: 'Guest checked in using existing reservation (duplicate prevented)',
+              reservationStatus: 'checked_in',
+            };
+          }
+        } else {
+          log('3_precheck_existing_reservation_not_found', { note: 'No matching reservation — proceeding with postReservation' });
+        }
+      }
+    } catch (dupeCheckErr: any) {
+      log('3_precheck_existing_reservation_error', undefined, undefined, dupeCheckErr?.message);
+      // Non-fatal: proceed with normal postReservation flow
+    }
+  }
+
   // Step 3: Create reservation — try with a specific room first; if Cloudbeds rejects (e.g. prior guest still in-house),
   // retry without a physical room ID so inventory can still be booked as confirmed + paid; staff assigns the room later.
   let reservationData: any = {};

@@ -201,8 +201,9 @@ export async function POST(request: NextRequest) {
     }
 
     // Create new reservation and check in (shared logic with bulk-checkin).
-    // Retry up to 2 additional times on transient errors (5xx / network failures) so a brief
-    // Cloudbeds API hiccup does not permanently fail the reservation.
+    // No server-side retry loop here — performCloudbedsCheckIn already handles fallback attempts
+    // internally. Retrying this call from scratch after a partial failure (reservation already
+    // created in Cloudbeds) is the primary cause of duplicate reservations.
     const checkInParams = {
       firstName,
       lastName,
@@ -216,45 +217,27 @@ export async function POST(request: NextRequest) {
       checkOutDate: bodyCheckOut,
       debugLog,
     };
-    const MAX_SERVER_ATTEMPTS = 3;
-    let lastCreateError: any = null;
-    for (let attempt = 1; attempt <= MAX_SERVER_ATTEMPTS; attempt++) {
-      try {
-        if (attempt > 1) {
-          await new Promise((r) => setTimeout(r, 1500 * (attempt - 1)));
-          debugLog?.push({ step: `retry_attempt_${attempt}`, request: { attempt } });
-        }
-        const result = await performCloudbedsCheckIn(checkInParams);
-        const response: Record<string, unknown> = {
-          success: true,
-          guestID: result.guestID,
-          reservationID: result.reservationID,
-          roomName: result.roomName,
-          message: result.message,
-        };
-        if (result.reservationStatus) response.reservationStatus = result.reservationStatus;
-        if (debugLog && debugLog.length > 0) response.debugTrail = debugLog;
-        return NextResponse.json(response);
-      } catch (createError: any) {
-        if (createError?.message === 'Cloudbeds not configured') {
-          return NextResponse.json(
-            { success: true, message: 'Check-in completed (Cloudbeds not configured)', mockMode: true },
-            { status: 200 }
-          );
-        }
-        lastCreateError = createError;
-        // Only retry on errors that are likely transient (not data/validation errors).
-        const isRetryable =
-          !createError?.message?.includes('not found') &&
-          !createError?.message?.includes('Missing required') &&
-          !createError?.message?.includes('No reservationID') &&
-          !createError?.message?.includes('not available') &&
-          !createError?.message?.includes('could not accommodate');
-        if (!isRetryable || attempt === MAX_SERVER_ATTEMPTS) break;
-        console.warn(`[cloudbeds-checkin] Attempt ${attempt} failed (will retry):`, createError.message);
+    try {
+      const result = await performCloudbedsCheckIn(checkInParams);
+      const response: Record<string, unknown> = {
+        success: true,
+        guestID: result.guestID,
+        reservationID: result.reservationID,
+        roomName: result.roomName,
+        message: result.message,
+      };
+      if (result.reservationStatus) response.reservationStatus = result.reservationStatus;
+      if (debugLog && debugLog.length > 0) response.debugTrail = debugLog;
+      return NextResponse.json(response);
+    } catch (createError: any) {
+      if (createError?.message === 'Cloudbeds not configured') {
+        return NextResponse.json(
+          { success: true, message: 'Check-in completed (Cloudbeds not configured)', mockMode: true },
+          { status: 200 }
+        );
       }
+      throw createError;
     }
-    throw lastCreateError;
 
   } catch (error: any) {
     const errMsg = error.message || 'Failed to check in to Cloudbeds';
