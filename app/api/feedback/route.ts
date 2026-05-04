@@ -1,5 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { saveFeedback, getAllFeedback, updateFeedback, deleteFeedback } from '@/lib/feedback-store';
+import { saveFeedback, getAllFeedback, updateFeedback, deleteFeedback, type FeedbackMessage } from '@/lib/feedback-store';
+
+// ---------------------------------------------------------------------------
+// Server-side read cache — reduces Firestore reads when the admin dashboard
+// polls this endpoint. Cache is busted on any write (POST / PATCH / DELETE).
+// ---------------------------------------------------------------------------
+let cachedMessages: FeedbackMessage[] | null = null;
+let cacheExpiresAt = 0;
+const CACHE_TTL_MS = 60_000; // 60 seconds
+
+function bustCache() {
+  cachedMessages = null;
+  cacheExpiresAt = 0;
+}
 
 /** POST /api/feedback — guest submits a message */
 export async function POST(req: NextRequest) {
@@ -22,6 +35,7 @@ export async function POST(req: NextRequest) {
       status: 'new',
     });
 
+    bustCache();
     return NextResponse.json({ id }, { status: 201 });
   } catch (err) {
     console.error('[feedback] POST error:', err);
@@ -32,8 +46,22 @@ export async function POST(req: NextRequest) {
 /** GET /api/feedback — admin retrieves all messages */
 export async function GET() {
   try {
+    const now = Date.now();
+    if (cachedMessages && now < cacheExpiresAt) {
+      return NextResponse.json(
+        { messages: cachedMessages },
+        { headers: { 'Cache-Control': 'private, max-age=60' } }
+      );
+    }
+
     const messages = await getAllFeedback();
-    return NextResponse.json({ messages });
+    cachedMessages = messages;
+    cacheExpiresAt = now + CACHE_TTL_MS;
+
+    return NextResponse.json(
+      { messages },
+      { headers: { 'Cache-Control': 'private, max-age=60' } }
+    );
   } catch (err) {
     console.error('[feedback] GET error:', err);
     return NextResponse.json({ error: 'Failed to retrieve feedback.' }, { status: 500 });
@@ -49,6 +77,7 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'id is required.' }, { status: 400 });
     }
     await updateFeedback(id, { status, notes });
+    bustCache();
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error('[feedback] PATCH error:', err);
@@ -65,6 +94,7 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: 'id query parameter is required.' }, { status: 400 });
     }
     await deleteFeedback(id);
+    bustCache();
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error('[feedback] DELETE error:', err);

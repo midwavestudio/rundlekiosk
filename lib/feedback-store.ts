@@ -103,14 +103,16 @@ export async function saveFeedback(
   return id;
 }
 
-/** Return all feedback messages ordered newest first. */
-export async function getAllFeedback(): Promise<FeedbackMessage[]> {
+/** Return all feedback messages ordered newest first (capped at 200). */
+export async function getAllFeedback(limit = 200): Promise<FeedbackMessage[]> {
+  const cap = Math.min(Math.max(limit, 1), 500);
   const db = getDb();
   if (db) {
     try {
       const snap = await db
         .collection(COLLECTION)
         .orderBy('submittedAt', 'desc')
+        .limit(cap)
         .get();
       return snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<FeedbackMessage, 'id'>) }));
     } catch (err) {
@@ -118,9 +120,9 @@ export async function getAllFeedback(): Promise<FeedbackMessage[]> {
     }
   }
 
-  return Array.from(memoryStore.values()).sort(
-    (a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()
-  );
+  return Array.from(memoryStore.values())
+    .sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime())
+    .slice(0, cap);
 }
 
 /** Update the status or notes on a feedback message. */

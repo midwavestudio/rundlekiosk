@@ -6,6 +6,17 @@ import { getCheckinRecords, type CheckinRecord } from '@/lib/checkin-store';
 
 export const dynamic = 'force-dynamic';
 
+// ---------------------------------------------------------------------------
+// Server-side stats cache — avoids hammering Firestore + Cloudbeds on every
+// dashboard poll. Stats are stale-tolerant; 5 min TTL is fine.
+// ---------------------------------------------------------------------------
+interface StatsCache {
+  payload: object;
+  expiresAt: number;
+}
+let statsCache: StatsCache | null = null;
+const STATS_CACHE_TTL_MS = 5 * 60_000; // 5 minutes
+
 function localYmd(d: Date = new Date()): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -285,6 +296,13 @@ async function fetchStayingCheckedInStats(
 
 export async function GET(_request: NextRequest) {
   try {
+    const now = Date.now();
+    if (statsCache && now < statsCache.expiresAt) {
+      return NextResponse.json(statsCache.payload, {
+        headers: { 'Cache-Control': 'private, max-age=300' },
+      });
+    }
+
     const todayYmd = localYmd(new Date());
 
     const CLOUDBEDS_API_KEY = process.env.CLOUDBEDS_API_KEY;
@@ -332,7 +350,7 @@ export async function GET(_request: NextRequest) {
       inHouse = countActiveTyeInHouseFromRecords(records, oldestTyeMs);
     }
 
-    return NextResponse.json({
+    const payload = {
       success: true,
       stats: {
         inHouse,
@@ -341,6 +359,11 @@ export async function GET(_request: NextRequest) {
         arrivalsToday,
         departedToday,
       },
+    };
+    statsCache = { payload, expiresAt: Date.now() + STATS_CACHE_TTL_MS };
+
+    return NextResponse.json(payload, {
+      headers: { 'Cache-Control': 'private, max-age=300' },
     });
   } catch (err: any) {
     return NextResponse.json(

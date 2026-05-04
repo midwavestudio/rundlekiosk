@@ -100,7 +100,8 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
     };
 
     refreshErrorBadge();
-    const pollId = setInterval(refreshErrorBadge, 15000);
+    // Poll every 5 minutes — server caches for 60s, so Firestore is hit at most once/min
+    const pollId = setInterval(refreshErrorBadge, 5 * 60_000);
     return () => {
       cancelled = true;
       clearInterval(pollId);
@@ -125,7 +126,8 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
     };
 
     refreshFeedbackBadge();
-    const pollId = setInterval(refreshFeedbackBadge, 15000);
+    // Poll every 5 minutes — server caches for 60s, so Firestore is hit at most once/min
+    const pollId = setInterval(refreshFeedbackBadge, 5 * 60_000);
     return () => {
       cancelled = true;
       clearInterval(pollId);
@@ -575,7 +577,8 @@ function DashboardTab({ firestoreStatus }: { firestoreStatus: FirebaseStatus | n
     };
 
     loadStats();
-    const localId = setInterval(loadStats, 30000);
+    // Poll every 5 minutes — stats don't need second-by-second accuracy
+    const localId = setInterval(loadStats, 5 * 60_000);
     return () => {
       cancelled = true;
       clearInterval(localId);

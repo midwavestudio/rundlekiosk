@@ -1,5 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { saveEventLog, getRecentEventLogs } from '@/lib/event-log-store';
+import { saveEventLog, getRecentEventLogs, type EventLogEntry } from '@/lib/event-log-store';
+
+// ---------------------------------------------------------------------------
+// Server-side read cache — reduces Firestore reads when the admin dashboard
+// polls this endpoint. Cache is busted on any write (POST).
+// ---------------------------------------------------------------------------
+interface EventCache {
+  events: EventLogEntry[];
+  limit: number;
+  expiresAt: number;
+}
+let eventCache: EventCache | null = null;
+const EVENT_CACHE_TTL_MS = 60_000; // 60 seconds
+
+function bustEventCache() {
+  eventCache = null;
+}
 
 const ALLOWED_SOURCES = new Set([
   'api:cloudbeds-checkin',
@@ -32,6 +48,7 @@ export async function POST(req: NextRequest) {
       detail: body.detail,
     });
 
+    bustEventCache();
     return NextResponse.json({ id }, { status: 201 });
   } catch (err) {
     console.error('[event-log] POST error:', err);
@@ -44,8 +61,22 @@ export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
     const limit = Number(searchParams.get('limit') ?? '200') || 200;
+
+    const now = Date.now();
+    if (eventCache && eventCache.limit >= limit && now < eventCache.expiresAt) {
+      return NextResponse.json(
+        { events: eventCache.events.slice(0, limit) },
+        { headers: { 'Cache-Control': 'private, max-age=60' } }
+      );
+    }
+
     const events = await getRecentEventLogs(limit);
-    return NextResponse.json({ events });
+    eventCache = { events, limit, expiresAt: now + EVENT_CACHE_TTL_MS };
+
+    return NextResponse.json(
+      { events },
+      { headers: { 'Cache-Control': 'private, max-age=60' } }
+    );
   } catch (err) {
     console.error('[event-log] GET error:', err);
     return NextResponse.json({ error: 'Failed to load events.' }, { status: 500 });
