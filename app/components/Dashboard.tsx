@@ -18,6 +18,7 @@ import {
   loadErrorLogLastVisited,
 } from '@/lib/event-log-read';
 import { loadReadFeedbackIds, markFeedbacksRead } from '@/lib/feedback-read';
+import BackupButton from './BackupButton';
 
 interface DashboardProps {
   user: User;
@@ -628,6 +629,13 @@ function DashboardTab({ firestoreStatus }: { firestoreStatus: FirebaseStatus | n
             warning={firestoreStatus !== null && !firestoreStatus.connected}
             error={firestoreStatus !== null && !firestoreStatus.connected}
           />
+        </div>
+
+        <div style={{ marginTop: '18px', paddingTop: '16px', borderTop: '1px solid #e5e7eb' }}>
+          <p style={{ margin: '0 0 10px', fontSize: '13px', color: '#6b7280' }}>
+            Download a full JSON backup of all check-in and departure records from Firestore.
+          </p>
+          <BackupButton />
         </div>
       </div>
     </div>
