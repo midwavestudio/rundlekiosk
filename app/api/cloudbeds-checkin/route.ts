@@ -181,15 +181,8 @@ export async function POST(request: NextRequest) {
       if (!checkInResponse.ok) {
         const errorData = await checkInResponse.json().catch(() => ({}));
         const errMsg = errorData?.message ?? `HTTP ${checkInResponse.status}`;
-        logCheckInFailure({
-          guest: `${firstName} ${lastName}`,
-          room: roomName,
-          reservationID: existingReservationID,
-          error: `putReservation status=checked_in failed: ${errMsg}`,
-          debugTrail: errorData,
-          submittedRequest: submittedRequestLog,
-        });
-        throw new Error('Failed to check in guest in Cloudbeds');
+        // Single log via outer catch — do not call logCheckInFailure here (would duplicate with catch below).
+        throw new Error(`putReservation status=checked_in failed: ${errMsg}`);
       }
 
       return NextResponse.json({

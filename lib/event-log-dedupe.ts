@@ -62,6 +62,28 @@ function extractReservationFingerprint(ev: EventLogEntryLike): string {
   }
 }
 
+/** Merge kiosk `kiosk:*` + `api:*` rows when reservation ID is missing (same guest + simplified message). */
+function extractOccurrenceDedupeKey(ev: EventLogEntryLike): string {
+  if (!ev.detailJson) return '';
+  try {
+    const d = JSON.parse(ev.detailJson) as Record<string, unknown>;
+    const sr = (d.submittedRequest as Record<string, unknown>) || {};
+    const nestedDetail = (d.detail as Record<string, unknown>) || {};
+    // Kiosk client puts firstName/lastName/roomID on the root of `detail`; API routes use nested keys.
+    const merged: Record<string, unknown> = { ...nestedDetail, ...sr, ...d };
+    const guestRaw =
+      String(d.guest ?? '').trim() ||
+      `${String(merged.firstName ?? '').trim()} ${String(merged.lastName ?? '').trim()}`.trim();
+    const guest = guestRaw.toLowerCase();
+    const room = String(merged.roomName ?? merged.room ?? merged.roomID ?? '').trim().toLowerCase();
+    const msgNorm = simplifyErrorMessage(ev.message).trim().toLowerCase();
+    if (!guest || !msgNorm) return '';
+    return `${guest}|${room}|${msgNorm}`;
+  } catch {
+    return '';
+  }
+}
+
 function sourceRank(source: string): number {
   return source.startsWith('api:') ? 2 : 1;
 }
@@ -73,11 +95,14 @@ export function dedupeEvents<T extends EventLogEntryLike>(entries: T[]): T[] {
   for (const ev of entries) {
     const msgNorm = simplifyErrorMessage(ev.message).trim().toLowerCase();
     const rid = extractReservationFingerprint(ev);
+    const occ = extractOccurrenceDedupeKey(ev);
 
     const key =
       rid !== ''
         ? `rid:${rid}:${msgNorm}`
-        : `${ev.source}:${msgNorm}:${ev.detailJson ?? ''}`;
+        : occ !== ''
+          ? `occ:${occ}`
+          : `${ev.source}:${msgNorm}:${ev.detailJson ?? ''}`;
 
     const existing = byKey.get(key);
     if (!existing) {

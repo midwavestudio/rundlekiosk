@@ -44,6 +44,19 @@ function planNameLooksTye(name: unknown): boolean {
   return String(name ?? '').toLowerCase().includes('tye');
 }
 
+/** Kiosk walk-in guests use buildGuestSyntheticEmail → *@guest.com — list payloads often omit rate plan IDs. */
+function guestEmailLooksKioskSynthetic(obj: Record<string, unknown>): boolean {
+  const raw =
+    obj.guestEmail ??
+    obj.email ??
+    (Array.isArray(obj.guestList) && obj.guestList[0] && typeof obj.guestList[0] === 'object'
+      ? (obj.guestList[0] as Record<string, unknown>).guestEmail ??
+        (obj.guestList[0] as Record<string, unknown>).email
+      : undefined);
+  const e = String(raw ?? '').trim().toLowerCase();
+  return e.endsWith('@guest.com');
+}
+
 function scanRateRow(obj: Record<string, unknown>, tyeIds: Set<string>): boolean {
   const pid =
     obj.ratePlanID ?? obj.rate_plan_id ?? obj.ratePlan_id ?? obj.roomRatePlanID ?? obj.room_rate_plan_id;
@@ -66,6 +79,8 @@ export function reservationHasTyeRatePlan(reservation: any): boolean {
   const src = reservation.sourceID ?? reservation.source_id ?? reservation.sourceId;
   if (src != null && tyeSources.has(String(src).trim())) return true;
 
+  if (guestEmailLooksKioskSynthetic(reservation as Record<string, unknown>)) return true;
+
   if (scanRateRow(reservation as Record<string, unknown>, tyeIds)) return true;
 
   for (const row of mergeReservationRoomRows(reservation)) {
@@ -75,9 +90,25 @@ export function reservationHasTyeRatePlan(reservation: any): boolean {
   const guests = reservation.guestList ?? reservation.guests;
   if (Array.isArray(guests)) {
     for (const g of guests) {
-      if (g && typeof g === 'object' && scanRateRow(g as Record<string, unknown>, tyeIds)) return true;
+      if (g && typeof g === 'object') {
+        if (guestEmailLooksKioskSynthetic(g as Record<string, unknown>)) return true;
+        if (scanRateRow(g as Record<string, unknown>, tyeIds)) return true;
+      }
     }
   }
 
   return false;
+}
+
+/**
+ * Dashboard stats: getReservations list rows often omit rate plan fields; treat synthetic kiosk
+ * email appearing anywhere in the payload as a TYE stay.
+ */
+export function reservationLooksLikeTyeStayForStats(reservation: any): boolean {
+  if (reservationHasTyeRatePlan(reservation)) return true;
+  try {
+    return JSON.stringify(reservation).toLowerCase().includes('@guest.com');
+  } catch {
+    return false;
+  }
 }

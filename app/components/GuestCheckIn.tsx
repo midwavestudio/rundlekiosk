@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { buildGuestSyntheticEmail } from '@/lib/guest-email';
 import { formatCloudbedsRoomNameLabel, kioskPersistRoomDisplayName } from '@/lib/room-display';
 
@@ -56,6 +56,8 @@ function decodeCloudbedsUserMessage(msg: string): string {
 }
 
 export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInProps) {
+  /** Prevents double-submit (parallel check-ins created duplicate Cloudbeds reservations). */
+  const submitStartedRef = useRef(false);
   const [formData, setFormData] = useState<Omit<GuestData, 'class' | 'checkInTime'>>({
     firstName: '',
     lastName: '',
@@ -131,6 +133,9 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
       setError('Please fill in all fields');
       return;
     }
+
+    if (submitStartedRef.current) return;
+    submitStartedRef.current = true;
 
     setError('');
 
