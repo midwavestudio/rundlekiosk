@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { reservationLooksLikeTyeStayForStats } from '@/lib/cloudbeds-tye';
 import { mergeReservationRoomRows } from '@/lib/cloudbeds-rate-preserve';
-import { getCheckinRecords } from '@/lib/checkin-store';
+import { formatCloudbedsRoomNameLabel } from '@/lib/room-display';
+import { getCheckinRecords, type CheckinRecord } from '@/lib/checkin-store';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,6 +30,15 @@ function isExcludedSellableInventory(roomName: string, roomTypeName: string): bo
   return false;
 }
 
+function normalizeRoomKey(s: string): string {
+  return String(s)
+    .trim()
+    .toLowerCase()
+    .replace(/^room\s*/i, '')
+    .replace(/^#/, '')
+    .replace(/\s+/g, '');
+}
+
 function parseRoomsFromResponse(data: any): any[] {
   let rooms: any[] = [];
   if (Array.isArray(data.data) && data.data.length > 0) {
@@ -45,21 +55,32 @@ function parseRoomsFromResponse(data: any): any[] {
 }
 
 function extractReservationList(j: any): any[] {
-  if (!j) return [];
+  if (!j || j.success === false) return [];
   if (Array.isArray(j.data)) return j.data;
   if (Array.isArray(j.data?.reservations)) return j.data.reservations;
   if (Array.isArray(j.data?.data)) return j.data.data;
+  if (j.data && typeof j.data === 'object' && !Array.isArray(j.data)) {
+    const inner = (j.data as any).reservations ?? (j.data as any).list ?? (j.data as any).results;
+    if (Array.isArray(inner)) return inner;
+  }
   if (Array.isArray(j.reservations)) return j.reservations;
   if (Array.isArray(j)) return j;
   return [];
 }
 
-async function fetchSellableRoomIdSet(
+/** IDs + normalized room labels from getRooms for matching sparse getReservations list rows. */
+interface SellableInventory {
+  ids: Set<string>;
+  nameKeys: Set<string>;
+}
+
+async function fetchSellableInventory(
   apiBase: string,
   propertyID: string,
   headers: HeadersInit
-): Promise<Set<string>> {
-  const seen = new Set<string>();
+): Promise<SellableInventory> {
+  const ids = new Set<string>();
+  const nameKeys = new Set<string>();
   const pageSize = 500;
   let pageNumber = 1;
   const maxPages = 50;
@@ -83,34 +104,131 @@ async function fetchSellableRoomIdSet(
       const name = roomName != null ? String(roomName) : '';
       const type = roomTypeName != null ? String(roomTypeName) : '';
       if (!id || isExcludedSellableInventory(name, type)) continue;
-      if (!seen.has(id)) {
-        seen.add(id);
+
+      if (!ids.has(id)) {
+        ids.add(id);
         newCount++;
       }
+      const nk = normalizeRoomKey(name);
+      if (nk) nameKeys.add(nk);
+      const pretty = formatCloudbedsRoomNameLabel(name);
+      if (pretty !== '—') {
+        const pk = normalizeRoomKey(pretty);
+        if (pk) nameKeys.add(pk);
+      }
+      const idAsKey = normalizeRoomKey(id);
+      if (idAsKey) nameKeys.add(idAsKey);
     }
     if (newCount === 0) break;
     pageNumber++;
     if (pageNumber > maxPages) break;
   }
-  return seen;
+  return { ids, nameKeys };
 }
 
-function extractPhysicalRoomIdsFromReservationRow(r: any): string[] {
-  const ids: string[] = [];
-  for (const row of mergeReservationRoomRows(r)) {
-    if (!row || typeof row !== 'object') continue;
-    const id = (row as any).roomID ?? (row as any).roomId ?? (row as any).id;
-    if (id != null && String(id).trim()) ids.push(String(id).trim());
+/** Assigned / rooms / roomList — list payloads differ by endpoint/version. */
+function allReservationRoomRows(r: any): any[] {
+  const rows = [...mergeReservationRoomRows(r)];
+  const rl = r?.roomList;
+  if (Array.isArray(rl)) {
+    for (const x of rl) {
+      if (x && typeof x === 'object') rows.push(x);
+    }
   }
-  const top = r?.roomID ?? r?.roomId;
-  if (top != null && String(top).trim()) ids.push(String(top).trim());
-  return [...new Set(ids)];
+  return rows;
 }
 
-function reservationOccupiesSellableRoom(r: any, sellableIds: Set<string>): boolean {
-  const ids = extractPhysicalRoomIdsFromReservationRow(r);
-  if (ids.length === 0) return false;
-  return ids.some((id) => sellableIds.has(id));
+function rowTouchesSellable(row: any, sellable: SellableInventory): boolean {
+  if (!row || typeof row !== 'object') return false;
+  const idCandidates = [row.roomID, row.roomId, row.id].filter((x) => x != null && String(x).trim() !== '');
+  for (const raw of idCandidates) {
+    const id = String(raw).trim();
+    if (sellable.ids.has(id)) return true;
+    const nk = normalizeRoomKey(id);
+    if (nk && sellable.nameKeys.has(nk)) return true;
+  }
+  const nameCandidates = [row.roomName, row.name, row.roomNumber, row.roomLabel].filter(Boolean).map(String);
+  for (const n of nameCandidates) {
+    const nk = normalizeRoomKey(n);
+    if (nk && sellable.nameKeys.has(nk)) return true;
+    const pretty = formatCloudbedsRoomNameLabel(n);
+    if (pretty !== '—') {
+      const pk = normalizeRoomKey(pretty);
+      if (pk && sellable.nameKeys.has(pk)) return true;
+    }
+  }
+  return false;
+}
+
+function reservationOccupiesSellableRoom(r: any, sellable: SellableInventory): boolean {
+  for (const row of allReservationRoomRows(r)) {
+    if (rowTouchesSellable(row, sellable)) return true;
+  }
+  const topFields = [
+    r?.roomName,
+    r?.assignedRoomName,
+    r?.room?.roomName,
+    r?.rooms?.[0]?.roomName,
+    typeof r?.room === 'string' ? r.room : null,
+  ].filter(Boolean) as string[];
+  for (const n of topFields) {
+    const nk = normalizeRoomKey(String(n));
+    if (nk && sellable.nameKeys.has(nk)) return true;
+    const pretty = formatCloudbedsRoomNameLabel(String(n));
+    if (pretty !== '—') {
+      const pk = normalizeRoomKey(pretty);
+      if (pk && sellable.nameKeys.has(pk)) return true;
+    }
+  }
+  return false;
+}
+
+const ACTIVE_TYE_WINDOW_DAYS = 45;
+
+/** Firestore is authoritative for kiosk TYE when Cloudbeds list rows omit rate/email (TYE shows 0 otherwise). */
+function countActiveTyeInHouseFromRecords(records: CheckinRecord[], oldestCheckInMs: number): number {
+  const seen = new Set<string>();
+  let n = 0;
+  for (const r of records) {
+    if (String(r.class ?? '').toUpperCase() !== 'TYE' || r.checkOutTime) continue;
+    const t = r.checkInTime ? new Date(r.checkInTime).getTime() : 0;
+    if (t < oldestCheckInMs) continue;
+    const key = r.cloudbedsReservationID
+      ? `res:${r.cloudbedsReservationID}`
+      : `g:${r.firstName}|${r.lastName}|${r.checkInTime}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    n++;
+  }
+  return n;
+}
+
+/**
+ * Kiosk Firestore rows store human room labels; when Cloudbeds list payloads omit room IDs,
+ * occupancy from the API undercounts. Count active TYE guests whose room label maps to sellable inventory.
+ */
+function countSellableOccupancyHintFromRecords(records: CheckinRecord[], sellable: SellableInventory): number {
+  const seen = new Set<string>();
+  let n = 0;
+  for (const r of records) {
+    if (r.checkOutTime) continue;
+    if (String(r.class ?? '').toUpperCase() !== 'TYE') continue;
+    const rawRoom = String(r.roomNumber ?? '').trim();
+    const matchedById = Boolean(rawRoom && sellable.ids.has(rawRoom));
+    const roomCandidates = [
+      normalizeRoomKey(rawRoom),
+      normalizeRoomKey(formatCloudbedsRoomNameLabel(rawRoom)),
+    ].filter(Boolean);
+    const matchedByName = roomCandidates.some((k) => sellable.nameKeys.has(k));
+    if (!matchedById && !matchedByName) continue;
+    const dedupe = r.cloudbedsReservationID
+      ? `res:${r.cloudbedsReservationID}`
+      : `g:${r.firstName}|${r.lastName}|${r.checkInTime}`;
+    if (seen.has(dedupe)) continue;
+    seen.add(dedupe);
+    n++;
+  }
+  return n;
 }
 
 async function fetchStayingCheckedInStats(
@@ -118,11 +236,11 @@ async function fetchStayingCheckedInStats(
   propertyID: string,
   headers: HeadersInit,
   todayYmd: string,
-  sellableRoomIds: Set<string>
-): Promise<{ totalInHouseSellable: number; tyeInHouse: number }> {
+  sellable: SellableInventory
+): Promise<{ totalInHouseSellable: number; tyeInHouseCloudbeds: number }> {
   const seenReservation = new Set<string>();
   let totalInHouseSellable = 0;
-  let tyeInHouse = 0;
+  let tyeInHouseCloudbeds = 0;
   const pageSize = 500;
   let pageNumber = 1;
   const maxPages = 50;
@@ -150,11 +268,11 @@ async function fetchStayingCheckedInStats(
       if (!id || seenReservation.has(id)) continue;
       seenReservation.add(id);
 
-      if (reservationOccupiesSellableRoom(r, sellableRoomIds)) {
+      if (reservationOccupiesSellableRoom(r, sellable)) {
         totalInHouseSellable++;
       }
       if (reservationLooksLikeTyeStayForStats(r)) {
-        tyeInHouse++;
+        tyeInHouseCloudbeds++;
       }
     }
     if (list.length < pageSize) break;
@@ -162,7 +280,7 @@ async function fetchStayingCheckedInStats(
     if (pageNumber > maxPages) break;
   }
 
-  return { totalInHouseSellable, tyeInHouse };
+  return { totalInHouseSellable, tyeInHouseCloudbeds };
 }
 
 export async function GET(_request: NextRequest) {
@@ -185,27 +303,34 @@ export async function GET(_request: NextRequest) {
     let totalRooms = 60;
     let available = 0;
 
+    const from = new Date();
+    from.setDate(from.getDate() - ACTIVE_TYE_WINDOW_DAYS);
+    const fromYmd = localYmd(from);
+    const records = await getCheckinRecords({ from: fromYmd, to: todayYmd, limit: 1000 });
+    const arrivalsToday = records.filter((r) => isoToLocalYmd(r.checkInTime) === todayYmd).length;
+    const departedToday = records.filter((r) => isoToLocalYmd(r.checkOutTime) === todayYmd).length;
+
+    const oldestTyeMs = from.getTime();
+
     if (CLOUDBEDS_API_KEY && CLOUDBEDS_PROPERTY_ID) {
-      const sellableIds = await fetchSellableRoomIdSet(apiV13, CLOUDBEDS_PROPERTY_ID, headers);
-      totalRooms = Math.max(sellableIds.size, 1);
+      const sellable = await fetchSellableInventory(apiV13, CLOUDBEDS_PROPERTY_ID, headers);
+      totalRooms = Math.max(sellable.ids.size, 1);
 
       const occupancy = await fetchStayingCheckedInStats(
         apiV13,
         CLOUDBEDS_PROPERTY_ID,
         headers,
         todayYmd,
-        sellableIds
+        sellable
       );
-      inHouse = occupancy.tyeInHouse;
-      totalOccupiedSellable = occupancy.totalInHouseSellable;
+      const tyeFromFirestore = countActiveTyeInHouseFromRecords(records, oldestTyeMs);
+      inHouse = Math.max(occupancy.tyeInHouseCloudbeds, tyeFromFirestore);
+      const occupancyFromFirestore = countSellableOccupancyHintFromRecords(records, sellable);
+      totalOccupiedSellable = Math.max(occupancy.totalInHouseSellable, occupancyFromFirestore);
       available = Math.max(totalRooms - totalOccupiedSellable, 0);
+    } else {
+      inHouse = countActiveTyeInHouseFromRecords(records, oldestTyeMs);
     }
-
-    const from = new Date();
-    from.setDate(from.getDate() - 45);
-    const records = await getCheckinRecords({ from: localYmd(from), to: todayYmd, limit: 1000 });
-    const arrivalsToday = records.filter((r) => isoToLocalYmd(r.checkInTime) === todayYmd).length;
-    const departedToday = records.filter((r) => isoToLocalYmd(r.checkOutTime) === todayYmd).length;
 
     return NextResponse.json({
       success: true,
