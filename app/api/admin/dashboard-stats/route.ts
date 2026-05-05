@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { reservationLooksLikeTyeStayForStats } from '@/lib/cloudbeds-tye';
+import { getTyeSourceIdSet } from '@/lib/cloudbeds-tye';
 import { mergeReservationRoomRows } from '@/lib/cloudbeds-rate-preserve';
 import { formatCloudbedsRoomNameLabel } from '@/lib/room-display';
 import { getCheckinRecords, type CheckinRecord } from '@/lib/checkin-store';
@@ -248,10 +248,9 @@ async function fetchStayingCheckedInStats(
   headers: HeadersInit,
   todayYmd: string,
   sellable: SellableInventory
-): Promise<{ totalInHouseSellable: number; tyeInHouseCloudbeds: number }> {
+): Promise<{ totalInHouseSellable: number }> {
   const seenReservation = new Set<string>();
   let totalInHouseSellable = 0;
-  let tyeInHouseCloudbeds = 0;
   const pageSize = 500;
   let pageNumber = 1;
   const maxPages = 50;
@@ -282,16 +281,66 @@ async function fetchStayingCheckedInStats(
       if (reservationOccupiesSellableRoom(r, sellable)) {
         totalInHouseSellable++;
       }
-      if (reservationLooksLikeTyeStayForStats(r)) {
-        tyeInHouseCloudbeds++;
-      }
     }
     if (list.length < pageSize) break;
     pageNumber++;
     if (pageNumber > maxPages) break;
   }
 
-  return { totalInHouseSellable, tyeInHouseCloudbeds };
+  return { totalInHouseSellable };
+}
+
+/**
+ * Count in-house TYE reservations using only checked-in rows filtered by known TYE source IDs.
+ * This avoids scanning/classifying all checked-in reservations with heuristic matching.
+ */
+async function fetchTyeInHouseBySource(
+  apiBase: string,
+  propertyID: string,
+  headers: HeadersInit,
+  todayYmd: string
+): Promise<number> {
+  const tyeSources = Array.from(getTyeSourceIdSet()).filter(Boolean);
+  if (tyeSources.length === 0) return 0;
+
+  const seenReservation = new Set<string>();
+  const pageSize = 500;
+  const maxPages = 50;
+
+  for (const sourceID of tyeSources) {
+    let pageNumber = 1;
+    for (;;) {
+      const qs = new URLSearchParams({
+        propertyID,
+        status: 'checked_in',
+        sourceID,
+        pageNumber: String(pageNumber),
+        pageSize: String(pageSize),
+        includeAllRooms: 'true',
+        sortByRecent: 'true',
+      });
+      const url = `${apiBase}/getReservations?${qs.toString()}`;
+      const res = await fetch(url, { method: 'GET', headers });
+      if (!res.ok) break;
+      const data = await res.json();
+      const list = extractReservationList(data);
+      if (list.length === 0) break;
+
+      for (const r of list) {
+        const out = String(r.endDate ?? r.checkOutDate ?? '').trim();
+        if (out && out < todayYmd) continue;
+        const id = String(r.reservationID ?? '').trim();
+        if (!id || seenReservation.has(id)) continue;
+        seenReservation.add(id);
+      }
+
+      if (list.length < pageSize) break;
+      pageNumber++;
+      if (pageNumber > maxPages) break;
+    }
+  }
+
+  return seenReservation.size;
 }
 
 export async function GET(_request: NextRequest) {
@@ -341,8 +390,14 @@ export async function GET(_request: NextRequest) {
         todayYmd,
         sellable
       );
+      const tyeInHouseCloudbeds = await fetchTyeInHouseBySource(
+        apiV13,
+        CLOUDBEDS_PROPERTY_ID,
+        headers,
+        todayYmd
+      );
       const tyeFromFirestore = countActiveTyeInHouseFromRecords(records, oldestTyeMs);
-      inHouse = Math.max(occupancy.tyeInHouseCloudbeds, tyeFromFirestore);
+      inHouse = Math.max(tyeInHouseCloudbeds, tyeFromFirestore);
       const occupancyFromFirestore = countSellableOccupancyHintFromRecords(records, sellable);
       totalOccupiedSellable = Math.max(occupancy.totalInHouseSellable, occupancyFromFirestore);
       available = Math.max(totalRooms - totalOccupiedSellable, 0);
