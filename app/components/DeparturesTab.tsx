@@ -328,16 +328,10 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
   }, [checkedInGuests, checkOutHistory, roomNameById]);
 
   const dateFilteredRows = useMemo(() => {
-    const todayYmd = localYmd(new Date());
     return rows.filter((r) => {
-      if (r.status === 'checked_out') {
-        return !!(r.checkOutIso && isoToLocalYmd(r.checkOutIso) === selectedDate);
-      }
-      // Pending (still in house): show only when viewing today — same idea as arrivals “today’s activity”.
-      if (r.status === 'checked_in') {
-        return selectedDate === todayYmd;
-      }
-      return false;
+      // Departures should only include guests with a real checkout timestamp.
+      if (r.status !== 'checked_out' || !r.checkOutIso) return false;
+      return isoToLocalYmd(r.checkOutIso) === selectedDate;
     });
   }, [rows, selectedDate]);
 
