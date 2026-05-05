@@ -189,11 +189,19 @@ function guestToRow(
   };
 }
 
+/** Stable dedup key used to merge local + server records without duplicates.
+ *
+ * Must never collapse two distinct stays by the same guest. Name-only matching
+ * is intentionally excluded — a guest can check in multiple times (different
+ * dates / rooms) and each stay must remain a separate row.
+ */
 function guestDedupeKey(g: StoredGuest): string {
   if (g.cloudbedsReservationID) return `res:${g.cloudbedsReservationID}`;
   if (g.checkInTime) return `time:${g.firstName}|${g.lastName}|${g.checkInTime}`;
   if (g.checkOutTime) return `out:${g.firstName}|${g.lastName}|${g.checkOutTime}`;
-  return `name:${g.firstName}|${g.lastName}`;
+  // Last resort: include a high-resolution timestamp so two unknown records
+  // never collapse into each other.
+  return `unknown:${g.firstName}|${g.lastName}|${Date.now()}|${Math.random()}`;
 }
 
 function mergeGuestLists(local: StoredGuest[], server: StoredGuest[]): StoredGuest[] {

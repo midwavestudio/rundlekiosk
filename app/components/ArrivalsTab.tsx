@@ -179,11 +179,18 @@ function rowMarkKey(g: CheckedInGuest): string {
   return `time:${guestMatchKey(g)}`;
 }
 
-/** Stable dedup key used to merge local + server records without duplicates. */
+/** Stable dedup key used to merge local + server records without duplicates.
+ *
+ * Two records represent the same check-in if and only if they share the same
+ * Cloudbeds reservation ID, OR they share the same guest name + check-in
+ * timestamp (the timestamp is always set at submission time so it is always
+ * present). We intentionally do NOT fall back to name-only matching because
+ * the same guest can legitimately check in more than once (different dates,
+ * different rooms) and a name-only key would collapse those into one row.
+ */
 function guestDedupeKey(g: CheckedInGuest): string {
   if (g.cloudbedsReservationID) return `res:${g.cloudbedsReservationID}`;
-  if (g.checkInTime) return `time:${g.firstName}|${g.lastName}|${g.checkInTime}`;
-  return `name:${g.firstName}|${g.lastName}`;
+  return `time:${g.firstName}|${g.lastName}|${g.checkInTime}`;
 }
 
 /**
