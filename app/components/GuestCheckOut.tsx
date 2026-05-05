@@ -137,6 +137,40 @@ export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutP
   /** Prevents double confirmation taps from firing duplicate checkout API calls / logs. */
   const checkoutInFlightRef = useRef(false);
 
+  const persistCheckoutRecord = async (
+    checkoutIso: string,
+    guest: CloudbedsGuest
+  ): Promise<void> => {
+    const patchBody: Record<string, string> = {
+      checkOutTime: checkoutIso,
+      firstName: guest.firstName ?? '',
+      lastName: guest.lastName ?? '',
+      roomNumber: guest.roomNumber ?? '',
+      checkInDate: guest.checkInDate ?? '',
+    };
+    if (guest.cloudbedsReservationID) {
+      patchBody.reservationID = guest.cloudbedsReservationID;
+    }
+    if (guest.localRecordID) {
+      patchBody.id = guest.localRecordID;
+    }
+    if (guest.cloudbedsGuestID) {
+      patchBody.cloudbedsGuestID = guest.cloudbedsGuestID;
+    }
+
+    const patchRes = await fetch('/api/checkin-records', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patchBody),
+    });
+    const patchData = await patchRes.json().catch(() => ({}));
+    if (!patchRes.ok || patchData?.success !== true) {
+      throw new Error(
+        patchData?.error || `Failed to save checkout record (${patchRes.status})`
+      );
+    }
+  };
+
   // Live search Cloudbeds whenever the query changes (debounced)
   useEffect(() => {
     const q = searchQuery.trim();
@@ -233,37 +267,18 @@ export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutP
     // Pass full guest context so the server can create a stub record if no
     // existing Firestore document is found (e.g. the Cloudbeds reservation was
     // modified after kiosk check-in and the record has no reservationID link).
-    const patchBody: Record<string, string> = {
-      checkOutTime: checkoutIso,
-      // Include guest fields for stub creation when no record is found by ID.
-      firstName: selectedGuest.firstName ?? '',
-      lastName: selectedGuest.lastName ?? '',
-      roomNumber: selectedGuest.roomNumber ?? '',
-      checkInDate: selectedGuest.checkInDate ?? '',
-    };
-    if (selectedGuest.cloudbedsReservationID) {
-      patchBody.reservationID = selectedGuest.cloudbedsReservationID;
-    }
-    if (selectedGuest.localRecordID) {
-      patchBody.id = selectedGuest.localRecordID;
-    }
-    if (selectedGuest.cloudbedsGuestID) {
-      patchBody.cloudbedsGuestID = selectedGuest.cloudbedsGuestID;
-    }
-    // Always fire this — even when no ID is available, the server will create a
-    // stub checkout record so the departure time is never silently lost.
-    fetch('/api/checkin-records', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(patchBody),
-    }).catch((patchErr) => {
+    // Always persist this before Cloudbeds call — if this fails we still continue
+    // checkout, but we emit an event so missing timestamps can be investigated.
+    try {
+      await persistCheckoutRecord(checkoutIso, selectedGuest);
+    } catch (patchErr: any) {
       postKioskEvent('Failed to record checkout time to server', {
         reservationID: selectedGuest.cloudbedsReservationID,
         localRecordID: selectedGuest.localRecordID,
         checkoutIso,
         error: patchErr?.message ?? String(patchErr),
       });
-    });
+    }
 
     // For guests found only in local records (source === 'local'), Cloudbeds may
     // not be able to process the checkout (reservation modified / unavailable).

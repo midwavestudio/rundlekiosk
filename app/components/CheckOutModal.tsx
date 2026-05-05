@@ -12,6 +12,29 @@ export default function CheckOutModal({ reservation, onClose }: CheckOutModalPro
   const [step, setStep] = useState<'confirm' | 'processing' | 'success'>('confirm');
   const [isSameDay, setIsSameDay] = useState(false);
 
+  const persistCheckoutRecord = async (checkOutTime: string) => {
+    const payload: Record<string, string> = {
+      checkOutTime,
+      firstName: String(reservation.rawData?.firstName ?? reservation.firstName ?? '').trim(),
+      lastName: String(reservation.rawData?.lastName ?? reservation.lastName ?? '').trim(),
+      roomNumber: String(reservation.rawData?.roomNumber ?? reservation.roomNumber ?? ''),
+      checkInDate: String(reservation.checkInDate ?? reservation.rawData?.checkInDate ?? ''),
+    };
+    if (reservation.rawData?._serverId) payload.id = String(reservation.rawData._serverId);
+    if (reservation.rawData?.cloudbedsReservationID) payload.reservationID = String(reservation.rawData.cloudbedsReservationID);
+    if (reservation.rawData?.cloudbedsGuestID) payload.cloudbedsGuestID = String(reservation.rawData.cloudbedsGuestID);
+
+    const response = await fetch('/api/checkin-records', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data?.success !== true) {
+      throw new Error(data?.error || `Failed to persist check-out record (${response.status})`);
+    }
+  };
+
   const formatDisplayDate = (value?: string) => {
     if (!value) return '—';
     const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -81,17 +104,9 @@ export default function CheckOutModal({ reservation, onClose }: CheckOutModalPro
         localStorage.setItem('checkOutHistory', JSON.stringify(checkOutHistory));
       }
 
-      // Update server-side record so all admin devices see the checkout time.
-      if (reservation.rawData?.cloudbedsReservationID) {
-        fetch('/api/checkin-records', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            reservationID: reservation.rawData.cloudbedsReservationID,
-            checkOutTime,
-          }),
-        }).catch(() => {});
-      }
+      // Persist checkout to Firestore before success UI so Arrivals/Departures always
+      // have a departure timestamp, even when reservation links are incomplete.
+      await persistCheckoutRecord(checkOutTime);
 
       setStep('success');
     } catch (error: any) {
