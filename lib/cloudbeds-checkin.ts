@@ -1417,6 +1417,45 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     return { ok, text: responseText, data: parsed };
   };
 
+  /**
+   * Last-resort attempts when Cloudbeds blocks the normal path with inventory /
+   * overbooking-style errors. Prefer creating *some* reservation over failing.
+   *
+   * 1. If the first attempt used a physical room, try booking by room type only
+   *    (no pinned room) — often succeeds when the specific room is “overbooked”.
+   * 2. If the first attempt was already type-only (no room ID available), try
+   *    room-ID-only mode to bypass type-level inventory counting.
+   */
+  const attemptFinalInventoryFallbacks = async (): Promise<boolean> => {
+    if (canAttachPhysicalRoomToReservation) {
+      const typeOnly = await runPostReservation({ attachPhysicalRoom: false });
+      if (typeOnly.ok) {
+        reservationData = typeOnly.data;
+        log('3_postReservation_fallback_room_type_only_override', {
+          note: 'Booked room type without pinning physical room (inventory / overbooking override)',
+        });
+        return true;
+      }
+    }
+    if (
+      !canAttachPhysicalRoomToReservation &&
+      roomIdForCreate != null &&
+      !stopAfterReservationCreate
+    ) {
+      const ridOnly = await runPostReservation({ attachPhysicalRoom: true, roomIdOnly: true });
+      if (ridOnly.ok) {
+        reservationData = ridOnly.data;
+        confirmedPayOnly = true;
+        log('3_postReservation_fallback_room_id_only_after_type_only', {
+          note: 'Initial type-only postReservation failed; succeeded with room-ID-only inventory bypass',
+          roomID: String(roomIdForCreate),
+        });
+        return true;
+      }
+    }
+    return false;
+  };
+
   if (stopAfterReservationCreate && (!canAttachPhysicalRoomToReservation || roomIdForCreate == null)) {
     throw new Error(
       'TYE block requires a bookable physical room ID from Cloudbeds. Unset CLOUDBEDS_SKIP_POST_RESERVATION_ROOM_ID if it is set to 1, or ensure getRooms returns this room for the stay dates.'
@@ -1472,8 +1511,9 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
         note: 'First postReservation failed but a matching reservation exists — continuing without creating another',
       });
     } else if (roomIdForCreate != null) {
-      // Room-ID-only targets the guest’s chosen physical room. Do **not** fall back to room-type-only
-      // postReservation — that creates a separate booking on Cloudbeds’ default room for the type (duplicate stays).
+      // 1) Room-ID-only: bypasses type-level inventory. 2) If that fails, try room-type-only
+      // (no physical room) to override overbooking on the specific room. 3) Backdated room-id-only
+      // for past start dates. Intentionally may create an unassigned line so staff can assign in PMS.
       const fourth = await runPostReservation({ attachPhysicalRoom: true, roomIdOnly: true });
       if (fourth.ok) {
         reservationData = fourth.data;
@@ -1482,6 +1522,8 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
           note: 'Type-level inventory issue; booked using physical room ID only',
           roomID: String(roomIdForCreate),
         });
+      } else if (await attemptFinalInventoryFallbacks()) {
+        // reservationData set — room-type-only or alternate bypass succeeded
       } else {
         const today = getLocalDateStr(new Date());
         if (checkInDate < today) {
@@ -1521,7 +1563,9 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
         first.data?.message ||
         first.text ||
         'Failed to create reservation in Cloudbeds';
-      throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
+      if (!(await attemptFinalInventoryFallbacks())) {
+        throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
+      }
     }
   } else {
     const msg =
@@ -1530,7 +1574,9 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       (stopAfterReservationCreate
         ? `Room "${selectedRoomName ?? roomName}" is not available for ${checkInDate} (Cloudbeds could not book that specific room).`
         : 'Failed to create reservation in Cloudbeds');
-    throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
+    if (!(await attemptFinalInventoryFallbacks())) {
+      throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
+    }
   }
 
   const reservationID = reservationData.data?.reservationID || reservationData.reservationID;
