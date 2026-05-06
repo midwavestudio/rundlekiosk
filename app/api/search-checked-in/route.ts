@@ -12,6 +12,9 @@ import { findActiveByName } from '@/lib/checkin-store';
  *
  * Important: Cloudbeds getReservations uses firstName / lastName filters (not guestName).
  * We keep requests small to avoid provider-side "could not accommodate your request" errors.
+ *
+ * After matching, we return at most one reservation per guest (latest stay by check-in
+ * start date) so the kiosk does not list multiple past stays for the same person.
  */
 
 function normalize(s: string): string {
@@ -28,6 +31,63 @@ function uniqueByReservation(rows: any[]): any[] {
     out.push(r);
   }
   return out;
+}
+
+function isoMs(v: unknown): number {
+  const t = String(v ?? '').trim();
+  if (!t) return 0;
+  const d = new Date(t);
+  return Number.isNaN(d.getTime()) ? 0 : d.getTime();
+}
+
+/** Stay start for ordering “most recent” active reservation for the same guest. */
+function parseStayStartMs(r: any): number {
+  const raw = r.startDate ?? r.checkInDate ?? '';
+  const t = String(raw).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(t)) {
+    const d = new Date(`${t.slice(0, 10)}T12:00:00Z`);
+    return Number.isNaN(d.getTime()) ? 0 : d.getTime();
+  }
+  return isoMs(raw);
+}
+
+function guestDedupeKey(r: any): string {
+  const gid = String(
+    r.guestID ?? r.guestList?.[0]?.guestID ?? r.guestList?.[0]?.guestId ?? ''
+  ).trim();
+  if (gid) return `gid:${gid}`;
+  const gn = normalize(String(r.guestName ?? '').trim());
+  if (gn) return `name:${gn}`;
+  return `res:${String(r.reservationID ?? '')}`;
+}
+
+function isMoreRecentReservation(a: any, b: any): boolean {
+  const sa = parseStayStartMs(a);
+  const sb = parseStayStartMs(b);
+  if (sa !== sb) return sa > sb;
+  const ma =
+    isoMs(a.dateModified ?? a.modified ?? a.lastModified) ||
+    isoMs(a.dateCreated ?? a.createdDate ?? a.created);
+  const mb =
+    isoMs(b.dateModified ?? b.modified ?? b.lastModified) ||
+    isoMs(b.dateCreated ?? b.createdDate ?? b.created);
+  if (ma !== mb) return ma > mb;
+  const ra = parseInt(String(a.reservationID ?? '0'), 10) || 0;
+  const rb = parseInt(String(b.reservationID ?? '0'), 10) || 0;
+  return ra > rb;
+}
+
+/** One row per guest: keep the reservation with the latest stay start (then modified / id). */
+function keepMostRecentPerGuest(rows: any[]): any[] {
+  const byKey = new Map<string, any>();
+  for (const r of rows) {
+    const key = guestDedupeKey(r);
+    const prev = byKey.get(key);
+    if (!prev || isMoreRecentReservation(r, prev)) {
+      byKey.set(key, r);
+    }
+  }
+  return Array.from(byKey.values());
 }
 
 function reservationMatchesQuery(r: any, query: string): boolean {
@@ -139,8 +199,9 @@ export async function GET(request: NextRequest) {
     }
 
     const matched = rawList.filter((r) => reservationMatchesQuery(r, name));
+    const deduped = keepMostRecentPerGuest(matched);
 
-    const guests = matched.map((r) => {
+    const guests = deduped.map((r) => {
       const { firstName, lastName, displayName } = extractDisplayName(r);
       return {
         firstName,
