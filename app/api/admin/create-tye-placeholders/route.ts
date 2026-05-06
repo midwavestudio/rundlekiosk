@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cancelTyeBlockReservationInCloudbeds, performCloudbedsCheckIn } from '@/lib/cloudbeds-checkin';
-import { placeholderExistsForRoom, saveTyeBlockPlaceholderOrThrow } from '@/lib/tye-placeholder-store';
+import {
+  getPlaceholdersByDate,
+  saveTyeBlockPlaceholderOrThrow,
+  updatePlaceholder,
+} from '@/lib/tye-placeholder-store';
 
 /**
  * POST /api/admin/create-tye-placeholders
@@ -16,12 +20,17 @@ import { placeholderExistsForRoom, saveTyeBlockPlaceholderOrThrow } from '@/lib/
  */
 export async function POST(request: NextRequest) {
   try {
-    if (!process.env.CLOUDBEDS_API_KEY || !process.env.CLOUDBEDS_PROPERTY_ID) {
+    const cloudbedsApiKey = process.env.CLOUDBEDS_API_KEY;
+    const cloudbedsPropertyId = process.env.CLOUDBEDS_PROPERTY_ID;
+    if (!cloudbedsApiKey || !cloudbedsPropertyId) {
       return NextResponse.json(
         { success: false, error: 'Cloudbeds API credentials not configured' },
         { status: 503 }
       );
     }
+    const cloudbedsApiUrl = process.env.CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.2';
+    const baseUrl = cloudbedsApiUrl.replace(/\/v1\.\d+\/?$/, '');
+    const apiV13 = `${baseUrl.replace(/\/$/, '')}/v1.3`;
 
     const body = await request.json();
     const { roomIDs, dates: requestedDates, roomHints } = body as {
@@ -59,12 +68,45 @@ export async function POST(request: NextRequest) {
             ? roomHints[rid].trim()
             : undefined;
 
-        // Check "already exists" by both the name and the numeric ID hint so we don't create dupes.
-        const alreadyByName = await placeholderExistsForRoom(rid, forDate);
-        const alreadyByID = hint ? await placeholderExistsForRoom(hint, forDate) : false;
-        if (alreadyByName || alreadyByID) {
-          summary[forDate].skipped.push(rid);
-          continue;
+        // Check "already exists" by both display room key and numeric hint, then verify that
+        // any local placeholder still exists in Cloudbeds before skipping creation.
+        const sameDatePlaceholders = await getPlaceholdersByDate(forDate);
+        const matchingLocal = sameDatePlaceholders.filter((p) => {
+          if (p.status === 'cancelled') return false;
+          return String(p.roomID) === rid || (hint ? String(p.roomID) === hint : false);
+        });
+        if (matchingLocal.length > 0) {
+          let hasLiveCloudbedsReservation = false;
+          for (const placeholder of matchingLocal) {
+            const stillLive = await isPlaceholderReservationLiveInCloudbeds(
+              apiV13,
+              cloudbedsPropertyId,
+              cloudbedsApiKey,
+              placeholder.reservationID
+            );
+            if (stillLive) {
+              hasLiveCloudbedsReservation = true;
+              break;
+            }
+            await updatePlaceholder(placeholder.id, {
+              status: 'cancelled',
+              cloudbedsStatus: 'cancelled',
+              lastSyncedAt: new Date().toISOString(),
+            });
+            console.warn(
+              `[create-tye-placeholders] Local placeholder ${placeholder.reservationID} for room ${rid} on ${forDate} was stale (missing/cancelled in Cloudbeds). Marked cancelled locally and continuing with recreation.`
+            );
+          }
+          if (hasLiveCloudbedsReservation) {
+            summary[forDate].skipped.push(rid);
+            continue;
+          }
+        }
+
+        if (matchingLocal.length > 0) {
+          console.log(
+            `[create-tye-placeholders] Recreating room ${rid} for ${forDate} after clearing stale local placeholder record(s).`
+          );
         }
 
         let pendingCloudbedsReservationId: string | null = null;
@@ -144,6 +186,38 @@ export async function POST(request: NextRequest) {
     console.error('create-tye-placeholders error:', error);
     const message = error instanceof Error ? error.message : 'Internal server error';
     return NextResponse.json({ success: false, error: message }, { status: 500 });
+  }
+}
+
+async function isPlaceholderReservationLiveInCloudbeds(
+  apiV13: string,
+  propertyID: string,
+  apiKey: string,
+  reservationID: string
+): Promise<boolean> {
+  try {
+    const url = `${apiV13}/getReservation?propertyID=${encodeURIComponent(propertyID)}&reservationID=${encodeURIComponent(
+      reservationID
+    )}`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+    });
+    if (!res.ok) return false;
+    const parsed = await res.json();
+    if (!parsed?.success) return false;
+
+    const d = parsed.data ?? parsed;
+    const status = String(d?.status ?? d?.reservationStatus ?? '').toLowerCase();
+    if (status === 'cancelled' || status === 'canceled' || status === 'no_show') {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
   }
 }
 
