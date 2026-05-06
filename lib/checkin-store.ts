@@ -424,6 +424,54 @@ export async function findByGuestKey(
 }
 
 /**
+ * Find the most recent active (not yet checked-out) record for a guest by
+ * name and check-in date (YYYY-MM-DD). Used as a fallback when the
+ * cloudbedsReservationID is not yet linked on the stored record — e.g. when
+ * Firestore was written at kiosk check-in time before the Cloudbeds reservation
+ * ID was confirmed, or for same-day guests.
+ *
+ * Matching rules (all case-insensitive):
+ *   • firstName matches AND lastName matches (or lastName is blank on either side)
+ *   • checkInDateYmd OR the date prefix of checkInTime equals checkInDate
+ */
+export async function findByGuestName(
+  firstName: string,
+  lastName: string,
+  checkInDate: string
+): Promise<CheckinRecord | null> {
+  const fn = firstName.trim().toLowerCase();
+  const ln = lastName.trim().toLowerCase();
+  const ymd = checkInDate.trim();
+
+  function isMatch(r: CheckinRecord): boolean {
+    if (r.checkOutTime) return false;
+    const rfn = r.firstName.trim().toLowerCase();
+    const rln = r.lastName.trim().toLowerCase();
+    if (rfn !== fn) return false;
+    if (ln && rln && rln !== ln) return false;
+    const recordDate = r.checkInDateYmd ?? r.checkInTime?.slice(0, 10) ?? '';
+    return recordDate === ymd;
+  }
+
+  const db = getDb();
+  if (db) {
+    try {
+      const snap = await db
+        .collection(COLLECTION)
+        .where('firstName', '==', firstName.trim())
+        .orderBy('checkInTime', 'desc')
+        .limit(50)
+        .get();
+      const match = snap.docs.map(docToRecord).find(isMatch);
+      if (match) return match;
+    } catch (err) {
+      console.error('[checkin-store] findByGuestName failed.', err);
+    }
+  }
+  return memStore.find(isMatch) ?? null;
+}
+
+/**
  * Retrieve the most recent check-in records.
  * Optionally filter to a YYYY-MM-DD date range (applied in JS after fetching a large page).
  */

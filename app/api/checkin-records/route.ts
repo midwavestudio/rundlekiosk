@@ -4,6 +4,7 @@ import {
   updateCheckinRecord,
   getCheckinRecords,
   findByReservationID,
+  findByGuestName,
   upsertCheckinRecord,
   deleteCheckinRecord,
   deleteByReservationID,
@@ -102,9 +103,31 @@ export async function PATCH(request: NextRequest) {
     const body = await request.json();
     let { id } = body;
 
+    // ── 1. Find the record to update ────────────────────────────────────────
+    // Try in priority order so that checkout timestamps always land on the
+    // right Firestore document:
+    //   a) Explicit Firestore doc id (most precise)
+    //   b) cloudbedsReservationID equality query
+    //   c) Name + check-in date match (catches records created before the
+    //      reservation ID was written, e.g. when Firestore save succeeded
+    //      at check-in time but the Cloudbeds reservation was not yet linked)
+
     if (!id && body.reservationID) {
       const existing = await findByReservationID(String(body.reservationID));
       if (existing) id = existing.id;
+    }
+
+    if (!id && body.checkOutTime) {
+      // Fallback: name + check-in date — covers kiosk records that were saved
+      // without a reservationID (Cloudbeds call succeeded after Firestore write)
+      // and same-day guests whose record has no reservationID linked yet.
+      const firstName = String(body.firstName ?? '').trim();
+      const lastName = String(body.lastName ?? '').trim();
+      const checkInDate = String(body.checkInDate ?? '').trim();
+      if (firstName && checkInDate) {
+        const byName = await findByGuestName(firstName, lastName, checkInDate);
+        if (byName) id = byName.id;
+      }
     }
 
     const updates: Record<string, unknown> = {};
@@ -118,23 +141,31 @@ export async function PATCH(request: NextRequest) {
     if (body.phoneNumber !== undefined) updates.phoneNumber = String(body.phoneNumber);
     if (body.class !== undefined) updates.class = String(body.class);
     if (body.reservationStatus !== undefined) updates.reservationStatus = String(body.reservationStatus);
+    // Also stamp the reservationID onto the record if it wasn't there before
+    if (body.reservationID && !updates.cloudbedsReservationID) {
+      updates.cloudbedsReservationID = String(body.reservationID);
+    }
 
     if (!id) {
       // No existing record found. If we have a checkout time to record, create a
-      // stub record so the departure is never silently lost.  This covers guests
-      // whose Cloudbeds reservation was created or modified after kiosk check-in
-      // so the original Firestore record has no cloudbedsReservationID link.
+      // stub so the departure is never silently lost. This covers:
+      //   • Guests who checked in via Cloudbeds directly (not through the kiosk)
+      //   • Guests whose reservation was created or modified after kiosk check-in
       if (body.checkOutTime) {
-        // Derive a usable checkInTime: prefer explicit checkInTime, then convert
-        // checkInDate (YYYY-MM-DD) to a noon ISO string, then fall back to now.
+        // Use the real check-in date from Cloudbeds so the stub appears under
+        // the correct date in the Arrivals tab, not under today's date.
         let checkInTime: string;
-        if (body.checkInTime) {
+        if (body.checkInTime && String(body.checkInTime).length > 5) {
           checkInTime = String(body.checkInTime);
         } else if (body.checkInDate && /^\d{4}-\d{2}-\d{2}$/.test(String(body.checkInDate))) {
-          checkInTime = `${String(body.checkInDate)}T12:00:00.000Z`;
+          // Use noon local-ish time (avoids UTC date boundary shifting)
+          checkInTime = `${String(body.checkInDate)}T18:00:00.000Z`;
         } else {
           checkInTime = new Date().toISOString();
         }
+        const checkInDateYmd = body.checkInDate && /^\d{4}-\d{2}-\d{2}$/.test(String(body.checkInDate))
+          ? String(body.checkInDate)
+          : checkInTime.slice(0, 10);
         const newId = await saveCheckinRecord({
           firstName: String(body.firstName ?? '').trim() || 'Unknown',
           lastName: String(body.lastName ?? '').trim(),
@@ -143,16 +174,18 @@ export async function PATCH(request: NextRequest) {
           class: String(body.class ?? 'TYE'),
           roomNumber: String(body.roomNumber ?? ''),
           checkInTime,
-          ...(body.checkInDate && /^\d{4}-\d{2}-\d{2}$/.test(String(body.checkInDate))
-            ? { checkInDateYmd: String(body.checkInDate) }
-            : {}),
+          checkInDateYmd,
           checkOutTime: String(body.checkOutTime),
           ...(body.reservationID ? { cloudbedsReservationID: String(body.reservationID) } : {}),
           ...(body.cloudbedsReservationID ? { cloudbedsReservationID: String(body.cloudbedsReservationID) } : {}),
           ...(body.cloudbedsGuestID ? { cloudbedsGuestID: String(body.cloudbedsGuestID) } : {}),
           source: 'kiosk:checkout-stub',
         });
-        console.log('[checkin-records PATCH] No existing record found — created checkout stub:', newId, { reservationID: body.reservationID });
+        console.log('[checkin-records PATCH] No existing record — created checkout stub:', newId, {
+          reservationID: body.reservationID,
+          firstName: body.firstName,
+          checkInDate: body.checkInDate,
+        });
         return NextResponse.json({ success: true, id: newId, created: true });
       }
       return NextResponse.json(

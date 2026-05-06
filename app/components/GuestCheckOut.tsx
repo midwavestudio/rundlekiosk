@@ -141,10 +141,14 @@ export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutP
     checkoutIso: string,
     guest: CloudbedsGuest
   ): Promise<void> => {
+    // Resolve best available first/last name — Cloudbeds list payloads sometimes
+    // only populate displayName; fall back to splitting it so the name-based
+    // Firestore lookup in the PATCH handler can match the kiosk check-in record.
+    const { firstName: resolvedFirst, lastName: resolvedLast } = namesForKioskHistory(guest);
     const patchBody: Record<string, string> = {
       checkOutTime: checkoutIso,
-      firstName: guest.firstName ?? '',
-      lastName: guest.lastName ?? '',
+      firstName: resolvedFirst,
+      lastName: resolvedLast,
       roomNumber: guest.roomNumber ?? '',
       checkInDate: guest.checkInDate ?? '',
     };
@@ -240,13 +244,18 @@ export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutP
         checkOutHistory.push({ ...stored[idx], checkOutTime: checkoutIso });
       } else {
         const { firstName, lastName } = namesForKioskHistory(selectedGuest);
+        // Use the actual check-in date from Cloudbeds so the record can be
+        // matched by date in the Arrivals tab and checkin-store queries.
+        const syntheticCheckInTime = selectedGuest.checkInDate
+          ? `${selectedGuest.checkInDate}T18:00:00.000Z`
+          : checkoutIso;
         checkOutHistory.push({
           firstName,
           lastName,
           clcNumber: '',
           phoneNumber: '',
           class: 'TYE',
-          checkInTime: '',
+          checkInTime: syntheticCheckInTime,
           roomNumber: selectedGuest.roomNumber,
           cloudbedsReservationID: selectedGuest.cloudbedsReservationID,
           cloudbedsGuestID: selectedGuest.cloudbedsGuestID,
