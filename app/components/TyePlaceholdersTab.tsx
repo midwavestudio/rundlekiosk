@@ -136,6 +136,7 @@ export default function TyePlaceholdersTab() {
   // Action state
   const [creating, setCreating] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [cancellingReservationID, setCancellingReservationID] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [statusMessage, setStatusMessage] = useState('');
   /** Per-room/date failures from the last Block action (API summary.failed). */
@@ -470,6 +471,40 @@ export default function TyePlaceholdersTab() {
       setError(err?.message ?? 'Network error');
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const handleCancelBlock = async (p: Placeholder) => {
+    if (p.status === 'assigned' || p.status === 'cancelled') return;
+    const roomLabel = formatCloudbedsRoomNameLabel(p.roomName);
+    const ok = window.confirm(
+      `Cancel block for room ${roomLabel} on ${p.forDate}? This will cancel reservation ${p.reservationID} in Cloudbeds.`
+    );
+    if (!ok) return;
+
+    setCancellingReservationID(p.reservationID);
+    setStatusMessage('');
+    setError('');
+    setBlockFailures([]);
+    try {
+      const res = await fetch('/api/admin/cancel-tye-placeholder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reservationID: p.reservationID }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success !== true) {
+        setError(data.error ?? `Failed to cancel block (${res.status})`);
+        return;
+      }
+      setStatusMessage(
+        `Cancelled block for room ${roomLabel} on ${p.forDate}.`
+      );
+      await Promise.all([fetchSummary(), fetchRooms()]);
+    } catch (err: any) {
+      setError(err?.message ?? 'Network error cancelling block');
+    } finally {
+      setCancellingReservationID(null);
     }
   };
 
@@ -879,7 +914,7 @@ export default function TyePlaceholdersTab() {
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
                   <thead>
                     <tr style={{ background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
-                      {['Room', 'Type', 'Reservation ID', 'Status', 'Created'].map((h) => (
+                      {['Room', 'Type', 'Reservation ID', 'Status', 'Created', 'Actions'].map((h) => (
                         <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontWeight: 700, color: '#374151', fontSize: '11px', whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '0.07em' }}>{h}</th>
                       ))}
                     </tr>
@@ -902,6 +937,36 @@ export default function TyePlaceholdersTab() {
                         </td>
                         <td style={{ padding: '9px 14px', color: '#9ca3af', fontSize: '12px', whiteSpace: 'nowrap' }}>
                           {p.createdAt ? new Date(p.createdAt).toLocaleString() : '—'}
+                        </td>
+                        <td style={{ padding: '9px 14px', whiteSpace: 'nowrap' }}>
+                          {p.status === 'available' || p.status === 'externally_modified' ? (
+                            <button
+                              type="button"
+                              onClick={() => handleCancelBlock(p)}
+                              disabled={cancellingReservationID === p.reservationID}
+                              style={{
+                                padding: '6px 10px',
+                                borderRadius: '8px',
+                                border: '1px solid #fca5a5',
+                                background:
+                                  cancellingReservationID === p.reservationID ? '#fee2e2' : '#fff1f2',
+                                color: '#b91c1c',
+                                cursor:
+                                  cancellingReservationID === p.reservationID
+                                    ? 'not-allowed'
+                                    : 'pointer',
+                                fontWeight: 700,
+                                fontSize: '12px',
+                              }}
+                              title={`Cancel block reservation ${p.reservationID} in Cloudbeds`}
+                            >
+                              {cancellingReservationID === p.reservationID
+                                ? 'Cancelling…'
+                                : 'Cancel block'}
+                            </button>
+                          ) : (
+                            <span style={{ color: '#9ca3af', fontSize: '12px' }}>—</span>
+                          )}
                         </td>
                       </tr>
                     ))}
