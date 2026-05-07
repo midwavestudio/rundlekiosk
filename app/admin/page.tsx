@@ -257,7 +257,7 @@ export default function AdminPage() {
         <p style={{ margin: 0 }}>
           <strong>Guest Kiosk:</strong>{' '}
           <a href="/" style={{ color: '#8B6F47' }}>
-            Go to Guest Check-In/Out
+            Go to TYE Check-In/Out
           </a>
         </p>
       </div>

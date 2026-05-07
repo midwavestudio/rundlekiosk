@@ -5,6 +5,7 @@ import {
   getCheckinRecords,
   findByReservationID,
   findByGuestName,
+  findByGuestKey,
   upsertCheckinRecord,
   deleteCheckinRecord,
   deleteByReservationID,
@@ -214,12 +215,34 @@ export async function PATCH(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   try {
     const body = await request.json();
-    const id = body?.id ? String(body.id) : '';
-    const reservationID = body?.reservationID ? String(body.reservationID) : '';
+    const rawId = body?.id ? String(body.id).trim() : '';
+    let id =
+      rawId &&
+      rawId !== 'undefined' &&
+      rawId !== 'null' &&
+      rawId !== 'NaN'
+        ? rawId
+        : '';
+    const reservationID = body?.reservationID ? String(body.reservationID).trim() : '';
+
+    // Fallback identity for rows that don't carry a valid id/reservationID
+    const firstName = body?.firstName ? String(body.firstName).trim() : '';
+    const lastName = body?.lastName ? String(body.lastName).trim() : '';
+    const checkInTime = body?.checkInTime ? String(body.checkInTime).trim() : '';
+    const checkInDate = body?.checkInDate ? String(body.checkInDate).trim() : '';
+
+    if (!id && !reservationID && firstName && checkInTime) {
+      const byKey = await findByGuestKey(firstName, lastName, checkInTime);
+      if (byKey?.id) id = byKey.id;
+    }
+    if (!id && !reservationID && firstName && checkInDate) {
+      const byName = await findByGuestName(firstName, lastName, checkInDate);
+      if (byName?.id) id = byName.id;
+    }
 
     if (!id && !reservationID) {
       return NextResponse.json(
-        { success: false, error: 'Provide id or reservationID to identify the record' },
+        { success: false, error: 'Provide id, reservationID, or guest identity fields to identify the record' },
         { status: 400 }
       );
     }

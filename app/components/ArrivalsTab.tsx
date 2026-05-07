@@ -273,7 +273,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
           cloudbedsReservationID: r.cloudbedsReservationID ? String(r.cloudbedsReservationID) : undefined,
           cloudbedsGuestID: r.cloudbedsGuestID ? String(r.cloudbedsGuestID) : undefined,
           roomNumber: String(r.roomNumber ?? ''),
-          _serverId: String(r.id),
+          ...(r.id != null && String(r.id).trim() !== '' ? { _serverId: String(r.id) } : {}),
         }));
 
         const active = allRecords.filter((r) => !r.checkOutTime);
@@ -487,6 +487,10 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
           body: JSON.stringify({
             ...(row.rawData._serverId ? { id: row.rawData._serverId } : {}),
             ...(row.cloudbedsReservationID ? { reservationID: row.cloudbedsReservationID } : {}),
+            firstName: row.rawData.firstName,
+            lastName: row.rawData.lastName,
+            checkInTime: row.rawData.checkInTime,
+            checkInDate: row.checkInDate,
           }),
         });
         if (!serverRes.ok) {

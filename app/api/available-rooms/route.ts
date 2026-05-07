@@ -3,15 +3,27 @@ import { getAvailablePlaceholdersByDate } from '@/lib/tye-placeholder-store';
 
 export const dynamic = 'force-dynamic';
 
-/** Excluded from kiosk room picker — match `roomID` or `roomName` exactly (case-insensitive). */
+/** Excluded from kiosk/admin room pickers. */
 const KIOSK_ROOM_PICKER_EXCLUSIONS = ['227', 'CON', '303'];
 
+function normalizeRoomToken(raw: string): string {
+  return raw
+    .trim()
+    .toUpperCase()
+    .replace(/^ROOM\s+/i, '')
+    .replace(/\s*\([^)]*\)\s*$/u, '')
+    .trim();
+}
+
 function isExcludedFromKioskPicker(room: { roomID: string; roomName: string }): boolean {
-  const id = room.roomID.trim().toUpperCase();
-  const name = room.roomName.trim().toUpperCase();
+  const id = normalizeRoomToken(room.roomID);
+  const name = normalizeRoomToken(room.roomName);
   return KIOSK_ROOM_PICKER_EXCLUSIONS.some((ex) => {
-    const e = ex.trim().toUpperCase();
-    return e !== '' && (id === e || name === e);
+    const e = normalizeRoomToken(ex);
+    if (e === '') return false;
+    // Exact token match OR token followed by non-alnum boundary (e.g. "CON (Queen)")
+    const token = new RegExp(`^${e}(?:$|[^A-Z0-9])`);
+    return token.test(id) || token.test(name);
   });
 }
 

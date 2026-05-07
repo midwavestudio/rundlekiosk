@@ -82,7 +82,14 @@ export default function AdminCheckInTab() {
         const data = await res.json();
         if (cancelled) return;
         if (data.success) {
-          setRooms(data.rooms ?? []);
+          const filtered = Array.isArray(data.rooms)
+            ? data.rooms.filter((r: Room) => {
+                const id = String(r.roomID ?? '').trim().toUpperCase();
+                const name = String(r.roomName ?? '').trim().toUpperCase().replace(/\s*\([^)]*\)\s*$/u, '');
+                return id !== 'CON' && name !== 'CON' && !/^CON(?:$|[^A-Z0-9])/.test(name);
+              })
+            : [];
+          setRooms(filtered);
         } else {
           setRoomsError('Could not load rooms. Check Cloudbeds connection.');
         }

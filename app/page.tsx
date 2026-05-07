@@ -69,7 +69,7 @@ export default function Home() {
       <KioskDataSync />
       <div className="kiosk-header">
         <h1 onClick={handleTitleTap} style={{ userSelect: 'none', cursor: 'default' }}>
-          Welcome to Rundle Suites
+          TYE Check In
         </h1>
         <p className="subtitle">Please select an option to continue</p>
       </div>
