@@ -78,17 +78,19 @@ export async function POST(request: NextRequest) {
       placeholderReservationID,
       checkInDate: bodyCheckIn,
       checkOutDate: bodyCheckOut,
+      forceUnassigned,
       debug: enableDebug,
     } = body;
 
     if (firstName || lastName) guestLabel = `${firstName ?? ''} ${lastName ?? ''}`.trim();
     if (roomName) roomLabel = String(roomName);
 
-    console.log('Check-in API called with:', { firstName, lastName, roomName, clcNumber, classType, checkInDate: bodyCheckIn, checkOutDate: bodyCheckOut });
+    console.log('Check-in API called with:', { firstName, lastName, roomName, clcNumber, classType, checkInDate: bodyCheckIn, checkOutDate: bodyCheckOut, forceUnassigned: !!forceUnassigned });
     // Always collect debug steps so failures in the admin Error Log include a full trace.
     debugLog = [];
 
-    if (!String(firstName ?? '').trim() || !String(lastName ?? '').trim() || !roomName) {
+    // forceUnassigned requests don't need a physical roomName — validate name fields only.
+    if (!String(firstName ?? '').trim() || !String(lastName ?? '').trim() || (!roomName && !forceUnassigned)) {
       return NextResponse.json(
         { success: false, error: 'Missing required fields' },
         { status: 400 }
@@ -201,13 +203,14 @@ export async function POST(request: NextRequest) {
       firstName,
       lastName,
       phoneNumber,
-      roomName,
+      roomName: roomName ?? '',
       roomNameHint,
       clcNumber,
       classType,
       email,
       checkInDate: bodyCheckIn,
       checkOutDate: bodyCheckOut,
+      forceUnassigned: !!forceUnassigned,
       debugLog,
     };
     try {

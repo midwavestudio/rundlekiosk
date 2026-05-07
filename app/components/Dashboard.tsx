@@ -10,6 +10,7 @@ import CheckOutModal from './CheckOutModal';
 import TyePlaceholdersTab from './TyePlaceholdersTab';
 import FeedbackTab from './FeedbackTab';
 import EventLogTab from './EventLogTab';
+import AdminCheckInTab from './AdminCheckInTab';
 import { dedupeEvents } from '@/lib/event-log-dedupe';
 import {
   loadReadEventIds,
@@ -45,7 +46,7 @@ interface FeedbackEntry {
 
 export default function Dashboard({ user, onLogout }: DashboardProps) {
   const [activeTab, setActiveTab] = useState<
-    'dashboard' | 'arrivals' | 'departures' | 'tye-placeholders' | 'feedback' | 'event-log'
+    'dashboard' | 'arrivals' | 'departures' | 'admin-checkin' | 'tye-placeholders' | 'feedback' | 'event-log'
   >('dashboard');
   const [firestoreStatus, setFirestoreStatus] = useState<FirebaseStatus | null>(null);
   const [eventLogUnreadCount, setEventLogUnreadCount] = useState(0);
@@ -398,7 +399,7 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
             background: '#fafafa',
             overflowX: 'auto',
           }}>
-            {['dashboard', 'arrivals', 'departures', 'tye-placeholders', 'feedback', 'event-log'].map((tab) => (
+            {['dashboard', 'arrivals', 'departures', 'admin-checkin', 'tye-placeholders', 'feedback', 'event-log'].map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab as any)}
@@ -429,7 +430,9 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
                         ? 'Error Log'
                         : tab === 'dashboard'
                           ? 'Dashboard'
-                          : tab.charAt(0).toUpperCase() + tab.slice(1)}
+                          : tab === 'admin-checkin'
+                            ? 'Check In'
+                            : tab.charAt(0).toUpperCase() + tab.slice(1)}
                 </span>
                 {tab === 'event-log' && eventLogUnreadCount > 0 && (
                   <span
@@ -485,6 +488,7 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
             overflow: wideGuestTab ? 'hidden' : 'auto',
             overflowY: wideGuestTab ? 'hidden' : 'auto',
           }}>
+
             {activeTab === 'dashboard' && (
               <DashboardTab firestoreStatus={firestoreStatus} />
             )}
@@ -497,6 +501,9 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
             <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
               <DeparturesTab onCheckOut={handleCheckOut} />
             </div>
+          )}
+          {activeTab === 'admin-checkin' && (
+            <AdminCheckInTab />
           )}
           {activeTab === 'tye-placeholders' && (
             <TyePlaceholdersTab />
