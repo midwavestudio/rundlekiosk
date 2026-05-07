@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { buildGuestSyntheticEmail } from '@/lib/guest-email';
 import { formatCloudbedsRoomNameLabel } from '@/lib/room-display';
-import { ADMIN_ACCENT, ADMIN_ACCENT_MUTED, ADMIN_TINT_BG, ADMIN_TINT_BORDER, ADMIN_TINT_TEXT } from '../lib/adminTheme';
+import { ADMIN_ACCENT } from '../lib/adminTheme';
 
 interface Room {
   roomID: string;
@@ -39,6 +39,10 @@ function addDaysYmd(ymd: string, days: number): string {
   const nm = String(dt.getMonth() + 1).padStart(2, '0');
   const nd = String(dt.getDate()).padStart(2, '0');
   return `${ny}-${nm}-${nd}`;
+}
+
+function decodeCloudbedsUserMessage(msg: string): string {
+  return msg.replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
 }
 
 const UNASSIGNED_ROOM_ID = '__UNASSIGNED__';
@@ -96,11 +100,9 @@ export default function AdminCheckInTab() {
   const handleChange = (field: keyof FormData, value: string) => {
     setForm((prev) => {
       const next = { ...prev, [field]: value };
-      // Keep checkout at least 1 day after checkin
+      // Always default checkout to next day when check-in date changes.
       if (field === 'checkInDate') {
-        if (!next.checkOutDate || next.checkOutDate <= value) {
-          next.checkOutDate = addDaysYmd(value, 1);
-        }
+        next.checkOutDate = addDaysYmd(value, 1);
         next.roomID = ''; // clear room when date changes
       }
       return next;
@@ -234,8 +236,16 @@ export default function AdminCheckInTab() {
         setResultDetail(data.message ?? '');
         setStatus('success');
       } else {
-        setResultMsg(data.error ?? 'Check-in failed.');
-        setResultDetail(data.details ?? '');
+        setResultMsg(
+          typeof data.error === 'string' && data.error
+            ? decodeCloudbedsUserMessage(data.error)
+            : 'Check-in failed.'
+        );
+        setResultDetail(
+          typeof data.details === 'string' && data.details
+            ? decodeCloudbedsUserMessage(data.details)
+            : ''
+        );
         setStatus('error');
         submitStartedRef.current = false;
       }

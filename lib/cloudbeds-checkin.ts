@@ -1024,90 +1024,129 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     });
   }
 
-  // forceUnassigned: admin explicitly wants an unassigned reservation — skip all room-specific
-  // logic and go straight to postReservation with roomTypeID only (no physical room).
-  // We still need to resolve a roomTypeID, so we do a minimal getRooms call first.
+  // forceUnassigned: admin explicitly wants an unassigned reservation.
+  // Try multiple room types for the selected stay dates (Cloudbeds can reject a specific
+  // type with "could not accommodate your request" even when another type can be booked
+  // as unassigned). Only fail after exhausting candidates.
   if (forceUnassigned && !stopAfterReservationCreate) {
     log('0_forceUnassigned', { note: 'Admin requested unassigned reservation — skipping room-specific paths' });
 
-    // Resolve a room type from the first available room so we get correct TYE rate.
-    let fallbackRoomTypeID: string | number | null = null;
-    let fallbackRateID: string | number | null = null;
-    let fallbackRatePlanID: string | number | null = 227753;
+    const candidateRoomTypeIDs: string[] = [];
+    const seenTypeIDs = new Set<string>();
+    const pushType = (val: unknown) => {
+      if (val == null) return;
+      const s = String(val).trim();
+      if (!s || seenTypeIDs.has(s)) return;
+      seenTypeIDs.add(s);
+      candidateRoomTypeIDs.push(s);
+    };
+
     try {
-      const allRooms = await fetchAllRoomsPagesMerged(apiV13, CLOUDBEDS_PROPERTY_ID, CLOUDBEDS_API_KEY);
-      if (allRooms.length > 0) {
-        fallbackRoomTypeID = allRooms[0].roomTypeID ?? allRooms[0].roomType_id ?? null;
-        // Resolve TYE rate for this room type
-        const wantTye = String(classType ?? '').toUpperCase() === 'TYE';
-        if (wantTye && fallbackRoomTypeID != null) {
-          try {
-            const stayRates = await fetchCloudbedsRatePlansRows(
-              CLOUDBEDS_API_URL, CLOUDBEDS_PROPERTY_ID, CLOUDBEDS_API_KEY, checkInDate, checkOutDate
-            );
-            const { tyeRate } = findTyeRateForRoomType(stayRates, fallbackRoomTypeID);
-            if (tyeRate) {
-              fallbackRateID = tyeRate.rateID ?? tyeRate.rate_id ?? tyeRate.id;
-              fallbackRatePlanID = tyeRate.ratePlanID ?? tyeRate.rate_plan_id ?? tyeRate.ratePlan_id ?? 227753;
-            }
-          } catch { /* use default TYE plan ID */ }
+      const stayRooms = await fetchAllRoomsPagesMerged(apiV13, CLOUDBEDS_PROPERTY_ID, CLOUDBEDS_API_KEY, {
+        startDate: checkInDate,
+        endDate: checkOutDate,
+      });
+      for (const room of stayRooms) {
+        pushType(room?.roomTypeID ?? room?.roomType_id);
+      }
+      if (candidateRoomTypeIDs.length === 0) {
+        const allRooms = await fetchAllRoomsPagesMerged(apiV13, CLOUDBEDS_PROPERTY_ID, CLOUDBEDS_API_KEY);
+        for (const room of allRooms) {
+          pushType(room?.roomTypeID ?? room?.roomType_id);
         }
       }
     } catch (e: any) {
       log('0_forceUnassigned_rooms_error', undefined, undefined, e?.message);
     }
 
-    const rtid = fallbackRoomTypeID != null ? String(fallbackRoomTypeID) : '';
-    const rrateStr = fallbackRateID != null ? String(fallbackRateID) : fallbackRatePlanID != null ? String(fallbackRatePlanID) : '';
-
-    const unassignedParams = new URLSearchParams();
-    unassignedParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
-    unassignedParams.append('startDate', checkInDate);
-    unassignedParams.append('endDate', checkOutDate);
-    unassignedParams.append('guestFirstName', guestFirstName);
-    unassignedParams.append('guestLastName', guestLastName);
-    unassignedParams.append('guestCountry', 'US');
-    unassignedParams.append('guestZip', '00000');
-    unassignedParams.append('guestEmail',
-      email != null && String(email).trim() !== '' ? String(email).trim() : buildGuestSyntheticEmail(guestFirstName, guestLastName)
-    );
-    unassignedParams.append('guestPhone', phoneNumber || '000-000-0000');
-    unassignedParams.append('paymentMethod', 'CLC');
-    if (rtid) {
-      unassignedParams.append('rooms[0][roomTypeID]', rtid);
-      unassignedParams.append('rooms[0][quantity]', '1');
-      if (rrateStr) unassignedParams.append('rooms[0][roomRateID]', rrateStr);
-      unassignedParams.append('adults[0][roomTypeID]', rtid);
-      unassignedParams.append('adults[0][quantity]', '1');
-      unassignedParams.append('children[0][roomTypeID]', rtid);
-      unassignedParams.append('children[0][quantity]', '0');
-    } else {
-      unassignedParams.append('rooms[0][quantity]', '1');
-      unassignedParams.append('adults[0][quantity]', '1');
-      unassignedParams.append('children[0][quantity]', '0');
+    const wantTye = String(classType ?? '').toUpperCase() === 'TYE';
+    let stayRates: any[] = [];
+    try {
+      stayRates = await fetchCloudbedsRatePlansRows(
+        CLOUDBEDS_API_URL,
+        CLOUDBEDS_PROPERTY_ID,
+        CLOUDBEDS_API_KEY,
+        checkInDate,
+        checkOutDate
+      );
+    } catch {
+      stayRates = [];
     }
-    unassignedParams.append('sourceID', 's-945658-1');
 
-    log('0_forceUnassigned_postReservation_request', {
-      roomTypeID: rtid || undefined,
-      roomRateID: rrateStr || undefined,
-      startDate: checkInDate,
-      endDate: checkOutDate,
-    });
+    const buildUnassignedParams = (roomTypeID: string, roomRateID: string | null): URLSearchParams => {
+      const p = new URLSearchParams();
+      p.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+      p.append('startDate', checkInDate);
+      p.append('endDate', checkOutDate);
+      p.append('guestFirstName', guestFirstName);
+      p.append('guestLastName', guestLastName);
+      p.append('guestCountry', 'US');
+      p.append('guestZip', '00000');
+      p.append(
+        'guestEmail',
+        email != null && String(email).trim() !== ''
+          ? String(email).trim()
+          : buildGuestSyntheticEmail(guestFirstName, guestLastName)
+      );
+      p.append('guestPhone', phoneNumber || '000-000-0000');
+      p.append('paymentMethod', 'CLC');
+      p.append('rooms[0][roomTypeID]', roomTypeID);
+      p.append('rooms[0][quantity]', '1');
+      if (roomRateID) p.append('rooms[0][roomRateID]', roomRateID);
+      p.append('adults[0][roomTypeID]', roomTypeID);
+      p.append('adults[0][quantity]', '1');
+      p.append('children[0][roomTypeID]', roomTypeID);
+      p.append('children[0][quantity]', '0');
+      p.append('sourceID', 's-945658-1');
+      return p;
+    };
 
-    const resp = await fetch(`${apiV13}/postReservation`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: unassignedParams.toString(),
-    });
-    const respText = await resp.text();
     let respParsed: any = {};
-    try { respParsed = JSON.parse(respText); } catch { respParsed = { success: false, message: respText }; }
-    log('0_forceUnassigned_postReservation_response', { status: resp.status, body: respParsed });
+    let createdReservation = false;
+    for (const roomTypeID of candidateRoomTypeIDs.length > 0 ? candidateRoomTypeIDs : ['']) {
+      let roomRateID: string | null = null;
+      if (wantTye) {
+        const { tyeRate } = findTyeRateForRoomType(stayRates, roomTypeID);
+        roomRateID = tyeRate
+          ? String(tyeRate.rateID ?? tyeRate.rate_id ?? tyeRate.id ?? tyeRate.ratePlanID ?? 227753)
+          : '227753';
+      }
+      if (!roomTypeID) continue;
+      const unassignedParams = buildUnassignedParams(roomTypeID, roomRateID);
 
-    if (!resp.ok || respParsed.success !== true) {
+      log('0_forceUnassigned_postReservation_request', {
+        roomTypeID,
+        roomRateID: roomRateID ?? undefined,
+        startDate: checkInDate,
+        endDate: checkOutDate,
+      });
+
+      const resp = await fetch(`${apiV13}/postReservation`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: unassignedParams.toString(),
+      });
+      const respText = await resp.text();
+      try {
+        respParsed = JSON.parse(respText);
+      } catch {
+        respParsed = { success: false, message: respText };
+      }
+      log('0_forceUnassigned_postReservation_response', {
+        status: resp.status,
+        roomTypeID,
+        body: respParsed,
+      });
+
+      if (resp.ok && respParsed.success === true) {
+        createdReservation = true;
+        break;
+      }
+    }
+
+    if (!createdReservation) {
       throw new Error(
-        typeof respParsed.message === 'string' && respParsed.message
+        typeof respParsed?.message === 'string' && respParsed.message
           ? respParsed.message
           : 'Failed to create unassigned reservation in Cloudbeds'
       );
