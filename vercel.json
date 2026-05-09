@@ -1,4 +1,9 @@
 {
-  "version": 2
+  "version": 2,
+  "functions": {
+    "app/api/cloudbeds-checkin/route.ts": { "maxDuration": 60 },
+    "app/api/assign-placeholder/route.ts": { "maxDuration": 60 },
+    "app/api/bulk-checkin/route.ts": { "maxDuration": 60 },
+    "app/api/cloudbeds-checkout/route.ts": { "maxDuration": 60 }
+  }
 }
-

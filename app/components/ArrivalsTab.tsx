@@ -216,6 +216,8 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
   const [selectedRow, setSelectedRow] = useState<Row | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState<EditGuestForm | null>(null);
+  const [creatingReservation, setCreatingReservation] = useState(false);
+  const [createReservationResult, setCreateReservationResult] = useState<{ ok: boolean; message: string } | null>(null);
 
   /** Which calendar day’s check-ins to list (local) — defaults to today. */
   const [selectedDate, setSelectedDate] = useState<string>(() => localYmd(new Date()));
@@ -618,6 +620,105 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
     }
   };
 
+  /** Create a Cloudbeds reservation for a guest who checked in but didn't get one. */
+  const handleCreateCloudbedsReservation = async (row: Row) => {
+    if (creatingReservation) return;
+    setCreatingReservation(true);
+    setCreateReservationResult(null);
+    try {
+      const checkInDateYmd = row.rawData.checkInTime
+        ? localYmd(new Date(row.rawData.checkInTime))
+        : localYmd(new Date());
+      const checkOutDateYmd = (() => {
+        const d = new Date(checkInDateYmd);
+        d.setDate(d.getDate() + 1);
+        return localYmd(d);
+      })();
+
+      // Use the room number from the record. It may be a room name or ID.
+      const roomName = row.rawData.roomNumber || row.roomNumber || '';
+      const forceUnassigned = !roomName || roomName.toLowerCase() === 'unassigned';
+
+      const body: Record<string, unknown> = {
+        firstName: row.firstName,
+        lastName: row.lastName,
+        phoneNumber: row.phoneNumber,
+        clcNumber: row.clcNumber,
+        classType: row.class || 'TYE',
+        checkInDate: checkInDateYmd,
+        checkOutDate: checkOutDateYmd,
+        ...(forceUnassigned
+          ? { roomName: 'UNASSIGNED', forceUnassigned: true }
+          : { roomName, roomNameHint: roomName }),
+      };
+
+      const res = await fetch('/api/cloudbeds-checkin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        const reservationID = data.reservationID as string | undefined;
+
+        // Patch the Firestore record with the new reservation ID
+        if (reservationID) {
+          const patchBody: Record<string, unknown> = {
+            cloudbedsReservationID: reservationID,
+            ...(data.guestID ? { cloudbedsGuestID: data.guestID } : {}),
+            ...(data.reservationStatus ? { reservationStatus: data.reservationStatus } : {}),
+          };
+          if (row.rawData._serverId) {
+            patchBody.id = row.rawData._serverId;
+          } else if (row.rawData.cloudbedsReservationID) {
+            patchBody.reservationID = row.rawData.cloudbedsReservationID;
+          } else {
+            // No existing ID — use name + date to find the record
+            patchBody.firstName = row.firstName;
+            patchBody.lastName = row.lastName;
+            patchBody.checkInDate = checkInDateYmd;
+          }
+          fetch('/api/checkin-records', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(patchBody),
+          }).catch(() => {});
+
+          // Update local state so the UI reflects the new reservation ID
+          const updateGuest = (g: CheckedInGuest): CheckedInGuest => {
+            const nameMatch = g.firstName === row.firstName && g.lastName === row.lastName;
+            const timeMatch = g.checkInTime === row.rawData.checkInTime;
+            if (!nameMatch || !timeMatch) return g;
+            return { ...g, cloudbedsReservationID: reservationID, cloudbedsGuestID: data.guestID ?? g.cloudbedsGuestID };
+          };
+          setCheckedInGuests((prev) => prev.map(updateGuest));
+          setSelectedRow((prev) =>
+            prev && prev.id === row.id
+              ? { ...prev, cloudbedsReservationID: reservationID, rawData: updateGuest(prev.rawData) }
+              : prev
+          );
+        }
+
+        setCreateReservationResult({
+          ok: true,
+          message: reservationID
+            ? `Reservation created: ${reservationID}${data.reservationStatus === 'confirmed' ? ' (confirmed, unassigned — staff must assign room in Cloudbeds)' : ''}`
+            : 'Reservation created in Cloudbeds.',
+        });
+      } else {
+        setCreateReservationResult({
+          ok: false,
+          message: typeof data.error === 'string' ? data.error : 'Failed to create reservation in Cloudbeds.',
+        });
+      }
+    } catch (err: any) {
+      setCreateReservationResult({ ok: false, message: err?.message ?? 'Network error' });
+    } finally {
+      setCreatingReservation(false);
+    }
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, width: '100%', gap: 0 }}>
       {/* ── Toolbar ── */}
@@ -843,6 +944,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
                       onClick={(e) => {
                         e.stopPropagation();
                         setSelectedRow(isSelected ? null : row);
+                        setCreateReservationResult(null);
                       }}
                       style={{ flex: '2 1 0', minWidth: '120px', padding: '0 12px', cursor: 'pointer' }}
                       title="Open guest details"
@@ -981,6 +1083,46 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
                   Edit Guest
                 </button>
               )}
+
+              {/* Create Cloudbeds reservation for guests who are missing one */}
+              {!selectedRow.fromHistory && !selectedRow.cloudbedsReservationID && !isEditing && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <button
+                    onClick={() => {
+                      setCreateReservationResult(null);
+                      handleCreateCloudbedsReservation(selectedRow);
+                    }}
+                    disabled={creatingReservation}
+                    style={{
+                      padding: '10px',
+                      background: creatingReservation ? '#9ca3af' : '#10b981',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '8px',
+                      cursor: creatingReservation ? 'not-allowed' : 'pointer',
+                      fontWeight: 600,
+                      fontSize: '14px',
+                    }}
+                  >
+                    {creatingReservation ? 'Creating Reservation…' : 'Create Cloudbeds Reservation'}
+                  </button>
+                  {createReservationResult && (
+                    <div style={{
+                      padding: '8px 12px',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      fontWeight: 500,
+                      background: createReservationResult.ok ? '#f0fdf4' : '#fef2f2',
+                      border: `1px solid ${createReservationResult.ok ? '#86efac' : '#fca5a5'}`,
+                      color: createReservationResult.ok ? '#15803d' : '#991b1b',
+                      wordBreak: 'break-all',
+                    }}>
+                      {createReservationResult.message}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {!selectedRow.fromHistory && (
               <button
                 onClick={() => onCheckIn({ ...selectedRow, rawData: selectedRow.rawData })}

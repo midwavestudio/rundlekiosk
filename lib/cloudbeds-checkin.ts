@@ -853,7 +853,7 @@ async function fetchGuestReservationsForStayWindow(
       lastName: guestLastName,
       checkInFrom,
       checkInTo,
-      statuses: 'confirmed,checked_in',
+      statuses: 'confirmed,checked_in,not_confirmed',
       pageNumber: String(pageNumber),
       pageSize: String(pageSize),
       includeAllRooms: 'true',
@@ -1617,66 +1617,91 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
    * Absolute last resort: create a reservation with no physical room attached —
    * purely an unassigned booking. Used when every room-specific and type-specific
    * attempt has failed (e.g. the selected room is occupied and inventory is exhausted
-   * for the room type). Staff can assign the room in Cloudbeds once the prior guest departs.
+   * for the room type). Iterates all available room types to maximize success chance.
+   * Staff can assign the room in Cloudbeds once the prior guest departs.
    */
   const attemptUnassignedReservationLastResort = async (): Promise<boolean> => {
     if (stopAfterReservationCreate) return false;
+
+    // Build candidate room type IDs to try: start with the selected room's type,
+    // then fall back to all other room types in the property. This ensures we always
+    // create a reservation even when the specific room type has no inventory.
+    const candidateTypeIDs: string[] = [];
+    const seenLastResort = new Set<string>();
+    const pushLastResort = (val: unknown) => {
+      if (val == null) return;
+      const s = String(val).trim();
+      if (!s || seenLastResort.has(s)) return;
+      seenLastResort.add(s);
+      candidateTypeIDs.push(s);
+    };
+    pushLastResort(roomTypeIDStr);
+    // Add all other room types from the full property room list
     try {
-      const unassignedParams = new URLSearchParams();
-      unassignedParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
-      unassignedParams.append('startDate', checkInDate);
-      unassignedParams.append('endDate', checkOutDate);
-      unassignedParams.append('guestFirstName', guestFirstName);
-      unassignedParams.append('guestLastName', guestLastName);
-      unassignedParams.append('guestCountry', 'US');
-      unassignedParams.append('guestZip', '00000');
-      unassignedParams.append(
-        'guestEmail',
-        email != null && String(email).trim() !== ''
-          ? String(email).trim()
-          : buildGuestSyntheticEmail(guestFirstName, guestLastName)
-      );
-      unassignedParams.append('guestPhone', phoneNumber || '000-000-0000');
-      unassignedParams.append('paymentMethod', 'CLC');
-      unassignedParams.append('rooms[0][roomTypeID]', roomTypeIDStr);
-      unassignedParams.append('rooms[0][quantity]', '1');
-      if (roomRateIDStr) unassignedParams.append('rooms[0][roomRateID]', roomRateIDStr);
-      unassignedParams.append('adults[0][roomTypeID]', roomTypeIDStr);
-      unassignedParams.append('adults[0][quantity]', '1');
-      unassignedParams.append('children[0][roomTypeID]', roomTypeIDStr);
-      unassignedParams.append('children[0][quantity]', '0');
-      unassignedParams.append('sourceID', 's-945658-1');
-
-      log('3_postReservation_unassigned_last_resort_request', {
-        note: 'All room-specific attempts failed — creating unassigned reservation (room occupied)',
-        roomTypeID: roomTypeIDStr,
-        startDate: checkInDate,
-        endDate: checkOutDate,
-      });
-
-      const resp = await fetch(`${apiV13}/postReservation`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: unassignedParams.toString(),
-      });
-      const text = await resp.text();
-      let parsed: any = {};
-      try { parsed = JSON.parse(text); } catch { parsed = { success: false, message: text }; }
-      log('3_postReservation_unassigned_last_resort_response', { status: resp.status, body: parsed });
-
-      if (resp.ok && parsed.success === true) {
-        reservationData = parsed;
-        confirmedPayOnly = true;
-        log('3_postReservation_unassigned_last_resort_succeeded', {
-          note: 'Unassigned reservation created — room was occupied; staff must assign when available',
-        });
-        return true;
+      const allRoomsForFallback = await fetchAllRoomsPagesMerged(apiV13, CLOUDBEDS_PROPERTY_ID, CLOUDBEDS_API_KEY);
+      for (const r of allRoomsForFallback) {
+        pushLastResort(r?.roomTypeID ?? r?.roomType_id);
       }
-    } catch (e: any) {
-      log('3_postReservation_unassigned_last_resort_error', undefined, undefined, e?.message);
+    } catch { /* ignore — candidateTypeIDs already has the primary type */ }
+
+    const guestEmail = email != null && String(email).trim() !== ''
+      ? String(email).trim()
+      : buildGuestSyntheticEmail(guestFirstName, guestLastName);
+
+    for (const typeID of candidateTypeIDs) {
+      try {
+        const unassignedParams = new URLSearchParams();
+        unassignedParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+        unassignedParams.append('startDate', checkInDate);
+        unassignedParams.append('endDate', checkOutDate);
+        unassignedParams.append('guestFirstName', guestFirstName);
+        unassignedParams.append('guestLastName', guestLastName);
+        unassignedParams.append('guestCountry', 'US');
+        unassignedParams.append('guestZip', '00000');
+        unassignedParams.append('guestEmail', guestEmail);
+        unassignedParams.append('guestPhone', phoneNumber || '000-000-0000');
+        unassignedParams.append('paymentMethod', 'CLC');
+        unassignedParams.append('rooms[0][roomTypeID]', typeID);
+        unassignedParams.append('rooms[0][quantity]', '1');
+        if (roomRateIDStr) unassignedParams.append('rooms[0][roomRateID]', roomRateIDStr);
+        unassignedParams.append('adults[0][roomTypeID]', typeID);
+        unassignedParams.append('adults[0][quantity]', '1');
+        unassignedParams.append('children[0][roomTypeID]', typeID);
+        unassignedParams.append('children[0][quantity]', '0');
+        unassignedParams.append('sourceID', 's-945658-1');
+
+        log('3_postReservation_unassigned_last_resort_request', {
+          note: 'All room-specific attempts failed — creating unassigned reservation (room occupied)',
+          roomTypeID: typeID,
+          startDate: checkInDate,
+          endDate: checkOutDate,
+        });
+
+        const resp = await fetch(`${apiV13}/postReservation`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body: unassignedParams.toString(),
+        });
+        const text = await resp.text();
+        let parsed: any = {};
+        try { parsed = JSON.parse(text); } catch { parsed = { success: false, message: text }; }
+        log('3_postReservation_unassigned_last_resort_response', { status: resp.status, roomTypeID: typeID, body: parsed });
+
+        if (resp.ok && parsed.success === true) {
+          reservationData = parsed;
+          confirmedPayOnly = true;
+          log('3_postReservation_unassigned_last_resort_succeeded', {
+            note: 'Unassigned reservation created — room was occupied; staff must assign when available',
+            roomTypeID: typeID,
+          });
+          return true;
+        }
+      } catch (e: any) {
+        log('3_postReservation_unassigned_last_resort_error', { roomTypeID: typeID }, undefined, e?.message);
+      }
     }
     return false;
   };
@@ -2201,7 +2226,35 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   }
 
   if (!checkInResult.ok) {
-    throw new Error(checkInResult.data?.message || 'Check-in failed');
+    // The reservation was already created and paid — throwing here would make the kiosk
+    // think the entire check-in failed and potentially retry, but the guest DOES have a
+    // reservation. Return confirmed status so the record is saved in Firestore with the
+    // reservationID; staff can manually set status to checked_in in Cloudbeds if needed.
+    log('6_putReservation_checkin_failed_returning_confirmed', {
+      note: 'Reservation created and paid but putReservation checked_in failed — returning confirmed status to preserve reservation',
+      reservationID: String(reservationID),
+      message: checkInResult.data?.message,
+    });
+    console.warn(
+      '[cloudbeds-checkin] putReservation checked_in failed but reservation exists — returning confirmed to preserve it:',
+      { reservationID: String(reservationID), message: checkInResult.data?.message }
+    );
+
+    // Best-effort postRoomCheckIn before giving up on checked_in
+    try {
+      await postRoomCheckInWith({ subReservationID: String(subReservationID), roomID: roomIdForCheckIn });
+    } catch (_) {
+      // ignore
+    }
+
+    return {
+      success: true,
+      guestID,
+      reservationID: String(reservationID),
+      roomName,
+      message: 'Reservation created and paid. Check-in status could not be updated automatically — staff should set status to Checked In in Cloudbeds.',
+      reservationStatus: 'confirmed',
+    };
   }
 
   // Step 7: postRoomCheckIn (best effort) — room-level check-in if not already completed

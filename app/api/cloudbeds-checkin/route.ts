@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { performCloudbedsCheckIn } from '@/lib/cloudbeds-checkin';
 import { saveEventLog } from '@/lib/event-log-store';
 
+// Allow up to 60 seconds for Cloudbeds API calls (postReservation + payment + room assign + check-in)
+export const maxDuration = 60;
+
 /** Kiosk/API request fields stored on failures so the admin error log shows what was submitted. */
 function pickCheckInRequestForLog(body: Record<string, unknown>) {
   return {

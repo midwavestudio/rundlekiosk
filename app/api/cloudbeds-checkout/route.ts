@@ -6,6 +6,8 @@ import {
 } from '@/lib/cloudbeds-rate-preserve';
 import { saveEventLog } from '@/lib/event-log-store';
 
+export const maxDuration = 60;
+
 /** Structured admin-facing error log for checkout failures. Visible in server logs / hosting dashboard. */
 function logCheckOutFailure(context: {
   reservationID?: string;
