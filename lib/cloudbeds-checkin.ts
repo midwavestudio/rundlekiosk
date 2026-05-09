@@ -1366,10 +1366,30 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
      * from the type inventory cache.
      */
     roomIdOnly?: boolean;
+    /**
+     * When true: append allowOverbooking=1 to the request.
+     * Forces Cloudbeds to create the reservation even when its overbooking policy
+     * would normally reject it. Tried after all other attempts fail.
+     */
+    allowOverbooking?: boolean;
+  }
+
+  /** True when the Cloudbeds error response indicates an overbooking or availability block. */
+  function isOverbookingError(data: any): boolean {
+    const msg = String(data?.message ?? data?.error ?? '').toLowerCase();
+    return (
+      msg.includes('overbook') ||
+      msg.includes('not available') ||
+      msg.includes('could not accommodate') ||
+      msg.includes('no rooms available') ||
+      msg.includes('availability') ||
+      msg.includes('sold out') ||
+      msg.includes('no availability')
+    );
   }
 
   const buildReservationParams = (opts: PostReservationOpts): URLSearchParams => {
-    const { attachPhysicalRoom, dateOverride, roomIdOnly } = opts;
+    const { attachPhysicalRoom, dateOverride, roomIdOnly, allowOverbooking } = opts;
     const reservationParams = new URLSearchParams();
     reservationParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
     reservationParams.append('startDate', dateOverride?.startDate ?? checkInDate);
@@ -1384,6 +1404,9 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     );
     reservationParams.append('guestPhone', phoneNumber || '000-000-0000');
     reservationParams.append('paymentMethod', 'CLC');
+    if (allowOverbooking) {
+      reservationParams.append('allowOverbooking', '1');
+    }
     if (roomIdOnly && roomIdForCreate != null) {
       // Room-ID-only mode: skip roomTypeID to bypass type-level inventory check.
       // Used as a last resort when prior same-day unassigned reservations exhaust type inventory.
@@ -1575,41 +1598,61 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   };
 
   /**
-   * Last-resort attempts when Cloudbeds blocks the normal path with inventory /
-   * overbooking-style errors. Prefer creating *some* reservation over failing.
+   * Ordered room-specific fallback attempts after the initial postReservation fails.
+   * Escalates through progressively more permissive request shapes to punch through
+   * overbooking and inventory blocks before giving up and falling back to unassigned.
    *
-   * 1. If the first attempt used a physical room, try booking by room type only
-   *    (no pinned room) — often succeeds when the specific room is “overbooked”.
-   * 2. If the first attempt was already type-only (no room ID available), try
-   *    room-ID-only mode to bypass type-level inventory counting.
+   * Order: roomIdOnly -> typeOnly -> allowOverbooking variants -> back-dated today retry
+   * Returns true and sets reservationData when any attempt succeeds.
    */
-  const attemptFinalInventoryFallbacks = async (): Promise<boolean> => {
-    if (canAttachPhysicalRoomToReservation) {
-      const typeOnly = await runPostReservation({ attachPhysicalRoom: false });
-      if (typeOnly.ok) {
-        reservationData = typeOnly.data;
-        log('3_postReservation_fallback_room_type_only_override', {
-          note: 'Booked room type without pinning physical room (inventory / overbooking override)',
-        });
-        return true;
-      }
+  const attemptRoomSpecificFallbacks = async (failedData: any): Promise<boolean> => {
+    log('3_fallback_room_specific_start', {
+      detectedOverbooking: isOverbookingError(failedData),
+      failedMessage: failedData?.message ?? '(none)',
+    });
+
+    // 2a. Room-ID-only - bypasses type-level inventory count
+    if (roomIdForCreate != null && !stopAfterReservationCreate) {
+      const r = await runPostReservation({ attachPhysicalRoom: true, roomIdOnly: true });
+      if (r.ok) { reservationData = r.data; log('3_postReservation_fallback_roomid_only', { note: 'Room-ID-only succeeded' }); return true; }
     }
-    if (
-      !canAttachPhysicalRoomToReservation &&
-      roomIdForCreate != null &&
-      !stopAfterReservationCreate
-    ) {
-      const ridOnly = await runPostReservation({ attachPhysicalRoom: true, roomIdOnly: true });
-      if (ridOnly.ok) {
-        reservationData = ridOnly.data;
-        // Do not set confirmedPayOnly — let the normal assign + check-in path run (overbooking override).
-        log('3_postReservation_fallback_room_id_only_after_type_only', {
-          note: 'Overbooking override: room-ID-only succeeded after type-only failed — proceeding to room assign + check-in',
-          roomID: String(roomIdForCreate),
-        });
-        return true;
-      }
+
+    // 2b. Type-only (no physical room pinned)
+    {
+      const r = await runPostReservation({ attachPhysicalRoom: false });
+      if (r.ok) { reservationData = r.data; log('3_postReservation_fallback_type_only', { note: 'Type-only succeeded' }); return true; }
     }
+
+    // 2c. allowOverbooking=1 with physical room
+    if (roomIdForCreate != null && !stopAfterReservationCreate) {
+      const r = await runPostReservation({ attachPhysicalRoom: true, allowOverbooking: true });
+      if (r.ok) { reservationData = r.data; log('3_postReservation_fallback_overbook_room', { note: 'allowOverbooking=1 + room succeeded' }); return true; }
+    }
+
+    // 2d. allowOverbooking=1, room-ID-only - strips type check AND sets override flag
+    if (roomIdForCreate != null && !stopAfterReservationCreate) {
+      const r = await runPostReservation({ attachPhysicalRoom: true, roomIdOnly: true, allowOverbooking: true });
+      if (r.ok) { reservationData = r.data; log('3_postReservation_fallback_overbook_roomid_only', { note: 'allowOverbooking=1 + roomIdOnly succeeded' }); return true; }
+    }
+
+    // 2e. allowOverbooking=1, type-only - last room-specific attempt before unassigned fallback
+    {
+      const r = await runPostReservation({ attachPhysicalRoom: false, allowOverbooking: true });
+      if (r.ok) { reservationData = r.data; log('3_postReservation_fallback_overbook_type_only', { note: 'allowOverbooking=1 + type-only succeeded' }); return true; }
+    }
+
+    // 2f. Back-dated stays: Cloudbeds rejects past check-in dates - retry with today
+    const today = getLocalDateStr(new Date());
+    if (checkInDate < today && !stopAfterReservationCreate) {
+      const dateOvr = { startDate: today, endDate: addOneCalendarDayYmd(today) };
+      if (roomIdForCreate != null) {
+        const r = await runPostReservation({ attachPhysicalRoom: true, roomIdOnly: true, allowOverbooking: true, dateOverride: dateOvr });
+        if (r.ok) { reservationData = r.data; log('3_postReservation_fallback_backdated_roomid', { note: 'Back-dated to today roomIdOnly overbook' }); return true; }
+      }
+      const r2 = await runPostReservation({ attachPhysicalRoom: false, allowOverbooking: true, dateOverride: dateOvr });
+      if (r2.ok) { reservationData = r2.data; log('3_postReservation_fallback_backdated_type_only', { note: 'Back-dated to today type-only overbook' }); return true; }
+    }
+
     return false;
   };
 
@@ -1758,81 +1801,28 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       reservationData = recoveredPayload;
       log('3_recovered_reservation_after_failed_post', {
         reservationID: recoveredPayload.reservationID ?? recoveredPayload.data?.reservationID,
-        note: 'First postReservation failed but a matching reservation exists — continuing without creating another',
+        note: 'First postReservation failed but a matching reservation exists — reusing it',
       });
-    } else if (roomIdForCreate != null) {
-      // Overbooking override: send only rooms[0][roomID] (no roomTypeID). Per Cloudbeds API docs,
-      // if the room is occupied this still creates the reservation but leaves it unassigned — which
-      // lets us proceed through the normal folio-settle + room-assign + check-in flow rather than
-      // stopping at "confirmed only". This is preferred over a fully unassigned reservation because
-      // the room assignment step will attempt to attach the physical room, and the guest gets
-      // properly checked in if/when the room becomes free in the PMS session.
-      const fourth = await runPostReservation({ attachPhysicalRoom: true, roomIdOnly: true });
-      if (fourth.ok) {
-        reservationData = fourth.data;
-        // Do NOT set confirmedPayOnly here — let the normal assign + check-in path run.
-        // If the room is occupied Cloudbeds will leave the line unassigned and the assign
-        // step will handle it; the guest still gets checked in (overbooking override).
-        log('3_postReservation_fallback_room_id_only', {
-          note: 'Overbooking override: booked using physical room ID only — will proceed to room assign + check-in',
-          roomID: String(roomIdForCreate),
-        });
-      } else if (await attemptFinalInventoryFallbacks()) {
-        // reservationData set — room-type-only or alternate bypass succeeded
-      } else {
-        const today = getLocalDateStr(new Date());
-        if (checkInDate < today) {
-          const todayOut = addOneCalendarDayYmd(today);
-          const fifth = await runPostReservation({
-            attachPhysicalRoom: true,
-            roomIdOnly: true,
-            dateOverride: { startDate: today, endDate: todayOut },
-          });
-          if (fifth.ok) {
-            reservationData = fifth.data;
-            log('3_postReservation_fallback_backdated_room_id_only', {
-              note: `Back-dated (${checkInDate}) failed; room-id-only overbooking override for today (${today})`,
-              roomID: String(roomIdForCreate),
-            });
-          } else {
-            const msg =
-              fifth.data?.message ||
-              fourth.data?.message ||
-              first.data?.message ||
-              first.text ||
-              'Failed to create reservation in Cloudbeds';
-            if (!(await attemptUnassignedReservationLastResort())) {
-              throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
-            }
-          }
-        } else {
-          const msg =
-            fourth.data?.message ||
-            first.data?.message ||
-            first.text ||
-            'Failed to create reservation in Cloudbeds';
-          if (!(await attemptUnassignedReservationLastResort())) {
-            throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
-          }
-        }
-      }
     } else {
-      const msg =
-        first.data?.message ||
-        first.text ||
-        'Failed to create reservation in Cloudbeds';
-      if (!(await attemptFinalInventoryFallbacks()) && !(await attemptUnassignedReservationLastResort())) {
+      // Escalating fallback sequence: roomIdOnly -> typeOnly -> allowOverbooking variants
+      // -> back-dated retry -> unassigned last resort.
+      // Overbooking at any level cannot stop a reservation from being created.
+      if (!(await attemptRoomSpecificFallbacks(first.data)) && !(await attemptUnassignedReservationLastResort())) {
+        const msg = first.data?.message || first.text || 'Failed to create reservation in Cloudbeds';
         throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
       }
     }
   } else {
-    const msg =
-      first.data?.message ||
-      first.text ||
-      (stopAfterReservationCreate
-        ? `Room "${selectedRoomName ?? roomName}" is not available for ${checkInDate} (Cloudbeds could not book that specific room).`
-        : 'Failed to create reservation in Cloudbeds');
-    if (!(await attemptFinalInventoryFallbacks()) && !(await attemptUnassignedReservationLastResort())) {
+    // first.ok is false and canAttachPhysicalRoomToReservation is false (no room ID available).
+    // TYE placeholders cannot fall back to unassigned — surface error directly.
+    // All other paths run the same escalating fallback + unassigned last resort.
+    if (stopAfterReservationCreate) {
+      const msg = first.data?.message || first.text ||
+        'Room ' + JSON.stringify(selectedRoomName ?? roomName) + ' is not available for ' + checkInDate + ' (Cloudbeds could not book that specific room).';
+      throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
+    }
+    if (!(await attemptRoomSpecificFallbacks(first.data)) && !(await attemptUnassignedReservationLastResort())) {
+      const msg = first.data?.message || first.text || 'Failed to create reservation in Cloudbeds';
       throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
     }
   }

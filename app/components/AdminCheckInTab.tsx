@@ -69,6 +69,8 @@ export default function AdminCheckInTab() {
   const [resultMsg, setResultMsg] = useState('');
   const [resultDetail, setResultDetail] = useState('');
   const [reservationStatus, setReservationStatus] = useState<'checked_in' | 'confirmed' | null>(null);
+  /** Live progress message during submission ("Saving guest record…", "Creating reservation in Cloudbeds…", retry attempts). */
+  const [submitProgress, setSubmitProgress] = useState('');
 
   // Fetch rooms whenever checkInDate changes (rooms vary by date)
   useEffect(() => {
@@ -140,6 +142,7 @@ export default function AdminCheckInTab() {
     setResultMsg('');
     setResultDetail('');
     setReservationStatus(null);
+    setSubmitProgress('');
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -156,6 +159,7 @@ export default function AdminCheckInTab() {
 
     submitStartedRef.current = true;
     setStatus('submitting');
+    setSubmitProgress('Saving guest record…');
     setResultMsg('');
     setResultDetail('');
     setReservationStatus(null);
@@ -163,103 +167,155 @@ export default function AdminCheckInTab() {
     const isUnassigned = form.roomID === UNASSIGNED_ROOM_ID;
     const selectedRoom = isUnassigned ? null : rooms.find((r) => r.roomID === form.roomID);
     const email = buildGuestSyntheticEmail(firstName, lastName);
+    const checkInTime = new Date().toISOString();
 
+    // Step 1: Save the server-side check-in record FIRST so guest data is never lost,
+    // even if Cloudbeds creation fails. Mirrors the kiosk pattern (see GuestCheckIn.tsx).
+    let serverRecordId: string | null = null;
     try {
-      let body: Record<string, unknown>;
-
-      if (isUnassigned) {
-        // Unassigned: send roomName as a sentinel that triggers unassigned path in the API.
-        // We send a roomName the API can resolve to a type but with no physical room.
-        // Use the first available room's type hint so we at least get a rate, but strip the ID.
-        const typeHint = rooms[0]?.roomName ?? '';
-        body = {
-          firstName,
-          lastName,
-          phoneNumber: form.phoneNumber,
-          clcNumber: form.clcNumber,
-          classType: 'TYE',
-          email,
-          checkInDate: form.checkInDate,
-          checkOutDate: form.checkOutDate,
-          roomName: typeHint || 'UNASSIGNED',
-          forceUnassigned: true,
-        };
-      } else {
-        const placeholderReservationID = selectedRoom?.placeholderReservationID;
-        body = {
-          firstName,
-          lastName,
-          phoneNumber: form.phoneNumber,
-          clcNumber: form.clcNumber,
-          classType: 'TYE',
-          email,
-          checkInDate: form.checkInDate,
-          checkOutDate: form.checkOutDate,
-          roomName: selectedRoom ? selectedRoom.roomID : form.roomID,
-          roomNameHint: selectedRoom?.roomName,
-          ...(placeholderReservationID ? { placeholderReservationID } : {}),
-        };
-      }
-
-      const res = await fetch('/api/cloudbeds-checkin', {
+      const recordRes = await fetch('/api/checkin-records', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify({
+          firstName,
+          lastName,
+          clcNumber: form.clcNumber,
+          phoneNumber: form.phoneNumber,
+          class: 'TYE',
+          roomNumber: isUnassigned ? 'Unassigned' : (selectedRoom?.roomName ?? form.roomID),
+          checkInTime,
+          checkInDateYmd: form.checkInDate,
+          source: 'admin',
+        }),
       });
+      const recordData = await recordRes.json();
+      if (recordData.success) serverRecordId = recordData.id as string;
+    } catch {
+      // Non-fatal — Cloudbeds attempt below still proceeds
+    }
 
-      const data = await res.json();
+    // Step 2: Build the Cloudbeds request body
+    let body: Record<string, unknown>;
+    if (isUnassigned) {
+      const typeHint = rooms[0]?.roomName ?? '';
+      body = {
+        firstName,
+        lastName,
+        phoneNumber: form.phoneNumber,
+        clcNumber: form.clcNumber,
+        classType: 'TYE',
+        email,
+        checkInDate: form.checkInDate,
+        checkOutDate: form.checkOutDate,
+        roomName: typeHint || 'UNASSIGNED',
+        forceUnassigned: true,
+      };
+    } else {
+      const placeholderReservationID = selectedRoom?.placeholderReservationID;
+      body = {
+        firstName,
+        lastName,
+        phoneNumber: form.phoneNumber,
+        clcNumber: form.clcNumber,
+        classType: 'TYE',
+        email,
+        checkInDate: form.checkInDate,
+        checkOutDate: form.checkOutDate,
+        roomName: selectedRoom ? selectedRoom.roomID : form.roomID,
+        roomNameHint: selectedRoom?.roomName,
+        ...(placeholderReservationID ? { placeholderReservationID } : {}),
+      };
+    }
+    const requestBody = JSON.stringify(body);
 
-      if (data.success || data.mockMode) {
-        // Also save to server-side check-in records so it appears in admin lists
-        try {
-          await fetch('/api/checkin-records', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              firstName,
-              lastName,
-              clcNumber: form.clcNumber,
-              phoneNumber: form.phoneNumber,
-              class: 'TYE',
-              roomNumber: isUnassigned ? 'Unassigned' : (selectedRoom?.roomName ?? form.roomID),
-              checkInTime: new Date().toISOString(),
-              checkInDateYmd: form.checkInDate,
-              cloudbedsReservationID: data.reservationID,
-              cloudbedsGuestID: data.guestID,
-              reservationStatus: data.reservationStatus,
-              source: 'admin',
-            }),
-          });
-        } catch {
-          // Non-fatal — check-in already succeeded in Cloudbeds
+    // Step 3: Call Cloudbeds with retry logic (mirrors kiosk pattern).
+    // performCloudbedsCheckIn de-duplicates server-side via getReservations lookup,
+    // so retrying after a 5xx will reuse an existing reservation rather than create a duplicate.
+    const MAX_ATTEMPTS = 3;
+    let attempt = 0;
+    let lastErrorMsg = '';
+    let lastErrorDetail = '';
+    let cloudbedsData: any = null;
+    let cloudbedsSucceeded = false;
+
+    while (attempt < MAX_ATTEMPTS && !cloudbedsSucceeded) {
+      if (attempt > 0) {
+        setSubmitProgress(`Retrying Cloudbeds (attempt ${attempt + 1} of ${MAX_ATTEMPTS})…`);
+        await new Promise((r) => setTimeout(r, 2000 * attempt));
+      } else {
+        setSubmitProgress('Creating reservation in Cloudbeds…');
+      }
+      attempt += 1;
+
+      try {
+        // Client-side timeout (75s) protects against hung connections without
+        // killing legitimate long fallback chains (server has maxDuration=60s).
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(), 75_000);
+        const res = await fetch('/api/cloudbeds-checkin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: requestBody,
+          signal: ac.signal,
+        });
+        clearTimeout(timer);
+
+        const text = await res.text();
+        let data: any = {};
+        try { data = JSON.parse(text); } catch { /* non-JSON — treat as failure */ }
+
+        if (res.ok && (data.success || data.mockMode)) {
+          cloudbedsData = data;
+          cloudbedsSucceeded = true;
+          break;
         }
 
-        setReservationStatus(data.reservationStatus ?? null);
-        setResultMsg(
-          data.reservationStatus === 'confirmed'
-            ? `Reservation confirmed (unassigned). Staff must assign the room in Cloudbeds.`
-            : `Check-in complete! Reservation ${data.reservationID ?? ''}`.trim()
-        );
-        setResultDetail(data.message ?? '');
-        setStatus('success');
-      } else {
-        setResultMsg(
-          typeof data.error === 'string' && data.error
-            ? decodeCloudbedsUserMessage(data.error)
-            : 'Check-in failed.'
-        );
-        setResultDetail(
-          typeof data.details === 'string' && data.details
-            ? decodeCloudbedsUserMessage(data.details)
-            : ''
-        );
-        setStatus('error');
-        submitStartedRef.current = false;
+        lastErrorMsg =
+          (typeof data.error === 'string' && data.error) ||
+          (typeof data.message === 'string' && data.message) ||
+          `Check-in failed (HTTP ${res.status})`;
+        lastErrorDetail = typeof data.details === 'string' ? data.details : '';
+      } catch (err: any) {
+        lastErrorMsg = err?.name === 'AbortError'
+          ? 'Cloudbeds request timed out — please try again.'
+          : (err?.message ?? 'Network error');
+        lastErrorDetail = '';
       }
-    } catch (err: any) {
-      setResultMsg('Network error — please try again.');
-      setResultDetail(err?.message ?? '');
+    }
+
+    // Step 4: Handle outcome
+    if (cloudbedsSucceeded && cloudbedsData) {
+      // PATCH server record with Cloudbeds IDs so admin lists show the linkage
+      if (serverRecordId) {
+        fetch('/api/checkin-records', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: serverRecordId,
+            cloudbedsReservationID: cloudbedsData.reservationID,
+            cloudbedsGuestID: cloudbedsData.guestID,
+            ...(cloudbedsData.reservationStatus ? { reservationStatus: cloudbedsData.reservationStatus } : {}),
+          }),
+        }).catch(() => { /* non-fatal */ });
+      }
+
+      setReservationStatus(cloudbedsData.reservationStatus ?? null);
+      setResultMsg(
+        cloudbedsData.reservationStatus === 'confirmed'
+          ? 'Reservation confirmed (unassigned). Staff must assign the room in Cloudbeds.'
+          : `Check-in complete! Reservation ${cloudbedsData.reservationID ?? ''}`.trim()
+      );
+      setResultDetail(cloudbedsData.message ?? '');
+      setStatus('success');
+      setSubmitProgress('');
+    } else {
+      setResultMsg(decodeCloudbedsUserMessage(lastErrorMsg || 'Check-in failed.'));
+      setResultDetail(
+        (lastErrorDetail ? decodeCloudbedsUserMessage(lastErrorDetail) : '') +
+        (serverRecordId ? ' Guest record was saved to admin records and can be retried.' : '')
+      );
       setStatus('error');
+      setSubmitProgress('');
       submitStartedRef.current = false;
     }
   };
@@ -490,7 +546,7 @@ export default function AdminCheckInTab() {
             transition: 'background 0.15s',
           }}
         >
-          {status === 'submitting' ? 'Creating reservation…' : 'Complete Check-In'}
+          {status === 'submitting' ? (submitProgress || 'Creating reservation…') : 'Complete Check-In'}
         </button>
       </form>
     </div>
