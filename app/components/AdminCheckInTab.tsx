@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { buildGuestSyntheticEmail } from '@/lib/guest-email';
 import { formatCloudbedsRoomNameLabel } from '@/lib/room-display';
-import { ADMIN_ACCENT } from '../lib/adminTheme';
+import { ADMIN_ACCENT, ADMIN_TEXT_PRIMARY, ADMIN_TEXT_MUTED } from '../lib/adminTheme';
 
 interface Room {
   roomID: string;
@@ -336,7 +336,7 @@ export default function AdminCheckInTab() {
     display: 'block',
     fontSize: '12px',
     fontWeight: 600,
-    color: '#374151',
+    color: ADMIN_TEXT_PRIMARY,
     marginBottom: '5px',
     textTransform: 'uppercase',
     letterSpacing: '0.04em',
@@ -361,9 +361,9 @@ export default function AdminCheckInTab() {
           <h2 style={{ margin: '0 0 10px', color: isConfirmedOnly ? '#92400e' : '#15803d', fontSize: '22px', fontWeight: 700 }}>
             {isConfirmedOnly ? 'Reservation Confirmed' : 'Check-In Complete'}
           </h2>
-          <p style={{ margin: '0 0 6px', color: '#374151', fontSize: '15px' }}>{resultMsg}</p>
+          <p style={{ margin: '0 0 6px', color: '#1f2937', fontSize: '15px' }}>{resultMsg}</p>
           {resultDetail && (
-            <p style={{ margin: '0 0 20px', color: '#6b7280', fontSize: '13px' }}>{resultDetail}</p>
+            <p style={{ margin: '0 0 20px', color: '#4b5563', fontSize: '13px' }}>{resultDetail}</p>
           )}
           {!resultDetail && <div style={{ marginBottom: '20px' }} />}
           <button
@@ -389,10 +389,10 @@ export default function AdminCheckInTab() {
   return (
     <div style={{ maxWidth: '640px', margin: '0 auto' }}>
       <div style={{ marginBottom: '20px' }}>
-        <h2 style={{ margin: '0 0 4px', fontSize: '20px', fontWeight: 700, color: '#111', letterSpacing: '-0.01em' }}>
+        <h2 style={{ margin: '0 0 4px', fontSize: '20px', fontWeight: 700, color: ADMIN_TEXT_PRIMARY, letterSpacing: '-0.01em' }}>
           Admin Check-In
         </h2>
-        <p style={{ margin: 0, color: '#6b7280', fontSize: '13px' }}>
+        <p style={{ margin: 0, color: ADMIN_TEXT_MUTED, fontSize: '13px' }}>
           Create a new Cloudbeds reservation from the admin. Supports any date and unassigned rooms.
         </p>
       </div>
@@ -483,7 +483,7 @@ export default function AdminCheckInTab() {
         <div style={fieldStyle}>
           <label style={labelStyle}>Room *</label>
           {loadingRooms ? (
-            <div style={{ padding: '10px 0', color: '#9ca3af', fontSize: '13px' }}>Loading rooms for {form.checkInDate}…</div>
+            <div style={{ padding: '10px 0', color: ADMIN_TEXT_MUTED, fontSize: '13px' }}>Loading rooms for {form.checkInDate}…</div>
           ) : roomsError ? (
             <div style={{ padding: '10px 0', color: '#dc2626', fontSize: '13px' }}>{roomsError}</div>
           ) : (

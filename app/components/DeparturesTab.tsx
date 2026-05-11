@@ -2,6 +2,13 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { resolveRoomNumberLabel } from '@/lib/room-display';
+import {
+  ADMIN_TEXT_PRIMARY,
+  ADMIN_SURFACE_RAISED,
+  ADMIN_BORDER_STRONG,
+  ADMIN_INPUT_BG,
+  ADMIN_ACCENT,
+} from '../lib/adminTheme';
 
 interface DeparturesTabProps {
   onCheckOut: (reservation: any) => void;
@@ -569,9 +576,9 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, width: '100%', gap: 0 }}>
       {/* ── Toolbar ── */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '10px', flexWrap: 'wrap', width: '100%' }}>
-        <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 700, color: '#111', whiteSpace: 'nowrap' }}>
+        <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 700, color: ADMIN_TEXT_PRIMARY, whiteSpace: 'nowrap' }}>
           Departures
-          <span style={{ marginLeft: '8px', fontSize: '14px', fontWeight: 500, color: '#6b7280', background: '#f3f4f6', borderRadius: '12px', padding: '2px 10px' }}>
+          <span style={{ marginLeft: '8px', fontSize: '14px', fontWeight: 600, color: ADMIN_ACCENT, background: ADMIN_SURFACE_RAISED, border: `1px solid ${ADMIN_BORDER_STRONG}`, borderRadius: '12px', padding: '2px 10px' }}>
             {sortedFilteredRows.length}
           </span>
         </h2>
@@ -581,14 +588,14 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
           placeholder="Search name, CLC, phone, room…"
           value={searchTerm}
           onChange={e => setSearchTerm(e.target.value)}
-          style={{ flex: '1 1 200px', minWidth: '160px', padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '8px', fontSize: '14px' }}
+          style={{ flex: '1 1 200px', minWidth: '160px', padding: '8px 12px', border: `1px solid ${ADMIN_BORDER_STRONG}`, borderRadius: '8px', fontSize: '14px', background: ADMIN_INPUT_BG, color: ADMIN_TEXT_PRIMARY }}
         />
 
         <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'center' }}>
           <button
             type="button"
             onClick={toggleExportPanel}
-            style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 14px', background: showExportPanel ? '#8b5cf6' : '#f3f4f6', color: showExportPanel ? 'white' : '#374151', border: '1px solid #d1d5db', borderRadius: '8px', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}
+            style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 14px', background: showExportPanel ? '#8b5cf6' : ADMIN_SURFACE_RAISED, color: showExportPanel ? 'white' : ADMIN_TEXT_PRIMARY, border: `1px solid ${ADMIN_BORDER_STRONG}`, borderRadius: '8px', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}
           >
             ↓ Export
           </button>

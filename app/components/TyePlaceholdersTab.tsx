@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   ADMIN_ACCENT,
+  ADMIN_CTA_GRADIENT,
   ADMIN_GRADIENT,
   ADMIN_TINT_BG,
   ADMIN_TINT_BORDER,
@@ -523,10 +524,10 @@ export default function TyePlaceholdersTab() {
   };
 
   const CARD = {
-    background: '#fff',
+    background: '#222428',
     borderRadius: '14px',
-    boxShadow: '0 2px 12px rgba(139,111,71,0.12)',
-    border: '1px solid #e5e7eb',
+    boxShadow: '0 4px 16px rgba(0,0,0,0.35)',
+    border: '1px solid rgba(255,255,255,0.1)',
   };
 
   return (
@@ -542,7 +543,7 @@ export default function TyePlaceholdersTab() {
         justifyContent: 'space-between',
         flexWrap: 'wrap',
         gap: '8px',
-        boxShadow: '0 2px 10px rgba(91, 71, 45, 0.22)',
+        boxShadow: '0 2px 10px rgba(0, 0, 0, 0.35)',
       }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' }}>
           <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 800, color: '#fff', letterSpacing: '-0.2px' }}>TYE Blocks</h2>
@@ -577,17 +578,17 @@ export default function TyePlaceholdersTab() {
           <div key={status} style={{
             padding: '4px 10px',
             borderRadius: '8px',
-            background: '#fff',
-            border: `1px solid ${STATUS_COLORS[status] ?? '#e5e7eb'}40`,
+            background: '#222428',
+            border: `1px solid rgba(255,255,255,0.08)`,
             minWidth: '0',
             textAlign: 'center',
-            boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
+            boxShadow: '0 2px 6px rgba(0,0,0,0.3)',
             display: 'flex',
             alignItems: 'center',
             gap: '6px',
           }}>
             <span style={{ fontSize: '18px', fontWeight: 800, color: STATUS_COLORS[status], lineHeight: 1 }}>{count}</span>
-            <span style={{ fontSize: '10px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>{STATUS_LABELS[status] ?? status}</span>
+            <span style={{ fontSize: '10px', fontWeight: 600, color: 'rgba(240,240,240,0.45)', textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>{STATUS_LABELS[status] ?? status}</span>
           </div>
         ))}
       </div>
@@ -654,13 +655,13 @@ export default function TyePlaceholdersTab() {
                     disabled={!ymd}
                     style={{ width: '17px', height: '17px', cursor: ymd ? 'pointer' : 'default', accentColor: ADMIN_ACCENT }}
                   />
-                  <span style={{ fontSize: '14px', fontWeight: 600, color: '#374151' }}>{label}</span>
-                  {ymd && <span style={{ fontSize: '12px', color: '#9ca3af', marginLeft: 'auto', fontVariantNumeric: 'tabular-nums' }}>{ymd}</span>}
+                  <span style={{ fontSize: '14px', fontWeight: 600, color: 'rgba(240,240,240,0.85)' }}>{label}</span>
+                  {ymd && <span style={{ fontSize: '12px', color: 'rgba(240,240,240,0.4)', marginLeft: 'auto', fontVariantNumeric: 'tabular-nums' }}>{ymd}</span>}
                 </label>
               ))}
 
               <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: '10px' }}>
-                <div style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '7px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Pick a date</div>
+                <div style={{ fontSize: '12px', color: 'rgba(240,240,240,0.4)', marginBottom: '7px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Pick a date</div>
                 <input
                   type="date"
                   value={selectedBlockDate}
@@ -668,7 +669,7 @@ export default function TyePlaceholdersTab() {
                     const v = e.target.value;
                     if (v) setBlockDate(v);
                   }}
-                  style={{ width: '100%', padding: '7px 9px', border: '1.5px solid #d1d5db', borderRadius: '8px', fontSize: '13px', fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }}
+                  style={{ width: '100%', padding: '7px 9px', border: '1px solid rgba(255,255,255,0.14)', background: '#141517', color: '#f0f0f0', borderRadius: '8px', fontSize: '13px', fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box', colorScheme: 'dark' }}
                 />
               </div>
 
@@ -685,14 +686,14 @@ export default function TyePlaceholdersTab() {
             disabled={!canCreate}
             style={{
               padding: '13px 20px',
-              background: canCreate ? ADMIN_GRADIENT : '#e5e7eb',
+              background: canCreate ? ADMIN_CTA_GRADIENT : '#e5e7eb',
               color: canCreate ? 'white' : '#9ca3af',
               border: 'none',
               borderRadius: '12px',
               cursor: canCreate ? 'pointer' : 'not-allowed',
               fontWeight: 800,
               fontSize: '15px',
-              boxShadow: canCreate ? '0 4px 14px rgba(139, 111, 71, 0.4)' : 'none',
+              boxShadow: canCreate ? '0 4px 14px rgba(184, 115, 51, 0.35)' : 'none',
               transition: 'all 0.2s',
               textAlign: 'center',
               letterSpacing: '-0.2px',
@@ -707,12 +708,12 @@ export default function TyePlaceholdersTab() {
 
           {/* Legend */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '7px', padding: '12px 14px', ...CARD }}>
-            <div style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: '#9ca3af', marginBottom: '2px' }}>Legend</div>
+            <div style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'rgba(240,240,240,0.4)', marginBottom: '2px' }}>Legend</div>
             {[
               { bg: ADMIN_TINT_SOLID, border: ADMIN_TINT_BORDER, label: 'Selected for blocking' },
               { bg: '#f0fdf4', border: '#22c55e', label: 'Already blocked' },
             ].map(({ bg, border, label }) => (
-              <div key={label} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: '#374151' }}>
+              <div key={label} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: 'rgba(240,240,240,0.75)' }}>
                 <span style={{ display: 'inline-block', width: '14px', height: '14px', borderRadius: '4px', background: bg, border: `2px solid ${border}`, flexShrink: 0 }} />
                 {label}
               </div>
@@ -734,13 +735,13 @@ export default function TyePlaceholdersTab() {
             </div>
 
             {/* Toolbar */}
-            <div style={{ background: '#f9fafb', borderBottom: '1px solid #e5e7eb', padding: '10px 14px', display: 'flex', gap: '10px', alignItems: 'center' }}>
+            <div style={{ background: '#2a2b2f', borderBottom: '1px solid rgba(255,255,255,0.08)', padding: '10px 14px', display: 'flex', gap: '10px', alignItems: 'center' }}>
               <input
                 type="text"
                 value={roomFilter}
                 onChange={(e) => setRoomFilter(e.target.value)}
                 placeholder="Filter rooms…"
-                style={{ flex: '1 1 160px', padding: '8px 12px', border: '1.5px solid #d1d5db', borderRadius: '8px', fontSize: '13px', boxSizing: 'border-box', outline: 'none' }}
+                style={{ flex: '1 1 160px', padding: '8px 12px', border: '1px solid rgba(255,255,255,0.12)', background: '#141517', color: '#f0f0f0', borderRadius: '8px', fontSize: '13px', boxSizing: 'border-box', outline: 'none' }}
               />
               <button
                 type="button"
@@ -801,7 +802,7 @@ export default function TyePlaceholdersTab() {
                       <span style={{
                         fontSize: '12px',
                         fontWeight: 700,
-                        color: '#374151',
+                        color: 'rgba(240,240,240,0.85)',
                         textTransform: 'uppercase',
                         letterSpacing: '0.07em',
                         whiteSpace: 'nowrap',
@@ -810,7 +811,7 @@ export default function TyePlaceholdersTab() {
                       }}>
                         {typeName}
                       </span>
-                      <span style={{ fontSize: '11px', color: '#9ca3af', fontWeight: 500, flexShrink: 0 }}>
+                      <span style={{ fontSize: '11px', color: 'rgba(240,240,240,0.35)', fontWeight: 500, flexShrink: 0 }}>
                         {rooms.length}
                       </span>
                       <div style={{ flex: 1, height: '1px', background: '#f0f0f0' }} />
@@ -879,7 +880,7 @@ export default function TyePlaceholdersTab() {
                               <span style={{
                                 position: 'absolute', top: '-6px', right: '-6px',
                                 width: '18px', height: '18px', borderRadius: '50%',
-                                background: ADMIN_GRADIENT, border: '2px solid #fff',
+                                background: ADMIN_CTA_GRADIENT, border: '2px solid #fff',
                                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                                 fontSize: '10px', color: 'white', fontWeight: 900,
                               }}>★</span>
@@ -898,7 +899,7 @@ export default function TyePlaceholdersTab() {
 
       {/* ── Block status tables ─────────────────────────────────── */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
-        <span style={{ fontSize: '16px', fontWeight: 800, color: '#111', letterSpacing: '-0.3px' }}>Existing Blocks</span>
+        <span style={{ fontSize: '16px', fontWeight: 800, color: '#f0f0f0', letterSpacing: '-0.3px' }}>Existing Blocks</span>
         <div style={{ flex: 1, height: '2px', background: 'linear-gradient(to right, #e5e7eb, transparent)' }} />
       </div>
       {tableSectionDates.map((forDate) => {
@@ -913,18 +914,18 @@ export default function TyePlaceholdersTab() {
               <div style={{ overflowX: 'auto', ...CARD }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
                   <thead>
-                    <tr style={{ background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
+                    <tr style={{ background: '#2a2b2f', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
                       {['Room', 'Type', 'Reservation ID', 'Status', 'Created', 'Actions'].map((h) => (
-                        <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontWeight: 700, color: '#374151', fontSize: '11px', whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '0.07em' }}>{h}</th>
+                        <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontWeight: 700, color: 'rgba(240,240,240,0.45)', fontSize: '11px', whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '0.07em' }}>{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
                     {list.map((p, i) => (
-                      <tr key={p.id} style={{ borderBottom: i < list.length - 1 ? '1px solid #f3f4f6' : 'none', background: i % 2 === 0 ? '#fff' : '#fafafa' }}>
-                        <td style={{ padding: '9px 14px', fontWeight: 800, color: '#111' }}>{formatCloudbedsRoomNameLabel(p.roomName)}</td>
-                        <td style={{ padding: '9px 14px', color: '#6b7280' }}>{p.roomTypeName}</td>
-                        <td style={{ padding: '9px 14px', fontFamily: 'monospace', fontSize: '12px', color: '#374151' }}>{p.reservationID}</td>
+                      <tr key={p.id} style={{ borderBottom: i < list.length - 1 ? '1px solid rgba(255,255,255,0.06)' : 'none', background: i % 2 === 0 ? '#222428' : '#2a2b2f' }}>
+                        <td style={{ padding: '9px 14px', fontWeight: 800, color: '#f0f0f0' }}>{formatCloudbedsRoomNameLabel(p.roomName)}</td>
+                        <td style={{ padding: '9px 14px', color: 'rgba(240,240,240,0.5)' }}>{p.roomTypeName}</td>
+                        <td style={{ padding: '9px 14px', fontFamily: 'monospace', fontSize: '12px', color: 'rgba(240,240,240,0.7)' }}>{p.reservationID}</td>
                         <td style={{ padding: '9px 14px' }}>
                           <span style={{
                             display: 'inline-block', padding: '3px 10px', borderRadius: '20px',
@@ -935,7 +936,7 @@ export default function TyePlaceholdersTab() {
                             {STATUS_LABELS[p.status] ?? p.status}
                           </span>
                         </td>
-                        <td style={{ padding: '9px 14px', color: '#9ca3af', fontSize: '12px', whiteSpace: 'nowrap' }}>
+                        <td style={{ padding: '9px 14px', color: 'rgba(240,240,240,0.4)', fontSize: '12px', whiteSpace: 'nowrap' }}>
                           {p.createdAt ? new Date(p.createdAt).toLocaleString() : '—'}
                         </td>
                         <td style={{ padding: '9px 14px', whiteSpace: 'nowrap' }}>
@@ -965,7 +966,7 @@ export default function TyePlaceholdersTab() {
                                 : 'Cancel block'}
                             </button>
                           ) : (
-                            <span style={{ color: '#9ca3af', fontSize: '12px' }}>—</span>
+                            <span style={{ color: 'rgba(240,240,240,0.35)', fontSize: '12px' }}>—</span>
                           )}
                         </td>
                       </tr>

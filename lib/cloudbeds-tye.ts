@@ -70,6 +70,9 @@ function scanRateRow(obj: Record<string, unknown>, tyeIds: Set<string>): boolean
 /**
  * True when the Cloudbeds reservation appears to be on the TYE rate plan / TYE booking source.
  * List and detail payloads differ; we check top-level hints, room lines, and guest list.
+ *
+ * Exported for server routes (e.g. dashboard in-house count) that need the same TYE
+ * classification as the kiosk without duplicating heuristics.
  */
 export function reservationHasTyeRatePlan(reservation: any): boolean {
   if (!reservation || typeof reservation !== 'object') return false;

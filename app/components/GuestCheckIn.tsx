@@ -126,11 +126,25 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    
-    // Validation (trim names so stray spaces do not break synthetic email / Cloudbeds)
-    if (!formData.firstName.trim() || !formData.lastName.trim() || !formData.clcNumber || 
-        !formData.phoneNumber || !formData.roomNumber) {
-      setError('Please fill in all fields');
+
+    // Validate required fields individually for clear error messages.
+    if (!formData.firstName.trim() || !formData.lastName.trim()) {
+      setError('Please enter your first and last name.');
+      return;
+    }
+    if (!formData.clcNumber.trim()) {
+      setError('CLC Number is required. Please enter your CLC number before continuing.');
+      return;
+    }
+    // Require a complete 10-digit phone number: formatted as (XXX) XXX-XXXX → 14 chars,
+    // or at minimum 10 raw digits.
+    const rawDigits = formData.phoneNumber.replace(/\D/g, '');
+    if (!formData.phoneNumber.trim() || rawDigits.length < 10) {
+      setError('A valid 10-digit phone number is required.');
+      return;
+    }
+    if (!formData.roomNumber) {
+      setError('Please select a room.');
       return;
     }
 
@@ -408,6 +422,7 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
             onChange={(e) => handleChange('clcNumber', e.target.value)}
             placeholder="Enter your CLC number"
             required
+            minLength={1}
           />
         </div>
 
@@ -422,6 +437,11 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
             required
             autoComplete="tel"
           />
+          {formData.phoneNumber && formData.phoneNumber.replace(/\D/g, '').length < 10 && (
+            <span style={{ fontSize: 'clamp(12px, 1.5vw, 13px)', color: '#ef4444', marginTop: '4px', display: 'block' }}>
+              Please enter a complete 10-digit phone number.
+            </span>
+          )}
         </div>
 
         <div className="form-group">
@@ -460,7 +480,16 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
           )}
         </div>
 
-        <button type="submit" className="submit-button" disabled={loadingRooms || availableRooms.length === 0}>
+        <button
+          type="submit"
+          className="submit-button"
+          disabled={
+            loadingRooms ||
+            availableRooms.length === 0 ||
+            !formData.clcNumber.trim() ||
+            formData.phoneNumber.replace(/\D/g, '').length < 10
+          }
+        >
           Complete Check-In
         </button>
       </form>

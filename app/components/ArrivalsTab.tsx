@@ -2,6 +2,13 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { resolveRoomNumberLabel } from '@/lib/room-display';
+import {
+  ADMIN_TEXT_PRIMARY,
+  ADMIN_SURFACE_RAISED,
+  ADMIN_BORDER_STRONG,
+  ADMIN_INPUT_BG,
+  ADMIN_ACCENT,
+} from '../lib/adminTheme';
 
 interface ArrivalsTabProps {
   onCheckIn: (reservation: any) => void;
@@ -334,8 +341,19 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
   }, []);
 
   const rows: Row[] = useMemo(() => {
-    const activeKeys = new Set(checkedInGuests.map((g) => guestMatchKey(g)));
-    const historyGuests = checkOutHistory.filter((g) => !activeKeys.has(guestMatchKey(g)));
+    // Build checkout history dedup keys so stale localStorage "active" records
+    // that the server has already moved to history (with checkOutTime) are shown
+    // as checked-out rather than appearing twice or hiding the checkout time.
+    const historyKeys = new Set(checkOutHistory.map((g) => guestDedupeKey(g)));
+
+    // Filter active guests: exclude any whose key already appears in history (server won).
+    const activeGuests = checkedInGuests.filter((g) => !historyKeys.has(guestDedupeKey(g)));
+
+    // Use the same dedup key as mergeGuestLists so that a guest who appears in both
+    // checkedInGuests (stale localStorage) and checkOutHistory (server-updated record with
+    // checkOutTime) is correctly shown as checked-out rather than silently suppressed.
+    const activeKeys = new Set(activeGuests.map((g) => guestDedupeKey(g)));
+    const historyGuests = checkOutHistory.filter((g) => !activeKeys.has(guestDedupeKey(g)));
 
     const toRow = (g: CheckedInGuest, id: string, fromHistory: boolean): Row => ({
       id,
@@ -357,7 +375,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
       rawData: g,
     });
 
-    const activeRows = checkedInGuests.map((g, i) => toRow(g, `guest-${i}`, false));
+    const activeRows = activeGuests.map((g, i) => toRow(g, `guest-${i}`, false));
     const historyRows = historyGuests.map((g, i) =>
       toRow(g, `hist-${guestMatchKey(g)}-${String(g.checkOutTime ?? '')}-${i}`, true)
     );
@@ -723,9 +741,9 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, width: '100%', gap: 0 }}>
       {/* ── Toolbar ── */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '10px', flexWrap: 'wrap', width: '100%' }}>
-        <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 700, color: '#111', whiteSpace: 'nowrap' }}>
+        <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 700, color: ADMIN_TEXT_PRIMARY, whiteSpace: 'nowrap' }}>
           Arrivals
-          <span style={{ marginLeft: '8px', fontSize: '14px', fontWeight: 500, color: '#6b7280', background: '#f3f4f6', borderRadius: '12px', padding: '2px 10px' }}>
+          <span style={{ marginLeft: '8px', fontSize: '14px', fontWeight: 600, color: ADMIN_ACCENT, background: ADMIN_SURFACE_RAISED, border: `1px solid ${ADMIN_BORDER_STRONG}`, borderRadius: '12px', padding: '2px 10px' }}>
             {filteredRows.length}
           </span>
         </h2>
@@ -735,14 +753,14 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
           placeholder="Search name, CLC, phone, room…"
           value={searchTerm}
           onChange={e => setSearchTerm(e.target.value)}
-          style={{ flex: '1 1 200px', minWidth: '160px', padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '8px', fontSize: '14px' }}
+          style={{ flex: '1 1 200px', minWidth: '160px', padding: '8px 12px', border: `1px solid ${ADMIN_BORDER_STRONG}`, borderRadius: '8px', fontSize: '14px', background: ADMIN_INPUT_BG, color: ADMIN_TEXT_PRIMARY }}
         />
 
         <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'center' }}>
           <button
             type="button"
             onClick={toggleExportPanel}
-            style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 14px', background: showExportPanel ? '#667eea' : '#f3f4f6', color: showExportPanel ? 'white' : '#374151', border: '1px solid #d1d5db', borderRadius: '8px', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}
+            style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 14px', background: showExportPanel ? '#667eea' : ADMIN_SURFACE_RAISED, color: showExportPanel ? 'white' : ADMIN_TEXT_PRIMARY, border: `1px solid ${ADMIN_BORDER_STRONG}`, borderRadius: '8px', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}
           >
             ↓ Export
           </button>

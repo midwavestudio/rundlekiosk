@@ -1,7 +1,15 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { ADMIN_ACCENT, ADMIN_TINT_BG, ADMIN_TINT_BORDER } from '../lib/adminTheme';
+import {
+  ADMIN_ACCENT,
+  ADMIN_TINT_BG,
+  ADMIN_TINT_BORDER,
+  ADMIN_TEXT_PRIMARY,
+  ADMIN_TEXT_MUTED,
+  ADMIN_SURFACE_RAISED,
+  ADMIN_BORDER_STRONG,
+} from '../lib/adminTheme';
 import { loadReadFeedbackIds, markFeedbackRead, markFeedbacksRead, removeFeedbackReadId } from '@/lib/feedback-read';
 
 interface FeedbackMessage {
@@ -101,7 +109,7 @@ export default function FeedbackTab() {
       {/* Header row */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px', flexWrap: 'wrap', gap: '12px' }}>
         <div>
-          <h2 style={{ margin: 0, fontSize: 'clamp(20px, 2.5vw, 28px)', color: '#333' }}>
+          <h2 style={{ margin: 0, fontSize: 'clamp(20px, 2.5vw, 28px)', color: ADMIN_TEXT_PRIMARY }}>
             Messages
             {unreadCount > 0 && (
               <span style={{
@@ -118,7 +126,7 @@ export default function FeedbackTab() {
               </span>
             )}
           </h2>
-          <p style={{ margin: '4px 0 0', color: '#888', fontSize: '14px' }}>Messages submitted by guests through the kiosk</p>
+          <p style={{ margin: '4px 0 0', color: ADMIN_TEXT_MUTED, fontSize: '14px' }}>Messages submitted by guests through the kiosk</p>
         </div>
         <button
           onClick={handleMarkAllShownRead}
@@ -127,7 +135,7 @@ export default function FeedbackTab() {
             padding: '9px 18px',
             border: `2px solid ${ADMIN_TINT_BORDER}`,
             borderRadius: '8px',
-            background: 'white',
+            background: ADMIN_TINT_BG,
             color: ADMIN_ACCENT,
             fontWeight: 600,
             fontSize: '14px',
@@ -143,7 +151,7 @@ export default function FeedbackTab() {
             padding: '9px 18px',
             border: `2px solid ${ADMIN_TINT_BORDER}`,
             borderRadius: '8px',
-            background: 'white',
+            background: ADMIN_TINT_BG,
             color: ADMIN_ACCENT,
             fontWeight: 600,
             fontSize: '14px',
@@ -163,9 +171,9 @@ export default function FeedbackTab() {
             style={{
               padding: '6px 16px',
               borderRadius: '20px',
-              border: filter === f ? `2px solid ${ADMIN_ACCENT}` : '2px solid #e5e7eb',
-              background: filter === f ? ADMIN_TINT_BG : 'white',
-              color: filter === f ? ADMIN_ACCENT : '#666',
+              border: filter === f ? `2px solid ${ADMIN_ACCENT}` : `2px solid ${ADMIN_BORDER_STRONG}`,
+              background: filter === f ? ADMIN_TINT_BG : ADMIN_SURFACE_RAISED,
+              color: filter === f ? ADMIN_ACCENT : ADMIN_TEXT_MUTED,
               fontWeight: filter === f ? 700 : 400,
               fontSize: '14px',
               cursor: 'pointer',
@@ -179,19 +187,20 @@ export default function FeedbackTab() {
 
       {/* Content */}
       {loading ? (
-        <div style={{ textAlign: 'center', padding: '60px', color: '#888' }}>Loading messages…</div>
+        <div style={{ textAlign: 'center', padding: '60px', color: ADMIN_TEXT_MUTED }}>Loading messages…</div>
       ) : error ? (
         <div style={{ textAlign: 'center', padding: '40px', color: '#c0392b' }}>{error}</div>
       ) : filtered.length === 0 ? (
         <div style={{
           textAlign: 'center',
           padding: '60px 20px',
-          color: '#aaa',
-          background: '#f9fafb',
+          color: ADMIN_TEXT_MUTED,
+          background: ADMIN_SURFACE_RAISED,
           borderRadius: '12px',
+          border: `1px solid ${ADMIN_BORDER_STRONG}`,
         }}>
-          <div style={{ fontSize: '40px', marginBottom: '12px' }}>💬</div>
-          <p style={{ margin: 0, fontSize: '16px' }}>
+          <div style={{ fontSize: '40px', marginBottom: '12px', opacity: 0.9 }}>💬</div>
+          <p style={{ margin: 0, fontSize: '16px', color: ADMIN_TEXT_PRIMARY }}>
             {filter === 'all' ? 'No feedback messages yet.' : `No ${filter} messages.`}
           </p>
         </div>
@@ -288,7 +297,7 @@ export default function FeedbackTab() {
                     >
                       Delete
                     </button>
-                    <span style={{ color: '#aaa', fontSize: '18px', marginTop: '2px' }}>
+                    <span style={{ color: ADMIN_TEXT_MUTED, fontSize: '18px', marginTop: '2px' }}>
                       {isExpanded ? '▲' : '▼'}
                     </span>
                   </div>

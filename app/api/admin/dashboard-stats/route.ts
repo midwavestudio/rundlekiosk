@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getTyeSourceIdSet } from '@/lib/cloudbeds-tye';
+import { getTyeSourceIdSet, reservationHasTyeRatePlan } from '@/lib/cloudbeds-tye';
 import { mergeReservationRoomRows } from '@/lib/cloudbeds-rate-preserve';
 import { formatCloudbedsRoomNameLabel } from '@/lib/room-display';
 import { getCheckinRecords, type CheckinRecord } from '@/lib/checkin-store';
@@ -196,7 +196,7 @@ function reservationOccupiesSellableRoom(r: any, sellable: SellableInventory): b
 
 const ACTIVE_TYE_WINDOW_DAYS = 45;
 
-/** Firestore is authoritative for kiosk TYE when Cloudbeds list rows omit rate/email (TYE shows 0 otherwise). */
+/** Mock / no-Cloudbeds: approximate in-house TYE from Firestore only (no PMS). */
 function countActiveTyeInHouseFromRecords(records: CheckinRecord[], oldestCheckInMs: number): number {
   const seen = new Set<string>();
   let n = 0;
@@ -300,7 +300,8 @@ async function fetchTyeInHouseBySource(
   headers: HeadersInit,
   todayYmd: string
 ): Promise<number> {
-  const tyeSources = Array.from(getTyeSourceIdSet()).filter(Boolean);
+  const tyeSourceSet = getTyeSourceIdSet();
+  const tyeSources = Array.from(tyeSourceSet).filter(Boolean);
   if (tyeSources.length === 0) return 0;
 
   const seenReservation = new Set<string>();
@@ -331,6 +332,10 @@ async function fetchTyeInHouseBySource(
         if (out && out < todayYmd) continue;
         const id = String(r.reservationID ?? '').trim();
         if (!id || seenReservation.has(id)) continue;
+        // If the list row carries a source, require it to match a configured TYE source
+        // (some API versions ignore the sourceID query param and return a broader list).
+        const rowSource = String(r.sourceID ?? r.source_id ?? r.sourceId ?? '').trim();
+        if (rowSource && !tyeSourceSet.has(rowSource)) continue;
         seenReservation.add(id);
       }
 
@@ -338,6 +343,54 @@ async function fetchTyeInHouseBySource(
       pageNumber++;
       if (pageNumber > maxPages) break;
     }
+  }
+
+  return seenReservation.size;
+}
+
+/**
+ * When `CLOUDBEDS_TYE_SOURCE_IDS` is empty/misconfigured, count checked-in reservations
+ * that classify as TYE (rate plan / source / kiosk synthetic email) — still Cloudbeds-only.
+ */
+async function fetchTyeInHouseCheckedInHeuristic(
+  apiBase: string,
+  propertyID: string,
+  headers: HeadersInit,
+  todayYmd: string
+): Promise<number> {
+  const seenReservation = new Set<string>();
+  const pageSize = 500;
+  let pageNumber = 1;
+  const maxPages = 50;
+
+  for (;;) {
+    const qs = new URLSearchParams({
+      propertyID,
+      status: 'checked_in',
+      pageNumber: String(pageNumber),
+      pageSize: String(pageSize),
+      includeAllRooms: 'true',
+      sortByRecent: 'true',
+    });
+    const url = `${apiBase}/getReservations?${qs.toString()}`;
+    const res = await fetch(url, { method: 'GET', headers });
+    if (!res.ok) break;
+    const data = await res.json();
+    const list = extractReservationList(data);
+    if (list.length === 0) break;
+
+    for (const r of list) {
+      const out = String(r.endDate ?? r.checkOutDate ?? '').trim();
+      if (out && out < todayYmd) continue;
+      const id = String(r.reservationID ?? '').trim();
+      if (!id || seenReservation.has(id)) continue;
+      if (!reservationHasTyeRatePlan(r)) continue;
+      seenReservation.add(id);
+    }
+
+    if (list.length < pageSize) break;
+    pageNumber++;
+    if (pageNumber > maxPages) break;
   }
 
   return seenReservation.size;
@@ -390,14 +443,24 @@ export async function GET(_request: NextRequest) {
         todayYmd,
         sellable
       );
-      const tyeInHouseCloudbeds = await fetchTyeInHouseBySource(
+      const tyeSources = getTyeSourceIdSet();
+      let tyeInHouseCloudbeds = await fetchTyeInHouseBySource(
         apiV13,
         CLOUDBEDS_PROPERTY_ID,
         headers,
         todayYmd
       );
-      const tyeFromFirestore = countActiveTyeInHouseFromRecords(records, oldestTyeMs);
-      inHouse = Math.max(tyeInHouseCloudbeds, tyeFromFirestore);
+      // In-house TYE must reflect Cloudbeds PMS only — Firestore kiosk rows can be stale,
+      // duplicated, or bulk-imported; never blend with Math.max(...) or the stat explodes.
+      if (tyeSources.size === 0) {
+        tyeInHouseCloudbeds = await fetchTyeInHouseCheckedInHeuristic(
+          apiV13,
+          CLOUDBEDS_PROPERTY_ID,
+          headers,
+          todayYmd
+        );
+      }
+      inHouse = tyeInHouseCloudbeds;
       const occupancyFromFirestore = countSellableOccupancyHintFromRecords(records, sellable);
       totalOccupiedSellable = Math.max(occupancy.totalInHouseSellable, occupancyFromFirestore);
       available = Math.max(totalRooms - totalOccupiedSellable, 0);

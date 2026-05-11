@@ -1,7 +1,10 @@
 'use client';
 
 import { useState } from 'react';
-import { ADMIN_GRADIENT } from '../lib/adminTheme';
+import { ADMIN_CTA_GRADIENT, ADMIN_TEXT_PRIMARY, ADMIN_TEXT_MUTED } from '../lib/adminTheme';
+
+/** Dark text for labels inside light panels on the bulk upload tab */
+const ON_LIGHT = '#1f2937';
 
 interface BulkCheckInTabProps {
   // No props needed for now
@@ -147,8 +150,8 @@ export default function BulkCheckInTab({}: BulkCheckInTabProps) {
 
   return (
     <div style={{ padding: '30px', overflow: 'auto', height: '100%' }}>
-      <h2 style={{ marginTop: 0, color: '#333', fontSize: '24px' }}>Bulk Check-In from CSV</h2>
-      <p style={{ color: '#666', marginBottom: '30px' }}>
+      <h2 style={{ marginTop: 0, color: ADMIN_TEXT_PRIMARY, fontSize: '24px' }}>Bulk Check-In from CSV</h2>
+      <p style={{ color: ADMIN_TEXT_MUTED, marginBottom: '30px' }}>
         Upload a CSV file of guests to check them in to Cloudbeds. Duplicate names on the same day will be automatically skipped.
       </p>
 
@@ -161,7 +164,7 @@ export default function BulkCheckInTab({}: BulkCheckInTabProps) {
         border: '2px dashed #ddd'
       }}>
         <div style={{ marginBottom: '20px' }}>
-          <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: '#333' }}>
+          <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: ON_LIGHT }}>
             CSV File
           </label>
           <input
@@ -178,14 +181,14 @@ export default function BulkCheckInTab({}: BulkCheckInTabProps) {
             }}
           />
           {file && (
-            <p style={{ marginTop: '8px', fontSize: '14px', color: '#666' }}>
+            <p style={{ marginTop: '8px', fontSize: '14px', color: '#4b5563' }}>
               Selected: {file.name}
             </p>
           )}
         </div>
 
         <div style={{ marginBottom: '20px' }}>
-          <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: '#333' }}>
+          <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: ON_LIGHT }}>
             Check-In Date (optional)
           </label>
           <input
@@ -216,7 +219,7 @@ export default function BulkCheckInTab({}: BulkCheckInTabProps) {
               disabled={processing}
               style={{ marginRight: '10px', width: '18px', height: '18px' }}
             />
-            <span style={{ fontSize: '14px', color: '#333' }}>
+            <span style={{ fontSize: '14px', color: ON_LIGHT }}>
               Skip duplicate guests (same name + same date)
             </span>
           </label>
@@ -226,7 +229,7 @@ export default function BulkCheckInTab({}: BulkCheckInTabProps) {
           onClick={handleUpload}
           disabled={!file || processing}
           style={{
-            background: file && !processing ? ADMIN_GRADIENT : '#ccc',
+            background: file && !processing ? ADMIN_CTA_GRADIENT : '#ccc',
             color: 'white',
             padding: '12px 30px',
             borderRadius: '8px',

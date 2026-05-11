@@ -1,6 +1,12 @@
 'use client';
 
 import { useState } from 'react';
+import {
+  ADMIN_BORDER_STRONG,
+  ADMIN_SURFACE_RAISED,
+  ADMIN_TEXT_PRIMARY,
+  ADMIN_ACCENT,
+} from '../lib/adminTheme';
 
 /**
  * BackupButton — triggers a full download of all check-in records as JSON.
@@ -63,9 +69,9 @@ export default function BackupButton() {
           gap: '7px',
           padding: '8px 16px',
           borderRadius: '8px',
-          border: '1.5px solid #d1d5db',
-          background: state === 'done' ? '#d1fae5' : '#fff',
-          color: state === 'done' ? '#065f46' : '#374151',
+          border: `1.5px solid ${ADMIN_BORDER_STRONG}`,
+          background: state === 'done' ? 'rgba(52, 211, 153, 0.18)' : ADMIN_SURFACE_RAISED,
+          color: state === 'done' ? '#6ee7b7' : ADMIN_TEXT_PRIMARY,
           fontSize: '13px',
           fontWeight: 600,
           cursor: isLoading ? 'not-allowed' : 'pointer',
@@ -83,8 +89,8 @@ export default function BackupButton() {
                 display: 'inline-block',
                 width: '13px',
                 height: '13px',
-                border: '2px solid #9ca3af',
-                borderTopColor: '#374151',
+                border: `2px solid ${ADMIN_BORDER_STRONG}`,
+                borderTopColor: ADMIN_ACCENT,
                 borderRadius: '50%',
                 animation: 'spin 0.7s linear infinite',
               }}

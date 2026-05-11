@@ -7,12 +7,21 @@
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
     Ubuntu, Cantarell, 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+  /* Default: warm gradient for guest kiosk. The admin page overrides this via its own shell. */
   background: linear-gradient(135deg, #8B6F47 0%, #A0826D 100%);
   min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 20px;
+}
+
+/* Admin: dark charcoal behind the app shell */
+body:has(.admin-dashboard-shell),
+body:has(.admin-login-page) {
+  background: #111214;
+  padding: 0;
+  align-items: stretch;
 }
 
 /* Login / narrow cards stay centered; full-page apps must opt in to full width (body flex otherwise shrink-wraps children). */

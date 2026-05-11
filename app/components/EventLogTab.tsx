@@ -1,7 +1,15 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo, type CSSProperties } from 'react';
-import { ADMIN_ACCENT, ADMIN_TINT_BORDER } from '../lib/adminTheme';
+import {
+  ADMIN_ACCENT,
+  ADMIN_TINT_BORDER,
+  ADMIN_TINT_BG,
+  ADMIN_TEXT_PRIMARY,
+  ADMIN_TEXT_MUTED,
+  ADMIN_SURFACE_RAISED,
+  ADMIN_BORDER_STRONG,
+} from '../lib/adminTheme';
 import { EventDetailReadable } from '@/lib/event-log-detail-format';
 import { dedupeEvents, simplifyErrorMessage } from '@/lib/event-log-dedupe';
 import { loadReadEventIds, markEventRead, markEventsRead } from '@/lib/event-log-read';
@@ -25,7 +33,7 @@ const btnSecondary: CSSProperties = {
   padding: '8px 14px',
   border: `1px solid ${ADMIN_TINT_BORDER}`,
   borderRadius: '8px',
-  background: 'white',
+  background: ADMIN_TINT_BG,
   color: ADMIN_ACCENT,
   fontWeight: 600,
   fontSize: '13px',
@@ -82,8 +90,8 @@ export default function EventLogTab() {
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px', flexWrap: 'wrap', gap: '12px' }}>
         <div>
-          <h2 style={{ margin: 0, fontSize: 'clamp(20px, 2.5vw, 28px)', color: '#333' }}>Error log</h2>
-          <p style={{ margin: '4px 0 0', color: '#888', fontSize: '14px' }}>
+          <h2 style={{ margin: 0, fontSize: 'clamp(20px, 2.5vw, 28px)', color: ADMIN_TEXT_PRIMARY }}>Error log</h2>
+          <p style={{ margin: '4px 0 0', color: ADMIN_TEXT_MUTED, fontSize: '14px' }}>
             Check-in / check-out failures and kiosk errors (newest first). Read state is saved in this browser.
           </p>
         </div>
@@ -93,11 +101,11 @@ export default function EventLogTab() {
               style={{
                 fontSize: '13px',
                 fontWeight: 600,
-                color: '#1d4ed8',
-                background: '#eff6ff',
+                color: '#93c5fd',
+                background: 'rgba(37, 99, 235, 0.2)',
                 padding: '6px 12px',
                 borderRadius: '999px',
-                border: '1px solid #bfdbfe',
+                border: '1px solid rgba(96, 165, 250, 0.45)',
               }}
             >
               {unreadCount} unread
@@ -113,7 +121,7 @@ export default function EventLogTab() {
               padding: '9px 18px',
               border: `2px solid ${ADMIN_TINT_BORDER}`,
               borderRadius: '8px',
-              background: 'white',
+              background: ADMIN_TINT_BG,
               color: ADMIN_ACCENT,
               fontWeight: 600,
               fontSize: '14px',
@@ -126,11 +134,11 @@ export default function EventLogTab() {
       </div>
 
       {loading ? (
-        <div style={{ textAlign: 'center', padding: '48px', color: '#888' }}>Loading…</div>
+        <div style={{ textAlign: 'center', padding: '48px', color: ADMIN_TEXT_MUTED }}>Loading…</div>
       ) : error ? (
         <div style={{ textAlign: 'center', padding: '32px', color: '#b91c1c' }}>{error}</div>
       ) : events.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: '48px', color: '#aaa', background: '#f9fafb', borderRadius: '12px' }}>
+        <div style={{ textAlign: 'center', padding: '48px', color: ADMIN_TEXT_MUTED, background: ADMIN_SURFACE_RAISED, borderRadius: '12px', border: `1px solid ${ADMIN_BORDER_STRONG}` }}>
           No logged events yet. Failures from the kiosk or Cloudbeds APIs will appear here.
         </div>
       ) : (
