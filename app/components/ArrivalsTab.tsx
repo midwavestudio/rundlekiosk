@@ -245,6 +245,17 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
     }
   });
 
+  /** Separate per-guest dot marks (filled circle), keyed like row marks, by check-in calendar day. */
+  const [dotMarksByDate, setDotMarksByDate] = useState<Record<string, string[]>>(() => {
+    try {
+      const raw = localStorage.getItem('arrivalsDotMarksByDate');
+      const parsed = raw ? JSON.parse(raw) : {};
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  });
+
   useEffect(() => {
     let cancelled = false;
 
@@ -450,6 +461,39 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
     });
   };
 
+  const dotMarkKeySet = useMemo(
+    () => new Set(dotMarksByDate[selectedDate] ?? []),
+    [dotMarksByDate, selectedDate]
+  );
+
+  const toggleDotMark = (markKey: string) => {
+    setDotMarksByDate((prev) => {
+      const current = new Set(prev[selectedDate] ?? []);
+      if (current.has(markKey)) current.delete(markKey);
+      else current.add(markKey);
+      const next = { ...prev, [selectedDate]: Array.from(current) };
+      try {
+        localStorage.setItem('arrivalsDotMarksByDate', JSON.stringify(next));
+      } catch {
+        // Non-fatal: dot state remains for this session.
+      }
+      return next;
+    });
+  };
+
+  const resetDotMarks = () => {
+    setDotMarksByDate((prev) => {
+      if (!prev[selectedDate]?.length) return prev;
+      const next = { ...prev, [selectedDate]: [] };
+      try {
+        localStorage.setItem('arrivalsDotMarksByDate', JSON.stringify(next));
+      } catch {
+        // Ignore storage errors; in-memory state is still reset.
+      }
+      return next;
+    });
+  };
+
   useEffect(() => {
     if (selectedRow && !filteredRows.some((r) => r.id === selectedRow.id)) {
       setSelectedRow(null);
@@ -500,23 +544,33 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
         const result = await res.json();
         if (!result.success && !result.mockMode) throw new Error(result.error || 'Failed to delete from Cloudbeds');
       }
-      if (row.rawData._serverId || row.cloudbedsReservationID) {
-        const serverRes = await fetch('/api/checkin-records', {
-          method: 'DELETE',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ...(row.rawData._serverId ? { id: row.rawData._serverId } : {}),
-            ...(row.cloudbedsReservationID ? { reservationID: row.cloudbedsReservationID } : {}),
-            firstName: row.rawData.firstName,
-            lastName: row.rawData.lastName,
-            checkInTime: row.rawData.checkInTime,
-            checkInDate: row.checkInDate,
-          }),
-        });
-        if (!serverRes.ok) {
-          const data = await serverRes.json().catch(() => ({}));
-          throw new Error(data?.error || 'Failed to remove check-in record');
-        }
+      const checkInDateYmd = isoToLocalYmd(row.checkInIso) ?? '';
+      const serverRes = await fetch('/api/checkin-records', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...(row.rawData._serverId ? { id: row.rawData._serverId } : {}),
+          ...(row.cloudbedsReservationID ? { reservationID: row.cloudbedsReservationID } : {}),
+          firstName: row.rawData.firstName,
+          lastName: row.rawData.lastName,
+          checkInTime: row.rawData.checkInTime,
+          checkInDateYmd,
+        }),
+      });
+      const delData = (await serverRes.json().catch(() => ({}))) as {
+        success?: boolean;
+        deleted?: boolean;
+        error?: string;
+      };
+      if (!serverRes.ok) {
+        throw new Error(delData?.error || 'Failed to remove check-in record');
+      }
+      const expectedFirestore = !!(row.rawData._serverId || row.cloudbedsReservationID);
+      if (expectedFirestore && delData.deleted !== true) {
+        throw new Error(
+          delData.error ||
+            'Could not remove this guest from the server database. They may reappear after refresh.'
+        );
       }
       if (row.fromHistory) {
         const isTargetHistoryRecord = (g: CheckedInGuest) => {
@@ -874,6 +928,24 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
         >
           Reset Row Marks
         </button>
+        <button
+          type="button"
+          onClick={resetDotMarks}
+          disabled={!dotMarksByDate[selectedDate]?.length}
+          title="Clear all filled dot marks for this date"
+          style={{
+            padding: '8px 14px',
+            border: '1px solid #d1d5db',
+            borderRadius: '8px',
+            background: dotMarksByDate[selectedDate]?.length ? '#fff' : '#f3f4f6',
+            cursor: dotMarksByDate[selectedDate]?.length ? 'pointer' : 'not-allowed',
+            fontWeight: 600,
+            fontSize: '13px',
+            color: dotMarksByDate[selectedDate]?.length ? '#374151' : '#9ca3af',
+          }}
+        >
+          Reset Dot Marks
+        </button>
       </div>
 
       {/* ── Export Panel ── */}
@@ -905,6 +977,9 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
         <div style={{ flex: '1 1 auto', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
           {/* Header row */}
           <div style={{ display: 'flex', alignItems: 'center', background: '#f9fafb', borderRadius: '8px 8px 0 0', border: '1px solid #e5e7eb', borderBottom: 'none', padding: '10px 0', userSelect: 'none' }}>
+            <div style={{ width: '40px', flexShrink: 0, display: 'flex', justifyContent: 'center', fontSize: '11px', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.04em' }} title="Per-guest mark (separate from row highlight)">
+              Dot
+            </div>
             <div style={{ width: '44px', flexShrink: 0 }} />
             <div style={{ flex: '2 1 0', minWidth: '120px', padding: '0 12px', fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Name</div>
             <div style={{ flex: '1 1 0', minWidth: '90px', padding: '0 12px', fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>CLC Number</div>
@@ -929,6 +1004,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
               sortedFilteredRows.map((row, idx) => {
                 const isSelected = selectedRow?.id === row.id;
                 const isMuted = mutedMarkKeySet.has(row.markKey);
+                const dotFilled = dotMarkKeySet.has(row.markKey);
                 const rowBackground = isMuted
                   ? '#e5e7eb'
                   : isSelected
@@ -950,6 +1026,35 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
                     }}
                     onClick={() => toggleMutedRow(row.markKey)}
                   >
+                    {/* Dot mark — independent from row mute */}
+                    <div
+                      style={{ width: '40px', flexShrink: 0, display: 'flex', justifyContent: 'center', alignItems: 'center' }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <button
+                        type="button"
+                        aria-label={dotFilled ? 'Clear dot mark' : 'Set dot mark'}
+                        aria-pressed={dotFilled}
+                        title={dotFilled ? 'Click to clear dot mark' : 'Click to mark (filled circle)'}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleDotMark(row.markKey);
+                        }}
+                        style={{
+                          width: '22px',
+                          height: '22px',
+                          borderRadius: '50%',
+                          padding: 0,
+                          cursor: 'pointer',
+                          flexShrink: 0,
+                          boxSizing: 'border-box',
+                          border: dotFilled ? `2px solid ${ADMIN_ACCENT}` : '2px solid #d1d5db',
+                          background: dotFilled ? ADMIN_ACCENT : 'transparent',
+                          boxShadow: dotFilled ? `inset 0 0 0 1px rgba(255,255,255,0.25)` : 'none',
+                        }}
+                      />
+                    </div>
+
                     {/* Avatar */}
                     <div style={{ width: '44px', flexShrink: 0, display: 'flex', justifyContent: 'center' }}>
                       <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: avatarColor(row.guestName), color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 700, opacity: isMuted ? 0.65 : 1 }}>

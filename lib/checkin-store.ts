@@ -256,12 +256,8 @@ export async function updateCheckinRecord(
 export async function deleteCheckinRecord(id: string): Promise<void> {
   const db = getDb();
   if (db) {
-    try {
-      await db.collection(COLLECTION).doc(id).delete();
-      return;
-    } catch (err) {
-      console.error('[checkin-store] Firestore delete by id failed — deleting in-memory.', err);
-    }
+    await db.collection(COLLECTION).doc(id).delete();
+    return;
   }
 
   const idx = memStore.findIndex((r) => r.id === id);
@@ -297,19 +293,15 @@ export async function findByReservationID(
 export async function deleteByReservationID(reservationID: string): Promise<boolean> {
   const db = getDb();
   if (db) {
-    try {
-      const snap = await db
-        .collection(COLLECTION)
-        .where('cloudbedsReservationID', '==', reservationID)
-        .get();
-      if (snap.empty) return false;
-      const batch = db.batch();
-      for (const doc of snap.docs) batch.delete(doc.ref);
-      await batch.commit();
-      return true;
-    } catch (err) {
-      console.error('[checkin-store] deleteByReservationID failed in Firestore — deleting in-memory.', err);
-    }
+    const snap = await db
+      .collection(COLLECTION)
+      .where('cloudbedsReservationID', '==', reservationID)
+      .get();
+    if (snap.empty) return false;
+    const batch = db.batch();
+    for (const doc of snap.docs) batch.delete(doc.ref);
+    await batch.commit();
+    return true;
   }
   const before = memStore.length;
   for (let i = memStore.length - 1; i >= 0; i--) {

@@ -187,6 +187,41 @@ export async function getAvailablePlaceholdersByDate(
   return all.filter((p) => p.status === 'available');
 }
 
+/** Calendar arithmetic for YYYY-MM-DD at local noon (avoids DST midnight surprises). */
+export function addCalendarDaysYmd(ymd: string, deltaDays: number): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return ymd;
+  const d = new Date(`${ymd}T12:00:00`);
+  d.setDate(d.getDate() + deltaDays);
+  return localDateYmd(d);
+}
+
+/**
+ * Available placeholders whose stay overlaps [checkInYmd, checkOutYmd) (hotel-night window).
+ * Loads a small day window around checkIn so blocks created for an adjacent calendar label
+ * still match; callers should pass the kiosk/property check-in date when possible.
+ */
+export async function getAvailablePlaceholdersOverlappingStay(
+  checkInYmd: string,
+  checkOutYmd: string
+): Promise<TyePlaceholder[]> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(checkInYmd) || !/^\d{4}-\d{2}-\d{2}$/.test(checkOutYmd)) {
+    return [];
+  }
+  const dates = [
+    addCalendarDaysYmd(checkInYmd, -1),
+    checkInYmd,
+    addCalendarDaysYmd(checkInYmd, 1),
+  ];
+  const uniq = [...new Set(dates)];
+  const all = await getPlaceholdersForDates(uniq);
+  return all.filter(
+    (p) =>
+      p.status === 'available' &&
+      p.forDate < checkOutYmd &&
+      checkInYmd < p.checkOutDate
+  );
+}
+
 /** Look up a single placeholder by its Cloudbeds reservation ID. */
 export async function getPlaceholderByReservationID(
   reservationID: string

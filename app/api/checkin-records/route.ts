@@ -124,7 +124,8 @@ export async function PATCH(request: NextRequest) {
       // and same-day guests whose record has no reservationID linked yet.
       const firstName = String(body.firstName ?? '').trim();
       const lastName = String(body.lastName ?? '').trim();
-      const checkInDate = String(body.checkInDate ?? '').trim();
+      const rawCheckInDate = String(body.checkInDateYmd ?? body.checkInDate ?? '').trim();
+      const checkInDate = /^\d{4}-\d{2}-\d{2}$/.test(rawCheckInDate) ? rawCheckInDate : '';
       if (firstName && checkInDate) {
         const byName = await findByGuestName(firstName, lastName, checkInDate);
         if (byName) id = byName.id;
@@ -208,9 +209,12 @@ export async function PATCH(request: NextRequest) {
 
 /**
  * DELETE /api/checkin-records
- * Body: { id? , reservationID? }
+ * Body: { id?, reservationID?, firstName?, lastName?, checkInTime?, checkInDateYmd? }
  *
- * Deletes a record by Firestore doc id or Cloudbeds reservation ID.
+ * Deletes by Firestore doc id and/or Cloudbeds reservation ID, with fallbacks:
+ * reservation lookup, then guest key (name + exact checkInTime), then name +
+ * checkInDateYmd (YYYY-MM-DD). Invalid or locale display dates in checkInDate
+ * are ignored — prefer checkInDateYmd from the client.
  */
 export async function DELETE(request: NextRequest) {
   try {
@@ -229,18 +233,26 @@ export async function DELETE(request: NextRequest) {
     const firstName = body?.firstName ? String(body.firstName).trim() : '';
     const lastName = body?.lastName ? String(body.lastName).trim() : '';
     const checkInTime = body?.checkInTime ? String(body.checkInTime).trim() : '';
-    const checkInDate = body?.checkInDate ? String(body.checkInDate).trim() : '';
+    const rawCheckInDate = String(body?.checkInDateYmd ?? body?.checkInDate ?? '').trim();
+    const checkInDateYmd = /^\d{4}-\d{2}-\d{2}$/.test(rawCheckInDate) ? rawCheckInDate : '';
 
-    if (!id && !reservationID && firstName && checkInTime) {
+    // Resolve Firestore doc id: explicit id → reservation lookup → guest key (even if
+    // reservationID was sent but wrong/stale) → name + calendar date (YYYY-MM-DD only).
+    if (!id && reservationID) {
+      const existing = await findByReservationID(reservationID);
+      if (existing) id = existing.id;
+    }
+    if (!id && firstName && checkInTime) {
       const byKey = await findByGuestKey(firstName, lastName, checkInTime);
       if (byKey?.id) id = byKey.id;
     }
-    if (!id && !reservationID && firstName && checkInDate) {
-      const byName = await findByGuestName(firstName, lastName, checkInDate);
+    if (!id && firstName && checkInDateYmd) {
+      const byName = await findByGuestName(firstName, lastName, checkInDateYmd);
       if (byName?.id) id = byName.id;
     }
 
-    if (!id && !reservationID) {
+    const hasGuestHints = !!(firstName && (checkInTime || checkInDateYmd));
+    if (!id && !reservationID && !hasGuestHints) {
       return NextResponse.json(
         { success: false, error: 'Provide id, reservationID, or guest identity fields to identify the record' },
         { status: 400 }

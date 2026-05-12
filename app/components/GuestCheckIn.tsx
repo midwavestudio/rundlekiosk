@@ -76,7 +76,10 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
   useEffect(() => {
     const fetchAvailableRooms = async () => {
       try {
-        const response = await fetch('/api/available-rooms');
+        const kioskToday = kioskLocalDateYmd(new Date());
+        const response = await fetch(
+          `/api/available-rooms?date=${encodeURIComponent(kioskToday)}`
+        );
         const data = await response.json();
         
         if (data.success) {

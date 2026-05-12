@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAvailablePlaceholdersByDate } from '@/lib/tye-placeholder-store';
+import { getAvailablePlaceholdersOverlappingStay } from '@/lib/tye-placeholder-store';
 
 export const dynamic = 'force-dynamic';
 
@@ -254,17 +254,31 @@ async function fetchOccupiedRoomKeysFromCheckedIn(
  * Each placeholder room is annotated with `placeholderReservationID` so the
  * check-in flow can skip postReservation and go directly to assign-placeholder.
  */
+function pickPlaceholderForRoom(
+  placeholders: Array<{ roomID: string; reservationID: string; roomName: string; roomTypeName: string; forDate: string }>,
+  roomID: string,
+  checkInYmd: string
+) {
+  const rid = String(roomID).trim();
+  const matches = placeholders.filter((p) => String(p.roomID).trim() === rid);
+  if (matches.length === 0) return undefined;
+  if (matches.length === 1) return matches[0];
+  const exact = matches.find((p) => p.forDate === checkInYmd);
+  return exact ?? matches[0];
+}
+
 async function mergePlaceholderRooms(
   existingRooms: Array<{ roomID: string; roomName: string; roomTypeName: string }>,
-  forDate: string
+  checkInYmd: string,
+  checkOutYmd: string
 ): Promise<Array<{ roomID: string; roomName: string; roomTypeName: string; placeholderReservationID?: string }>> {
   try {
-    const placeholders = await getAvailablePlaceholdersByDate(forDate);
+    const placeholders = await getAvailablePlaceholdersOverlappingStay(checkInYmd, checkOutYmd);
     if (placeholders.length === 0) return existingRooms;
 
-    const existingIDs = new Set(existingRooms.map((r) => r.roomID));
+    const existingIDs = new Set(existingRooms.map((r) => String(r.roomID).trim()));
     const toAdd = placeholders
-      .filter((p) => !existingIDs.has(p.roomID))
+      .filter((p) => !existingIDs.has(String(p.roomID).trim()))
       .map((p) => ({
         roomID: p.roomID,
         roomName: p.roomName,
@@ -274,7 +288,7 @@ async function mergePlaceholderRooms(
 
     // For rooms already in the list, annotate them with the placeholder ID.
     const annotated = existingRooms.map((room) => {
-      const ph = placeholders.find((p) => p.roomID === room.roomID);
+      const ph = pickPlaceholderForRoom(placeholders, room.roomID, checkInYmd);
       return ph ? { ...room, placeholderReservationID: ph.reservationID } : room;
     });
 
@@ -366,7 +380,7 @@ export async function GET(request: NextRequest) {
         .filter((r: any) => r.roomID !== 'unknown' && !r.roomName.includes('(Remove BE)') && !r.roomTypeName.includes('(Remove BE)'))
         .filter((r: any) => !isExcludedFromKioskPicker(r))
         .filter((r, i, arr) => arr.findIndex((x) => x.roomID === r.roomID) === i);
-      rooms = await mergePlaceholderRooms(rooms, today);
+      rooms = await mergePlaceholderRooms(rooms, today, tomorrow);
       rooms = rooms.filter((r) => !isExcludedFromKioskPicker(r));
       return NextResponse.json({
         success: true,

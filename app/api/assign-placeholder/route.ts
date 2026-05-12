@@ -3,6 +3,7 @@ import { settleReservationFolio } from '@/lib/cloudbeds-checkin';
 import {
   getPlaceholderByReservationID,
   assignPlaceholder,
+  updatePlaceholder,
 } from '@/lib/tye-placeholder-store';
 import { buildGuestSyntheticEmail } from '@/lib/guest-email';
 
@@ -184,6 +185,29 @@ export async function POST(request: NextRequest) {
     try { grData = JSON.parse(grText); } catch { /* ignore */ }
     log('2_getReservation_response', { status: grRes.status, body: grData });
 
+    const grMsg = String(grData?.message ?? '');
+    const cloudbedsSaysMissing =
+      grRes.status === 404 ||
+      (grData.success === false &&
+        /not found|invalid reservation|does not exist|no reservation/i.test(grMsg));
+
+    if (cloudbedsSaysMissing) {
+      await updatePlaceholder(placeholder.id, {
+        status: 'cancelled',
+        cloudbedsStatus: 'deleted_or_missing',
+        lastSyncedAt: new Date().toISOString(),
+      });
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            'This room block no longer exists in Cloudbeds (it may have been deleted). Please pick another room or ask the front desk.',
+          debugTrail: debugLog,
+        },
+        { status: 410 }
+      );
+    }
+
     if (!grRes.ok) {
       throw new Error(`Unable to load reservation from Cloudbeds (HTTP ${grRes.status})`);
     }
@@ -194,6 +218,26 @@ export async function POST(request: NextRequest) {
     const reservation = parseReservationFromGetReservationJson(grData);
     if (!reservation || typeof reservation !== 'object') {
       throw new Error('getReservation returned no reservation body — cannot assign guest');
+    }
+
+    const cbResStatus = String(
+      reservation.status ?? reservation.reservationStatus ?? ''
+    ).toLowerCase();
+    if (cbResStatus === 'cancelled' || cbResStatus === 'canceled') {
+      await updatePlaceholder(placeholder.id, {
+        status: 'cancelled',
+        cloudbedsStatus: cbResStatus,
+        lastSyncedAt: new Date().toISOString(),
+      });
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            'This room block was cancelled in Cloudbeds. Please pick another room or ask the front desk.',
+          debugTrail: debugLog,
+        },
+        { status: 410 }
+      );
     }
 
     const fromApi = extractGuestIdFromReservation(reservation);

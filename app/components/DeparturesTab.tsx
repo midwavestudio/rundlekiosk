@@ -425,23 +425,33 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
         const result = await res.json();
         if (!result.success && !result.mockMode) throw new Error(result.error || 'Failed to delete from Cloudbeds');
       }
-      if (row.rawData._serverId || row.cloudbedsReservationID) {
-        const serverRes = await fetch('/api/checkin-records', {
-          method: 'DELETE',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ...(row.rawData._serverId ? { id: row.rawData._serverId } : {}),
-            ...(row.cloudbedsReservationID ? { reservationID: row.cloudbedsReservationID } : {}),
-            firstName: row.rawData.firstName,
-            lastName: row.rawData.lastName,
-            checkInTime: row.rawData.checkInTime,
-            checkInDate: row.checkInDate,
-          }),
-        });
-        if (!serverRes.ok) {
-          const data = await serverRes.json().catch(() => ({}));
-          throw new Error(data?.error || 'Failed to remove check-in record');
-        }
+      const checkInDateYmd = isoToLocalYmd(row.checkInIso) ?? '';
+      const serverRes = await fetch('/api/checkin-records', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...(row.rawData._serverId ? { id: row.rawData._serverId } : {}),
+          ...(row.cloudbedsReservationID ? { reservationID: row.cloudbedsReservationID } : {}),
+          firstName: row.rawData.firstName,
+          lastName: row.rawData.lastName,
+          checkInTime: row.rawData.checkInTime ?? '',
+          checkInDateYmd,
+        }),
+      });
+      const delData = (await serverRes.json().catch(() => ({}))) as {
+        success?: boolean;
+        deleted?: boolean;
+        error?: string;
+      };
+      if (!serverRes.ok) {
+        throw new Error(delData?.error || 'Failed to remove check-in record');
+      }
+      const expectedFirestore = !!(row.rawData._serverId || row.cloudbedsReservationID);
+      if (expectedFirestore && delData.deleted !== true) {
+        throw new Error(
+          delData.error ||
+            'Could not remove this guest from the server database. They may reappear after refresh.'
+        );
       }
       if (row.status === 'checked_in') {
         const isTargetActiveRecord = (g: StoredGuest) =>
