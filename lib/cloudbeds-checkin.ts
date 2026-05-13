@@ -1526,7 +1526,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
             reservationID: existingResID,
             status: 'checked_in',
           });
-          await fetch(`${apiV13}/putReservation`, {
+          const ciResp = await fetch(`${apiV13}/putReservation`, {
             method: 'PUT',
             headers: {
               Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
@@ -1534,6 +1534,84 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
             },
             body: ciP.toString(),
           });
+          let ciData: any = {};
+          try { ciData = await ciResp.json(); } catch { /* ignore */ }
+          log('3_precheck_existing_putReservation_checkin', {
+            status: ciResp.status,
+            body: ciData,
+          });
+          const ciSucceeded = ciResp.ok && ciData.success === true;
+          if (!ciSucceeded) {
+            // Try postRoomCheckIn variants before giving up on checked_in
+            const subResForExisting = String(
+              (existingReservationData as any).unassigned?.[0]?.subReservationID ?? existingResID
+            );
+            const roomIdForExistingCI = String(roomIdForStayPeriod ?? actualRoomID ?? '');
+            const existingCIVariants = [
+              { subReservationID: subResForExisting, roomID: roomIdForExistingCI },
+              { subReservationID: subResForExisting },
+              { roomID: roomIdForExistingCI },
+            ];
+            let postRoomCISucceeded = false;
+            for (const v of existingCIVariants) {
+              const rcP = new URLSearchParams();
+              rcP.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+              rcP.append('reservationID', existingResID);
+              if (v.subReservationID) rcP.append('subReservationID', v.subReservationID);
+              if (v.roomID) rcP.append('roomID', v.roomID);
+              const rcResp = await fetch(`${apiV13}/postRoomCheckIn`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: rcP.toString(),
+              });
+              let rcData: any = {};
+              try { rcData = await rcResp.json(); } catch { /* ignore */ }
+              if (rcResp.ok && rcData.success === true) {
+                postRoomCISucceeded = true;
+                log('3_precheck_existing_postRoomCheckIn', { variant: v, status: rcResp.status, body: rcData });
+                break;
+              }
+            }
+            if (postRoomCISucceeded) {
+              // Retry putReservation after postRoomCheckIn
+              const ciP2 = new URLSearchParams({
+                propertyID: CLOUDBEDS_PROPERTY_ID,
+                reservationID: existingResID,
+                status: 'checked_in',
+              });
+              const ciResp2 = await fetch(`${apiV13}/putReservation`, {
+                method: 'PUT',
+                headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: ciP2.toString(),
+              });
+              let ciData2: any = {};
+              try { ciData2 = await ciResp2.json(); } catch { /* ignore */ }
+              log('3_precheck_existing_putReservation_retry', { status: ciResp2.status, body: ciData2 });
+              if (ciResp2.ok && ciData2.success === true) {
+                return {
+                  success: true,
+                  guestID: existingGuestID || undefined,
+                  reservationID: existingResID,
+                  roomName: existingRoom,
+                  message: 'Guest checked in using existing reservation (duplicate prevented)',
+                  reservationStatus: 'checked_in',
+                };
+              }
+            }
+            log('3_precheck_existing_checkin_failed_returning_confirmed', {
+              note: 'Existing reservation found but putReservation checked_in failed — returning confirmed to preserve reservation',
+              reservationID: existingResID,
+              putMessage: ciData?.message,
+            });
+            return {
+              success: true,
+              guestID: existingGuestID || undefined,
+              reservationID: existingResID,
+              roomName: existingRoom,
+              message: 'Reservation found and payment settled. Check-in status could not be updated automatically — staff should set status to Checked In in Cloudbeds.',
+              reservationStatus: 'confirmed',
+            };
+          }
           return {
             success: true,
             guestID: existingGuestID || undefined,
@@ -1641,10 +1719,28 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       if (r.ok) { reservationData = r.data; log('3_postReservation_fallback_overbook_type_only', { note: 'allowOverbooking=1 + type-only succeeded' }); return true; }
     }
 
-    // 2f. Back-dated stays: Cloudbeds rejects past check-in dates - retry with today
-    const today = getLocalDateStr(new Date());
-    if (checkInDate < today && !stopAfterReservationCreate) {
-      const dateOvr = { startDate: today, endDate: addOneCalendarDayYmd(today) };
+    // 2f. Back-dated stays: Cloudbeds can reject past check-in dates.
+    // CRITICAL: always use the client-supplied checkInDate (local timezone) for the
+    // retry — never substitute the server UTC "today" date. The server clock runs in
+    // UTC and can be ahead of the kiosk local date (e.g. 11 PM local = next UTC day).
+    // Using server UTC date here is what caused "reservation created for next day"
+    // when the kiosk correctly sent today's local date as checkInDate.
+    // A date is considered past only if it is more than 1 day before the server UTC
+    // date (i.e. genuinely old, not merely the timezone-boundary case where client
+    // local date = server UTC yesterday).
+    const serverUtcToday = getLocalDateStr(new Date());
+    const serverUtcYesterday = (() => {
+      const [y, m, d] = serverUtcToday.split('-').map(Number);
+      const dt = new Date(y, m - 1, d);
+      dt.setDate(dt.getDate() - 1);
+      return getLocalDateStr(dt);
+    })();
+    const checkInIsGenuinelyPast = checkInDate < serverUtcYesterday;
+    if (checkInIsGenuinelyPast && !stopAfterReservationCreate) {
+      // For genuinely old past dates, retry with today's server UTC date — these are
+      // admin backdated check-ins that Cloudbeds cannot accept. Current-day check-ins
+      // (including those at the UTC midnight boundary) should NOT reach this branch.
+      const dateOvr = { startDate: serverUtcToday, endDate: addOneCalendarDayYmd(serverUtcToday) };
       if (roomIdForCreate != null) {
         const r = await runPostReservation({ attachPhysicalRoom: true, roomIdOnly: true, allowOverbooking: true, dateOverride: dateOvr });
         if (r.ok) { reservationData = r.data; log('3_postReservation_fallback_backdated_roomid', { note: 'Back-dated to today roomIdOnly overbook' }); return true; }

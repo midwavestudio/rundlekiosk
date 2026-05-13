@@ -562,16 +562,11 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
         deleted?: boolean;
         error?: string;
       };
-      if (!serverRes.ok) {
+      if (!serverRes.ok || delData.success === false) {
         throw new Error(delData?.error || 'Failed to remove check-in record');
       }
-      const expectedFirestore = !!(row.rawData._serverId || row.cloudbedsReservationID);
-      if (expectedFirestore && delData.deleted !== true) {
-        throw new Error(
-          delData.error ||
-            'Could not remove this guest from the server database. They may reappear after refresh.'
-        );
-      }
+      // deleted: false means the document wasn't found in Firestore (already removed or
+      // never persisted). This is not an error — treat it as a successful deletion.
       if (row.fromHistory) {
         const isTargetHistoryRecord = (g: CheckedInGuest) => {
           if (
