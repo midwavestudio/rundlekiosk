@@ -209,6 +209,7 @@ export default function AdminCheckInTab() {
         checkOutDate: form.checkOutDate,
         roomName: typeHint || 'UNASSIGNED',
         forceUnassigned: true,
+        allowOverbooking: true,
       };
     } else {
       const placeholderReservationID = selectedRoom?.placeholderReservationID;
@@ -223,6 +224,7 @@ export default function AdminCheckInTab() {
         checkOutDate: form.checkOutDate,
         roomName: selectedRoom ? selectedRoom.roomID : form.roomID,
         roomNameHint: selectedRoom?.roomName,
+        allowOverbooking: true,
         ...(placeholderReservationID ? { placeholderReservationID } : {}),
       };
     }

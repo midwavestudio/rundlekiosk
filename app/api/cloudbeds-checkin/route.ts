@@ -214,6 +214,7 @@ export async function POST(request: NextRequest) {
       checkInDate: bodyCheckIn,
       checkOutDate: bodyCheckOut,
       forceUnassigned: !!forceUnassigned,
+      allowOverbooking: body.allowOverbooking === true,
       debugLog,
     };
     try {
