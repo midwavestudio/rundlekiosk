@@ -3,6 +3,11 @@
 import { useState, useEffect, useMemo } from 'react';
 import { resolveRoomNumberLabel } from '@/lib/room-display';
 import {
+  datetimeLocalValueToIso,
+  isoToDatetimeLocalValue,
+  localYmdFromDate,
+} from '@/lib/admin-datetime';
+import {
   ADMIN_TEXT_PRIMARY,
   ADMIN_SURFACE_RAISED,
   ADMIN_BORDER_STRONG,
@@ -58,6 +63,8 @@ interface EditGuestForm {
   clcNumber: string;
   class: 'TYE' | 'MOW';
   roomNumber: string;
+  checkInDateTime: string;
+  checkOutDateTime: string;
 }
 
 interface RoomDirectoryEntry {
@@ -513,6 +520,8 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
       clcNumber: selectedRow.clcNumber === '—' ? '' : selectedRow.clcNumber || '',
       class: selectedRow.class === 'MOW' ? 'MOW' : 'TYE',
       roomNumber: selectedRow.rawData.roomNumber || '',
+      checkInDateTime: isoToDatetimeLocalValue(selectedRow.checkInIso),
+      checkOutDateTime: selectedRow.checkOutIso ? isoToDatetimeLocalValue(selectedRow.checkOutIso) : '',
     });
   }, [selectedRow]);
 
@@ -614,6 +623,23 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
   const handleSaveEdit = async () => {
     if (!selectedRow || !editForm) return;
 
+    const checkInIso = datetimeLocalValueToIso(editForm.checkInDateTime);
+    if (!checkInIso) {
+      alert('Please enter a valid check-in date and time.');
+      return;
+    }
+    const checkOutIso = editForm.checkOutDateTime.trim()
+      ? datetimeLocalValueToIso(editForm.checkOutDateTime)
+      : undefined;
+    if (editForm.checkOutDateTime.trim() && !checkOutIso) {
+      alert('Please enter a valid check-out date and time, or clear the field.');
+      return;
+    }
+    if (checkOutIso && new Date(checkOutIso).getTime() < new Date(checkInIso).getTime()) {
+      alert('Check-out must be after check-in.');
+      return;
+    }
+
     const nextGuest: CheckedInGuest = {
       ...selectedRow.rawData,
       firstName: editForm.firstName.trim(),
@@ -622,6 +648,8 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
       clcNumber: editForm.clcNumber.trim(),
       class: editForm.class,
       roomNumber: editForm.roomNumber.trim(),
+      checkInTime: checkInIso,
+      checkOutTime: checkOutIso,
     };
 
     const matchGuest = (g: CheckedInGuest) => {
@@ -639,15 +667,20 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
       );
     };
 
-    if (selectedRow.fromHistory) {
-      const updated = checkOutHistory.map((g) => (matchGuest(g) ? nextGuest : g));
-      setCheckOutHistory(updated);
-      localStorage.setItem('checkOutHistory', JSON.stringify(updated));
+    const withoutMatch = (list: CheckedInGuest[]) => list.filter((g) => !matchGuest(g));
+    const nextActive = withoutMatch(checkedInGuests);
+    const nextHistory = withoutMatch(checkOutHistory);
+    if (nextGuest.checkOutTime) {
+      nextHistory.push(nextGuest);
     } else {
-      const updated = checkedInGuests.map((g) => (matchGuest(g) ? nextGuest : g));
-      setCheckedInGuests(updated);
-      localStorage.setItem('checkedInGuests', JSON.stringify(updated));
+      nextActive.push(nextGuest);
     }
+    setCheckedInGuests(nextActive);
+    setCheckOutHistory(nextHistory);
+    localStorage.setItem('checkedInGuests', JSON.stringify(nextActive));
+    localStorage.setItem('checkOutHistory', JSON.stringify(nextHistory));
+
+    const checkInDateYmd = localYmdFromDate(new Date(checkInIso));
 
     setSelectedRow((prev) =>
       prev
@@ -660,6 +693,11 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
             clcNumber: nextGuest.clcNumber || '—',
             class: nextGuest.class || '—',
             roomNumber: resolveRoomNumberLabel(nextGuest.roomNumber, roomNameById),
+            checkInDate: fmtDate(checkInIso),
+            checkInTime: fmtTime(checkInIso),
+            checkInIso,
+            checkOutIso: checkOutIso,
+            fromHistory: !!nextGuest.checkOutTime,
             rawData: nextGuest,
           }
         : prev
@@ -682,6 +720,9 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
           clcNumber: nextGuest.clcNumber,
           class: nextGuest.class,
           roomNumber: nextGuest.roomNumber,
+          checkInTime: checkInIso,
+          checkInDateYmd,
+          checkOutTime: checkOutIso ?? '',
         }),
       }).catch(() => {});
     }
@@ -1068,7 +1109,6 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
                       title="Open guest details"
                     >
                       <div style={{ fontWeight: 600, fontSize: '14px', color: primaryText }}>{row.guestName}</div>
-                      <div style={{ fontSize: '12px', color: '#9ca3af' }}>Host: TYE</div>
                     </div>
 
                     <div style={{ flex: '1 1 0', minWidth: '90px', padding: '0 12px', fontSize: '14px', color: secondaryText }}>{row.clcNumber}</div>
@@ -1119,7 +1159,6 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
               </div>
               <div style={{ textAlign: 'center' }}>
                 <div style={{ fontWeight: 700, fontSize: '17px', color: '#111' }}>{selectedRow.guestName}</div>
-                <div style={{ fontSize: '13px', color: '#9ca3af', marginTop: '2px' }}>Host: TYE</div>
               </div>
             </div>
 
@@ -1152,6 +1191,25 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
                     <option value="TYE">TYE</option>
                     <option value="MOW">MOW</option>
                   </select>
+                </div>
+                <div>
+                  <div style={{ fontSize: '11px', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '4px' }}>Check-In</div>
+                  <input
+                    type="datetime-local"
+                    value={editForm.checkInDateTime}
+                    onChange={(e) => setEditForm((prev) => (prev ? { ...prev, checkInDateTime: e.target.value } : prev))}
+                    style={{ width: '100%', padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '14px', color: '#374151' }}
+                  />
+                </div>
+                <div>
+                  <div style={{ fontSize: '11px', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '4px' }}>Check-Out</div>
+                  <input
+                    type="datetime-local"
+                    value={editForm.checkOutDateTime}
+                    onChange={(e) => setEditForm((prev) => (prev ? { ...prev, checkOutDateTime: e.target.value } : prev))}
+                    style={{ width: '100%', padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '14px', color: '#374151' }}
+                  />
+                  <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '4px' }}>Leave empty if the guest has not checked out.</div>
                 </div>
               </>
             ) : (
