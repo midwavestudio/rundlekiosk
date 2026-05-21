@@ -955,9 +955,8 @@ export interface PerformCheckInParams {
    */
   forceUnassigned?: boolean;
   /**
-   * When true: every postReservation attempt includes allowOverbooking=1 so Cloudbeds
-   * accepts the booking even when inventory is exhausted. Also auto-enabled when
-   * checkInDate is before the server UTC calendar day (admin backdated check-ins).
+   * When true: every postReservation attempt includes allowOverbooking=1 (also the default
+   * for kiosk walk-in check-ins so inventory/overbooking blocks do not prevent a booking).
    */
   allowOverbooking?: boolean;
   /** If provided, request/response trail for each step is pushed here (for debugging room-assignment issues). */
@@ -1032,15 +1031,30 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   }
 
   const serverUtcToday = getLocalDateStr(new Date());
-  const isPastCheckInDate = checkInDate < serverUtcToday;
-  const useOverbooking = allowOverbookingParam === true || isPastCheckInDate;
-  if (useOverbooking) {
-    log('0_allowOverbooking', {
-      checkInDate,
-      serverUtcToday,
-      reason: allowOverbookingParam === true ? 'explicit' : 'past_check_in_date',
-    });
-  }
+  // Only treat checkInDate as "past" when it is at least 2 calendar days behind the server UTC
+  // date. A 1-day gap is normal for US evening check-ins: at 10 PM CDT the Vercel server (UTC)
+  // is already on the next UTC day, so serverUtcToday appears 1 day ahead of the valid local
+  // check-in date. Treating that as "past" incorrectly triggers overbooking fallbacks and causes
+  // Cloudbeds to reject postReservation as back-dated. Only flag as past when the day AFTER
+  // checkInDate is still behind serverUtcToday (i.e. a genuine 2+ day gap).
+  const isPastCheckInDate = addOneCalendarDayYmd(checkInDate) < serverUtcToday;
+  // Always send allowOverbooking=1 for reservation creation unless explicitly disabled.
+  // Cloudbeds often rejects kiosk nights when the property is at capacity; we still need
+  // a reservation (unassigned if necessary) rather than failing the whole check-in.
+  const useOverbooking = allowOverbookingParam !== false;
+  log('0_allowOverbooking', {
+    checkInDate,
+    serverUtcToday,
+    allowOverbooking: useOverbooking,
+    reason:
+      allowOverbookingParam === true
+        ? 'explicit'
+        : allowOverbookingParam === false
+          ? 'disabled'
+          : isPastCheckInDate
+            ? 'past_check_in_date'
+            : 'default_kiosk_override',
+  });
 
   // forceUnassigned: admin explicitly wants an unassigned reservation.
   // Try multiple room types for the selected stay dates (Cloudbeds can reject a specific
@@ -1283,8 +1297,13 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     let { allRatesForRoomType, tyeRate } = findTyeRateForRoomType(stayRates, roomTypeID);
 
     if (!tyeRate && wantTye) {
-      const anchorStart = getLocalDateStr(new Date());
-      const anchorEnd = addOneCalendarDayYmd(anchorStart);
+      // Use checkInDate as the base anchor. If the check-in date is genuinely in the past
+      // (2+ day gap, i.e. admin backdating) fall back to the current server UTC date to find
+      // an active TYE rate plan. Using server UTC directly was a bug for evening kiosk check-ins:
+      // at 10 PM local CDT the Vercel server (UTC) is already on the next UTC day, so the anchor
+      // would land on "tomorrow", fetching rates for a different night than the stay window.
+      const anchorStart = isPastCheckInDate ? serverUtcToday : checkInDate;
+      const anchorEnd = isPastCheckInDate ? addOneCalendarDayYmd(serverUtcToday) : checkOutDate;
       const sameWindowAsStay = anchorStart === checkInDate && anchorEnd === checkOutDate;
       if (!sameWindowAsStay) {
         log('2_getRatePlans_tye_anchor_window', {
@@ -1395,15 +1414,22 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
 
   /** True when the Cloudbeds error response indicates an overbooking or availability block. */
   function isOverbookingError(data: any): boolean {
-    const msg = String(data?.message ?? data?.error ?? '').toLowerCase();
+    const msg = String(data?.message ?? data?.error ?? data?.data?.message ?? '').toLowerCase();
     return (
       msg.includes('overbook') ||
       msg.includes('not available') ||
       msg.includes('could not accommodate') ||
       msg.includes('no rooms available') ||
+      msg.includes('no room available') ||
       msg.includes('availability') ||
       msg.includes('sold out') ||
-      msg.includes('no availability')
+      msg.includes('no availability') ||
+      msg.includes('fully booked') ||
+      msg.includes('inventory') ||
+      msg.includes('exceed') ||
+      msg.includes('maximum occupancy') ||
+      msg.includes('at capacity') ||
+      msg.includes('no vacancy')
     );
   }
 
@@ -1703,15 +1729,18 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
    * Returns true and sets reservationData when any attempt succeeds.
    */
   const attemptRoomSpecificFallbacks = async (failedData: any): Promise<boolean> => {
+    const inventoryBlock = isOverbookingError(failedData);
+    const overbookPriority = useOverbooking || inventoryBlock;
     log('3_fallback_room_specific_start', {
-      detectedOverbooking: isOverbookingError(failedData),
+      detectedOverbooking: inventoryBlock,
       failedMessage: failedData?.message ?? '(none)',
       useOverbooking,
+      overbookPriority,
       isPastCheckInDate,
     });
 
-    // When overbooking override is active (admin / past dates), try allowOverbooking=1 first.
-    if (useOverbooking) {
+    // Inventory / overbooking rejection: try allowOverbooking=1 before non-overbook fallbacks.
+    if (overbookPriority) {
       if (roomIdForCreate != null && !stopAfterReservationCreate) {
         const rObRoom = await runPostReservation({ attachPhysicalRoom: true, allowOverbooking: true });
         if (rObRoom.ok) {
@@ -1736,34 +1765,33 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       }
     }
 
-    // 2a. Room-ID-only - bypasses type-level inventory count
-    if (roomIdForCreate != null && !stopAfterReservationCreate) {
-      const r = await runPostReservation({ attachPhysicalRoom: true, roomIdOnly: true });
-      if (r.ok) { reservationData = r.data; log('3_postReservation_fallback_roomid_only', { note: 'Room-ID-only succeeded' }); return true; }
+    // 2a–2b. Non-overbook attempts — skip when Cloudbeds already said inventory/overbook
+    // (they rarely succeed and delay the unassigned last resort).
+    if (!inventoryBlock) {
+      if (roomIdForCreate != null && !stopAfterReservationCreate) {
+        const r = await runPostReservation({ attachPhysicalRoom: true, roomIdOnly: true });
+        if (r.ok) { reservationData = r.data; log('3_postReservation_fallback_roomid_only', { note: 'Room-ID-only succeeded' }); return true; }
+      }
+      {
+        const r = await runPostReservation({ attachPhysicalRoom: false });
+        if (r.ok) { reservationData = r.data; log('3_postReservation_fallback_type_only', { note: 'Type-only succeeded' }); return true; }
+      }
     }
 
-    // 2b. Type-only (no physical room pinned)
-    {
-      const r = await runPostReservation({ attachPhysicalRoom: false });
-      if (r.ok) { reservationData = r.data; log('3_postReservation_fallback_type_only', { note: 'Type-only succeeded' }); return true; }
-    }
-
-    // 2c. allowOverbooking=1 with physical room
-    if (roomIdForCreate != null && !stopAfterReservationCreate) {
-      const r = await runPostReservation({ attachPhysicalRoom: true, allowOverbooking: true });
-      if (r.ok) { reservationData = r.data; log('3_postReservation_fallback_overbook_room', { note: 'allowOverbooking=1 + room succeeded' }); return true; }
-    }
-
-    // 2d. allowOverbooking=1, room-ID-only - strips type check AND sets override flag
-    if (roomIdForCreate != null && !stopAfterReservationCreate) {
-      const r = await runPostReservation({ attachPhysicalRoom: true, roomIdOnly: true, allowOverbooking: true });
-      if (r.ok) { reservationData = r.data; log('3_postReservation_fallback_overbook_roomid_only', { note: 'allowOverbooking=1 + roomIdOnly succeeded' }); return true; }
-    }
-
-    // 2e. allowOverbooking=1, type-only - last room-specific attempt before unassigned fallback
-    {
-      const r = await runPostReservation({ attachPhysicalRoom: false, allowOverbooking: true });
-      if (r.ok) { reservationData = r.data; log('3_postReservation_fallback_overbook_type_only', { note: 'allowOverbooking=1 + type-only succeeded' }); return true; }
+    // 2c–2e. allowOverbooking=1 variants (skipped above when overbookPriority already ran them)
+    if (!overbookPriority) {
+      if (roomIdForCreate != null && !stopAfterReservationCreate) {
+        const r = await runPostReservation({ attachPhysicalRoom: true, allowOverbooking: true });
+        if (r.ok) { reservationData = r.data; log('3_postReservation_fallback_overbook_room', { note: 'allowOverbooking=1 + room succeeded' }); return true; }
+      }
+      if (roomIdForCreate != null && !stopAfterReservationCreate) {
+        const r = await runPostReservation({ attachPhysicalRoom: true, roomIdOnly: true, allowOverbooking: true });
+        if (r.ok) { reservationData = r.data; log('3_postReservation_fallback_overbook_roomid_only', { note: 'allowOverbooking=1 + roomIdOnly succeeded' }); return true; }
+      }
+      {
+        const r = await runPostReservation({ attachPhysicalRoom: false, allowOverbooking: true });
+        if (r.ok) { reservationData = r.data; log('3_postReservation_fallback_overbook_type_only', { note: 'allowOverbooking=1 + type-only succeeded' }); return true; }
+      }
     }
 
     // 2f. Past check-in dates (admin backdate): retry with the requested stay window +
@@ -1864,10 +1892,11 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
         unassignedParams.append('children[0][roomTypeID]', typeID);
         unassignedParams.append('children[0][quantity]', '0');
         unassignedParams.append('sourceID', 's-945658-1');
-        if (useOverbooking) unassignedParams.append('allowOverbooking', '1');
+        // Always override property overbooking limits for the unassigned last resort.
+        unassignedParams.append('allowOverbooking', '1');
 
         log('3_postReservation_unassigned_last_resort_request', {
-          note: 'All room-specific attempts failed — creating unassigned reservation (room occupied)',
+          note: 'Creating unassigned reservation with allowOverbooking=1 (inventory/overbook override)',
           roomTypeID: typeID,
           startDate: checkInDate,
           endDate: checkOutDate,
@@ -1900,6 +1929,23 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       }
     }
     return false;
+  };
+
+  /**
+   * After postReservation fails: reuse an existing booking, or escalate through room fallbacks
+   * and unassigned + allowOverbooking. For inventory/overbook errors, try unassigned first.
+   */
+  const escalateAfterFailedPostReservation = async (failedData: any): Promise<boolean> => {
+    if (isOverbookingError(failedData)) {
+      log('3_escalate_inventory_block', {
+        note: 'Cloudbeds inventory/overbook rejection — unassigned + allowOverbooking first',
+        message: failedData?.message,
+      });
+      if (await attemptUnassignedReservationLastResort()) return true;
+      return attemptRoomSpecificFallbacks(failedData);
+    }
+    if (await attemptRoomSpecificFallbacks(failedData)) return true;
+    return attemptUnassignedReservationLastResort();
   };
 
   if (stopAfterReservationCreate && (!canAttachPhysicalRoomToReservation || roomIdForCreate == null)) {
@@ -1959,14 +2005,9 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
         reservationID: recoveredPayload.reservationID ?? recoveredPayload.data?.reservationID,
         note: 'First postReservation failed but a matching reservation exists — reusing it',
       });
-    } else {
-      // Escalating fallback sequence: roomIdOnly -> typeOnly -> allowOverbooking variants
-      // -> back-dated retry -> unassigned last resort.
-      // Overbooking at any level cannot stop a reservation from being created.
-      if (!(await attemptRoomSpecificFallbacks(first.data)) && !(await attemptUnassignedReservationLastResort())) {
-        const msg = first.data?.message || first.text || 'Failed to create reservation in Cloudbeds';
-        throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
-      }
+    } else if (!(await escalateAfterFailedPostReservation(first.data))) {
+      const msg = first.data?.message || first.text || 'Failed to create reservation in Cloudbeds';
+      throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
     }
   } else {
     // first.ok is false and canAttachPhysicalRoomToReservation is false (no room ID available).
@@ -1977,7 +2018,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
         'Room ' + JSON.stringify(selectedRoomName ?? roomName) + ' is not available for ' + checkInDate + ' (Cloudbeds could not book that specific room).';
       throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
     }
-    if (!(await attemptRoomSpecificFallbacks(first.data)) && !(await attemptUnassignedReservationLastResort())) {
+    if (!(await escalateAfterFailedPostReservation(first.data))) {
       const msg = first.data?.message || first.text || 'Failed to create reservation in Cloudbeds';
       throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
     }
