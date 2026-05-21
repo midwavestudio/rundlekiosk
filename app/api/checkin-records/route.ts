@@ -133,7 +133,29 @@ export async function PATCH(request: NextRequest) {
     }
 
     const updates: Record<string, unknown> = {};
-    if (body.checkOutTime !== undefined) updates.checkOutTime = String(body.checkOutTime);
+    if (body.checkInTime !== undefined) {
+      const checkInTime = String(body.checkInTime);
+      updates.checkInTime = checkInTime;
+      const rawYmd = String(body.checkInDateYmd ?? '').trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(rawYmd)) {
+        updates.checkInDateYmd = rawYmd;
+      } else if (checkInTime.length >= 10) {
+        const d = new Date(checkInTime);
+        if (!Number.isNaN(d.getTime())) {
+          const y = d.getFullYear();
+          const m = String(d.getMonth() + 1).padStart(2, '0');
+          const day = String(d.getDate()).padStart(2, '0');
+          updates.checkInDateYmd = `${y}-${m}-${day}`;
+        }
+      }
+    } else if (body.checkInDateYmd !== undefined) {
+      const rawYmd = String(body.checkInDateYmd).trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(rawYmd)) updates.checkInDateYmd = rawYmd;
+    }
+    if (body.checkOutTime !== undefined) {
+      const raw = body.checkOutTime;
+      updates.checkOutTime = raw === null || raw === '' ? null : String(raw);
+    }
     if (body.cloudbedsReservationID !== undefined) updates.cloudbedsReservationID = String(body.cloudbedsReservationID);
     if (body.cloudbedsGuestID !== undefined) updates.cloudbedsGuestID = String(body.cloudbedsGuestID);
     if (body.roomNumber !== undefined) updates.roomNumber = String(body.roomNumber);
