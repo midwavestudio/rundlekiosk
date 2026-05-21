@@ -6,6 +6,23 @@ export const dynamic = 'force-dynamic';
 /** Excluded from kiosk/admin room pickers. */
 const KIOSK_ROOM_PICKER_EXCLUSIONS = ['227', 'CON', '303'];
 
+/**
+ * Sort rooms to match Cloudbeds' display order: room type alphabetically, then
+ * room name / number within each type using natural (numeric-aware) sort so that
+ * e.g. "201" < "209" < "210" and "308i" sorts after "308".
+ * Placeholder-annotated rooms stay in the same relative position as their type peers.
+ */
+function sortRoomsForPicker(
+  rooms: Array<{ roomID: string; roomName: string; roomTypeName: string; placeholderReservationID?: string }>
+) {
+  const collator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
+  return [...rooms].sort((a, b) => {
+    const typeOrder = collator.compare(a.roomTypeName, b.roomTypeName);
+    if (typeOrder !== 0) return typeOrder;
+    return collator.compare(a.roomName, b.roomName);
+  });
+}
+
 function normalizeRoomToken(raw: string): string {
   return raw
     .trim()
@@ -382,6 +399,10 @@ export async function GET(request: NextRequest) {
         .filter((r, i, arr) => arr.findIndex((x) => x.roomID === r.roomID) === i);
       rooms = await mergePlaceholderRooms(rooms, today, tomorrow);
       rooms = rooms.filter((r) => !isExcludedFromKioskPicker(r));
+      // Sort by room type (alphabetical) then room name/number (natural numeric order)
+      // so the picker always reflects the current Cloudbeds room structure regardless
+      // of what order getRooms pages were returned in.
+      rooms = sortRoomsForPicker(rooms);
       return NextResponse.json({
         success: true,
         rooms,
