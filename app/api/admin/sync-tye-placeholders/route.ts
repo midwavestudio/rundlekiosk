@@ -4,6 +4,7 @@ import {
   updatePlaceholder,
   type PlaceholderStatus,
 } from '@/lib/tye-placeholder-store';
+import { formatCloudbedsRoomNameLabel } from '@/lib/room-display';
 
 /**
  * POST /api/admin/sync-tye-placeholders
@@ -63,6 +64,28 @@ export async function POST(request: NextRequest) {
     for (const placeholder of placeholders) {
       // Cancelled rows are terminal — nothing to sync.
       if (placeholder.status === 'cancelled') {
+        continue;
+      }
+
+      // Mistaken duplicate: Interior Queen labeled "100" (renamed to 101 in Cloudbeds).
+      // Room 100 in the picker is Interior Single King only — retire stale blocks.
+      if (placeholder.status === 'available' && isObsoleteInteriorQueen100Duplicate(placeholder)) {
+        await updatePlaceholder(placeholder.id, {
+          lastSyncedAt: syncedAt,
+          cloudbedsStatus: 'obsolete_duplicate_room_100',
+          status: 'cancelled',
+        });
+        changes.push({
+          placeholderID: placeholder.id,
+          reservationID: placeholder.reservationID,
+          roomName: placeholder.roomName,
+          previousStatus: placeholder.status,
+          newStatus: 'cancelled',
+          cloudbedsStatus: 'obsolete_duplicate_room_100',
+        });
+        console.warn(
+          `TYE placeholder ${placeholder.reservationID}: cancelled obsolete Interior Queen duplicate for room 100`
+        );
         continue;
       }
 
@@ -154,6 +177,17 @@ export async function POST(request: NextRequest) {
           updates.status = newStatus;
         }
 
+        const liveRoom = extractPrimaryRoomFromReservation(reservation);
+        if (liveRoom.roomID && liveRoom.roomID !== placeholder.roomID) {
+          updates.roomID = liveRoom.roomID;
+        }
+        if (liveRoom.roomName && liveRoom.roomName !== placeholder.roomName) {
+          updates.roomName = liveRoom.roomName;
+        }
+        if (liveRoom.roomTypeName && liveRoom.roomTypeName !== placeholder.roomTypeName) {
+          updates.roomTypeName = liveRoom.roomTypeName;
+        }
+
         await updatePlaceholder(placeholder.id, updates as any);
 
         if (newStatus !== placeholder.status) {
@@ -239,6 +273,44 @@ export async function GET(request: NextRequest) {
       { status: 500 }
     );
   }
+}
+
+/** Stale TYE block from mistaken duplicate Interior Queen room labeled "100". */
+function isObsoleteInteriorQueen100Duplicate(p: {
+  roomName: string;
+  roomTypeName: string;
+}): boolean {
+  const label = formatCloudbedsRoomNameLabel(p.roomName).toLowerCase();
+  const type = p.roomTypeName.trim().toLowerCase().replace(/\s+/g, ' ');
+  return label === '100' && type === 'interior queen';
+}
+
+function extractPrimaryRoomFromReservation(reservation: any): {
+  roomID?: string;
+  roomName?: string;
+  roomTypeName?: string;
+} {
+  for (const key of ['assigned', 'rooms'] as const) {
+    const arr = reservation?.[key];
+    if (!Array.isArray(arr) || !arr[0] || typeof arr[0] !== 'object') continue;
+    const r = arr[0] as Record<string, unknown>;
+    const roomID = r.roomID != null ? String(r.roomID).trim() : '';
+    const roomName = String(r.roomName ?? r.roomNumber ?? '').trim();
+    const roomTypeName = String(r.roomTypeName ?? r.roomType ?? '').trim();
+    return {
+      ...(roomID ? { roomID } : {}),
+      ...(roomName ? { roomName } : {}),
+      ...(roomTypeName ? { roomTypeName } : {}),
+    };
+  }
+  if (reservation?.roomID != null) {
+    return {
+      roomID: String(reservation.roomID).trim(),
+      roomName: String(reservation.roomName ?? '').trim() || undefined,
+      roomTypeName: String(reservation.roomTypeName ?? '').trim() || undefined,
+    };
+  }
+  return {};
 }
 
 function localDateYmd(d: Date): string {

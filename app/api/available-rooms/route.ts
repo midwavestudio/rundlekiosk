@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAvailablePlaceholdersOverlappingStay } from '@/lib/tye-placeholder-store';
+import { dedupePickerRoomsByDisplayLabel } from '@/lib/room-picker-dedupe';
 
 export const dynamic = 'force-dynamic';
 
@@ -399,6 +400,8 @@ export async function GET(request: NextRequest) {
         .filter((r, i, arr) => arr.findIndex((x) => x.roomID === r.roomID) === i);
       rooms = await mergePlaceholderRooms(rooms, today, tomorrow);
       rooms = rooms.filter((r) => !isExcludedFromKioskPicker(r));
+      // One row per display label — e.g. only Interior Single King for "100", not a duplicate Queen.
+      rooms = dedupePickerRoomsByDisplayLabel(rooms);
       // Sort by room type (alphabetical) then room name/number (natural numeric order)
       // so the picker always reflects the current Cloudbeds room structure regardless
       // of what order getRooms pages were returned in.

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { dedupePickerRoomsByDisplayLabel } from '@/lib/room-picker-dedupe';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,9 +35,9 @@ export async function GET(_request: NextRequest) {
     };
 
     // Paginate through all rooms (Cloudbeds default pageSize is 20).
-    const rooms = await fetchAllRooms(apiV13, CLOUDBEDS_PROPERTY_ID, headers);
+    const rawRooms = await fetchAllRooms(apiV13, CLOUDBEDS_PROPERTY_ID, headers);
 
-    const formatted = rooms
+    const formatted = rawRooms
       .map(formatRoom)
       .filter(
         (r) =>
@@ -47,7 +48,9 @@ export async function GET(_request: NextRequest) {
       // Deduplicate by roomID
       .filter((r, i, arr) => arr.findIndex((x) => x.roomID === r.roomID) === i);
 
-    return NextResponse.json({ success: true, rooms: formatted, count: formatted.length });
+    const rooms = dedupePickerRoomsByDisplayLabel(formatted);
+
+    return NextResponse.json({ success: true, rooms, count: rooms.length });
   } catch (err: any) {
     console.error('admin/all-rooms error:', err);
     return NextResponse.json({ success: false, error: err?.message ?? 'Internal error' }, { status: 500 });
