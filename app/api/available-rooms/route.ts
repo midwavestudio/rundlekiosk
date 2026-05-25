@@ -8,19 +8,18 @@ export const dynamic = 'force-dynamic';
 const KIOSK_ROOM_PICKER_EXCLUSIONS = ['227', 'CON', '303'];
 
 /**
- * Sort rooms to match Cloudbeds' display order: room type alphabetically, then
- * room name / number within each type using natural (numeric-aware) sort so that
- * e.g. "201" < "209" < "210" and "308i" sorts after "308".
- * Placeholder-annotated rooms stay in the same relative position as their type peers.
+ * Sort rooms numerically by room name/number (lowest first) so the picker reads
+ * 100, 101, 102 … 201, 202 … regardless of room type. Room type is only used as a
+ * tiebreaker when two rooms share the exact same label.
  */
 function sortRoomsForPicker(
   rooms: Array<{ roomID: string; roomName: string; roomTypeName: string; placeholderReservationID?: string }>
 ) {
   const collator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
   return [...rooms].sort((a, b) => {
-    const typeOrder = collator.compare(a.roomTypeName, b.roomTypeName);
-    if (typeOrder !== 0) return typeOrder;
-    return collator.compare(a.roomName, b.roomName);
+    const nameOrder = collator.compare(a.roomName, b.roomName);
+    if (nameOrder !== 0) return nameOrder;
+    return collator.compare(a.roomTypeName, b.roomTypeName);
   });
 }
 
