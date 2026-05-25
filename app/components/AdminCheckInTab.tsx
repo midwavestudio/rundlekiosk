@@ -231,8 +231,8 @@ export default function AdminCheckInTab() {
     const requestBody = JSON.stringify(body);
 
     // Step 3: Call Cloudbeds with retry logic (mirrors kiosk pattern).
-    // performCloudbedsCheckIn de-duplicates server-side via getReservations lookup,
-    // so retrying after a 5xx will reuse an existing reservation rather than create a duplicate.
+    // performCloudbedsCheckIn creates a new reservation each time; retries only reuse a booking
+    // when guest + stay + same room already exist in Cloudbeds (failed post recovery).
     const MAX_ATTEMPTS = 3;
     let attempt = 0;
     let lastErrorMsg = '';

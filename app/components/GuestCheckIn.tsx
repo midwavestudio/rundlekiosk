@@ -298,10 +298,9 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
                 (typeof cloudbedsResult.message === 'string' && cloudbedsResult.message) ||
                 `Cloudbeds check-in failed (HTTP ${cloudbedsResponse.status})`;
 
-              // Retry on any failure — the server-side performCloudbedsCheckIn has built-in
-              // duplicate prevention (it queries Cloudbeds for an existing reservation before
-              // creating a new one), so retrying after a 5xx will safely reuse the existing
-              // reservation if one was already created rather than creating a duplicate.
+              // Retry on any failure — after a failed postReservation the server may reuse an
+              // existing booking only when guest + stay + same room match (network retry).
+              // Same guest name on a different room always gets a new reservation.
               if (cloudbedsAttempt < MAX_CHECKIN_ATTEMPTS) {
                 console.warn(`[CHECK-IN] Cloudbeds attempt ${cloudbedsAttempt} failed (retrying):`, errMsg);
                 continue;

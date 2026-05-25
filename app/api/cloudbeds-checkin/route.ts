@@ -199,9 +199,8 @@ export async function POST(request: NextRequest) {
     }
 
     // Create new reservation and check in (shared logic with bulk-checkin).
-    // No server-side retry loop here — performCloudbedsCheckIn already handles fallback attempts
-    // internally. Retrying this call from scratch after a partial failure (reservation already
-    // created in Cloudbeds) is the primary cause of duplicate reservations.
+    // No server-side retry loop here — performCloudbedsCheckIn handles fallback attempts internally.
+    // Kiosk retries may create a second reservation only when the first attempt never reached Cloudbeds.
     const checkInParams = {
       firstName,
       lastName,
