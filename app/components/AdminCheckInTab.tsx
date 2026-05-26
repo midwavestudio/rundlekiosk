@@ -151,9 +151,15 @@ export default function AdminCheckInTab() {
 
     const firstName = form.firstName.trim();
     const lastName = form.lastName.trim();
-    if (!firstName || !lastName || !form.clcNumber || !form.phoneNumber || !form.roomID) {
+    const clcNumber = form.clcNumber.trim();
+    const phoneNumber = form.phoneNumber.trim();
+    if (!firstName || !lastName || !clcNumber || !phoneNumber || !form.roomID) {
       setStatus('error');
-      setResultMsg('Please fill in all fields and select a room.');
+      setResultMsg(
+        !clcNumber
+          ? 'CLC Number is required. Please enter a CLC number before continuing.'
+          : 'Please fill in all fields and select a room.'
+      );
       return;
     }
 
@@ -179,7 +185,7 @@ export default function AdminCheckInTab() {
         body: JSON.stringify({
           firstName,
           lastName,
-          clcNumber: form.clcNumber,
+          clcNumber,
           phoneNumber: form.phoneNumber,
           class: 'TYE',
           roomNumber: isUnassigned ? 'Unassigned' : (selectedRoom?.roomName ?? form.roomID),
@@ -202,7 +208,7 @@ export default function AdminCheckInTab() {
         firstName,
         lastName,
         phoneNumber: form.phoneNumber,
-        clcNumber: form.clcNumber,
+        clcNumber,
         classType: 'TYE',
         email,
         checkInDate: form.checkInDate,
@@ -217,7 +223,7 @@ export default function AdminCheckInTab() {
         firstName,
         lastName,
         phoneNumber: form.phoneNumber,
-        clcNumber: form.clcNumber,
+        clcNumber,
         classType: 'TYE',
         email,
         checkInDate: form.checkInDate,
@@ -440,6 +446,7 @@ export default function AdminCheckInTab() {
               onChange={(e) => handleChange('clcNumber', e.target.value)}
               placeholder="CLC number"
               required
+              minLength={1}
             />
           </div>
           <div style={fieldStyle}>
@@ -534,7 +541,15 @@ export default function AdminCheckInTab() {
         {/* Submit */}
         <button
           type="submit"
-          disabled={status === 'submitting' || loadingRooms}
+          disabled={
+            status === 'submitting' ||
+            loadingRooms ||
+            !form.firstName.trim() ||
+            !form.lastName.trim() ||
+            !form.clcNumber.trim() ||
+            !form.phoneNumber.trim() ||
+            !form.roomID
+          }
           style={{
             padding: '13px',
             background: status === 'submitting' ? '#a0855a' : ADMIN_ACCENT,

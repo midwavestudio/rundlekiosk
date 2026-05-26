@@ -161,7 +161,7 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
     const firstName = formData.firstName.trim();
     const lastName = formData.lastName.trim();
     const phoneNumber = formData.phoneNumber;
-    const clcNumber = formData.clcNumber;
+    const clcNumber = formData.clcNumber.trim();
     const roomNumber = formData.roomNumber;
 
     // Show success immediately — guest does not need to wait on any storage/network work.

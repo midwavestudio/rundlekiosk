@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { validateClcNumberRequired } from '@/lib/checkin-validation';
 import {
   saveCheckinRecord,
   updateCheckinRecord,
@@ -59,10 +60,17 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
+    const clcValidation = validateClcNumberRequired(body.clcNumber);
+    if (!clcValidation.ok) {
+      return NextResponse.json(
+        { success: false, error: clcValidation.error },
+        { status: 400 }
+      );
+    }
     const id = await saveCheckinRecord({
       firstName: String(body.firstName ?? '').trim(),
       lastName: String(body.lastName ?? '').trim(),
-      clcNumber: String(body.clcNumber ?? ''),
+      clcNumber: clcValidation.clcNumber,
       phoneNumber: String(body.phoneNumber ?? ''),
       class: String(body.class ?? 'TYE'),
       roomNumber: String(body.roomNumber ?? ''),

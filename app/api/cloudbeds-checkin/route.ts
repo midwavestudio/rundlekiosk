@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { performCloudbedsCheckIn } from '@/lib/cloudbeds-checkin';
+import { validateClcNumberRequired } from '@/lib/checkin-validation';
 import { saveEventLog } from '@/lib/event-log-store';
 
 // Allow up to 60 seconds for Cloudbeds API calls (postReservation + payment + room assign + check-in)
@@ -100,6 +101,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const clcValidation = validateClcNumberRequired(clcNumber);
+    if (!clcValidation.ok) {
+      return NextResponse.json(
+        { success: false, error: clcValidation.error },
+        { status: 400 }
+      );
+    }
+    const validatedClcNumber = clcValidation.clcNumber;
+
     // TYE Placeholder path — room was pre-created as a placeholder reservation.
     // Delegate to assign-placeholder which updates the guest, posts payment, and checks in.
     if (placeholderReservationID) {
@@ -108,7 +118,7 @@ export async function POST(request: NextRequest) {
         firstName: String(firstName).trim(),
         lastName: String(lastName).trim(),
         phoneNumber,
-        clcNumber,
+        clcNumber: validatedClcNumber,
         email,
       };
       const assignRes = await fetch(
@@ -207,7 +217,7 @@ export async function POST(request: NextRequest) {
       phoneNumber,
       roomName: roomName ?? '',
       roomNameHint,
-      clcNumber,
+      clcNumber: validatedClcNumber,
       classType,
       email,
       checkInDate: bodyCheckIn,

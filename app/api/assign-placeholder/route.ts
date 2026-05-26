@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { settleReservationFolio } from '@/lib/cloudbeds-checkin';
+import { validateClcNumberRequired } from '@/lib/checkin-validation';
 import {
   getPlaceholderByReservationID,
   assignPlaceholder,
@@ -128,6 +129,15 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
+
+    const clcValidation = validateClcNumberRequired(clcNumber);
+    if (!clcValidation.ok) {
+      return NextResponse.json(
+        { success: false, error: clcValidation.error },
+        { status: 400 }
+      );
+    }
+    const validatedClcNumber = clcValidation.clcNumber;
 
     const guestFirst = String(firstName).trim();
     const guestLast = String(lastName).trim();
@@ -378,11 +388,9 @@ export async function POST(request: NextRequest) {
     const putResParams = new URLSearchParams();
     putResParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
     putResParams.append('reservationID', reservationID);
-    if (clcNumber) {
-      putResParams.append('notes', `CLC: ${clcNumber} | TYE Kiosk Check-In`);
-    }
+    putResParams.append('notes', `CLC: ${validatedClcNumber} | TYE Kiosk Check-In`);
 
-    log('4_putReservation_notes_request', { clcNumber });
+    log('4_putReservation_notes_request', { clcNumber: validatedClcNumber });
     const prRes = await fetch(`${apiV13}/putReservation`, {
       method: 'PUT',
       headers,

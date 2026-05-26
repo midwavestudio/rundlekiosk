@@ -4,6 +4,7 @@
  */
 
 import { buildGuestSyntheticEmail } from '@/lib/guest-email';
+import { validateClcNumberRequired } from '@/lib/checkin-validation';
 import { unwrapReservationFromGetReservation } from '@/lib/cloudbeds-rate-preserve';
 import { resolveDuplicateRoomMatches } from '@/lib/room-picker-dedupe';
 
@@ -1023,6 +1024,11 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     allowOverbooking: allowOverbookingParam,
     debugLog,
   } = params;
+
+  const clcValidation = validateClcNumberRequired(clcNumber);
+  if (!clcValidation.ok) {
+    throw new Error(clcValidation.error);
+  }
 
   const guestFirstName = String(firstName).trim().replace(/\s+/g, ' ');
   const guestLastName = String(lastName).trim().replace(/\s+/g, ' ');
