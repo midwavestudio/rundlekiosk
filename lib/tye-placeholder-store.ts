@@ -109,10 +109,28 @@ function nextMemoryId(): string {
 
 const COLLECTION = 'tye_placeholders';
 
+// ---------------------------------------------------------------------------
+// In-process cache for placeholder date queries — avoids repeated full-collection
+// reads when the kiosk or admin calls available-rooms for the same date multiple
+// times within a short window (e.g. page load + re-render).
+// ---------------------------------------------------------------------------
+interface PlaceholderDateCache {
+  items: TyePlaceholder[];
+  expiresAt: number;
+}
+const placeholderDateCache = new Map<string, PlaceholderDateCache>();
+const PLACEHOLDER_CACHE_TTL_MS = 5 * 60_000; // 5 minutes
+
+/** Invalidate all cached placeholder results (call after any write). */
+export function bustPlaceholderCache() {
+  placeholderDateCache.clear();
+}
+
 /** Save a newly-created placeholder. Returns the document ID. */
 export async function savePlaceholder(
   data: Omit<TyePlaceholder, 'id'>
 ): Promise<string> {
+  bustPlaceholderCache();
   const db = getDb();
   if (db) {
     try {
@@ -142,6 +160,7 @@ export async function savePlaceholder(
 export async function saveTyeBlockPlaceholderOrThrow(
   data: Omit<TyePlaceholder, 'id'>
 ): Promise<string> {
+  bustPlaceholderCache();
   const db = getDb();
   if (db) {
     const ref = await db.collection(COLLECTION).add({
@@ -160,14 +179,24 @@ export async function saveTyeBlockPlaceholderOrThrow(
 export async function getPlaceholdersByDate(
   forDate: string
 ): Promise<TyePlaceholder[]> {
+  // Return cached result if still fresh
+  const now = Date.now();
+  const cached = placeholderDateCache.get(forDate);
+  if (cached && now < cached.expiresAt) {
+    return cached.items;
+  }
+
   const db = getDb();
   if (db) {
     try {
       const snap = await db
         .collection(COLLECTION)
         .where('forDate', '==', forDate)
+        .limit(200)
         .get();
-      return snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<TyePlaceholder, 'id'>) }));
+      const items = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<TyePlaceholder, 'id'>) }));
+      placeholderDateCache.set(forDate, { items, expiresAt: now + PLACEHOLDER_CACHE_TTL_MS });
+      return items;
     } catch (err) {
       console.error(
         '[tye_placeholders] Firestore query failed — using in-memory store only for this process.',
@@ -256,6 +285,7 @@ export async function updatePlaceholder(
   id: string,
   updates: Partial<Omit<TyePlaceholder, 'id'>>
 ): Promise<void> {
+  bustPlaceholderCache();
   const db = getDb();
   if (db) {
     try {

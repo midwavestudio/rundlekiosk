@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import { useState, useEffect, useMemo } from 'react';
 import { resolveRoomNumberLabel } from '@/lib/room-display';
@@ -31,7 +31,7 @@ interface CheckedInGuest {
   cloudbedsGuestID?: string;
   cloudbedsReservationID?: string;
   roomNumber?: string;
-  /** Firestore document ID — present on records fetched from the server. */
+  /** Firestore document ID â€” present on records fetched from the server. */
   _serverId?: string;
 }
 
@@ -94,12 +94,12 @@ const SERVER_DATE_WINDOW_DAYS = 14;
  * Max Firestore document reads per poll (one read per doc returned).
  * ~900 check-ins/month can cluster in this window during busy stretches.
  */
-const SERVER_RECORD_LIMIT = 250;
+const SERVER_RECORD_LIMIT = 100;
 /**
- * Poll interval — tuned so worst-case reads stay under Firestore’s ~50k free reads/day
- * on Blaze (250 docs × 86400s / 480000ms ≈ 45k) with headroom for other API traffic.
+ * Poll interval â€” tuned so worst-case reads stay under Firestoreâ€™s ~50k free reads/day
+ * on Blaze (250 docs Ã— 86400s / 480000ms â‰ˆ 45k) with headroom for other API traffic.
  */
-const SERVER_POLL_MS = 480_000;
+const SERVER_POLL_MS = 20 * 60_000;
 
 function isoToLocalYmd(iso: string): string | undefined {
   if (!iso) return undefined;
@@ -109,20 +109,20 @@ function isoToLocalYmd(iso: string): string | undefined {
 }
 
 function fmtDate(iso: string): string {
-  if (!iso) return '—';
+  if (!iso) return 'â€”';
   try { return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
   catch { return iso; }
 }
 
 function fmtTime(iso: string): string {
-  if (!iso) return '—';
+  if (!iso) return 'â€”';
   try { return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }); }
   catch { return iso; }
 }
 
 function fmtDateRange(from: Date, to: Date): string {
   const fmt = (d: Date) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-  return `${fmt(from)} – ${fmt(to)}`;
+  return `${fmt(from)} â€“ ${fmt(to)}`;
 }
 
 function inDateRange(iso: string, from: Date, to: Date): boolean {
@@ -233,7 +233,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
   const [creatingReservation, setCreatingReservation] = useState(false);
   const [createReservationResult, setCreateReservationResult] = useState<{ ok: boolean; message: string } | null>(null);
 
-  /** Which calendar day’s check-ins to list (local) — defaults to today. */
+  /** Which calendar dayâ€™s check-ins to list (local) â€” defaults to today. */
   const [selectedDate, setSelectedDate] = useState<string>(() => localYmd(new Date()));
 
   const [exportFrom, setExportFrom] = useState(() => localYmd(new Date()));
@@ -315,7 +315,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
           setCheckOutHistory(mergeGuestLists(localHistory, history));
         }
       } catch {
-        // Non-fatal — fall back to localStorage data
+        // Non-fatal â€” fall back to localStorage data
       }
     };
 
@@ -379,9 +379,9 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
       guestName: `${g.firstName} ${g.lastName}`.trim(),
       firstName: g.firstName,
       lastName: g.lastName,
-      clcNumber: g.clcNumber || '—',
-      phoneNumber: g.phoneNumber || '—',
-      class: g.class || '—',
+      clcNumber: g.clcNumber || 'â€”',
+      phoneNumber: g.phoneNumber || 'â€”',
+      class: g.class || 'â€”',
       roomNumber: resolveRoomNumberLabel(g.roomNumber, roomNameById),
       checkInDate: fmtDate(g.checkInTime),
       checkInTime: fmtTime(g.checkInTime),
@@ -516,8 +516,8 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
     setEditForm({
       firstName: selectedRow.firstName || '',
       lastName: selectedRow.lastName || '',
-      phoneNumber: selectedRow.phoneNumber === '—' ? '' : selectedRow.phoneNumber || '',
-      clcNumber: selectedRow.clcNumber === '—' ? '' : selectedRow.clcNumber || '',
+      phoneNumber: selectedRow.phoneNumber === 'â€”' ? '' : selectedRow.phoneNumber || '',
+      clcNumber: selectedRow.clcNumber === 'â€”' ? '' : selectedRow.clcNumber || '',
       class: selectedRow.class === 'MOW' ? 'MOW' : 'TYE',
       roomNumber: selectedRow.rawData.roomNumber || '',
       checkInDateTime: isoToDatetimeLocalValue(selectedRow.checkInIso),
@@ -575,7 +575,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
         throw new Error(delData?.error || 'Failed to remove check-in record');
       }
       // deleted: false means the document wasn't found in Firestore (already removed or
-      // never persisted). This is not an error — treat it as a successful deletion.
+      // never persisted). This is not an error â€” treat it as a successful deletion.
       if (row.fromHistory) {
         const isTargetHistoryRecord = (g: CheckedInGuest) => {
           if (
@@ -689,9 +689,9 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
             firstName: nextGuest.firstName,
             lastName: nextGuest.lastName,
             guestName: `${nextGuest.firstName} ${nextGuest.lastName}`.trim(),
-            phoneNumber: nextGuest.phoneNumber || '—',
-            clcNumber: nextGuest.clcNumber || '—',
-            class: nextGuest.class || '—',
+            phoneNumber: nextGuest.phoneNumber || 'â€”',
+            clcNumber: nextGuest.clcNumber || 'â€”',
+            class: nextGuest.class || 'â€”',
             roomNumber: resolveRoomNumberLabel(nextGuest.roomNumber, roomNameById),
             checkInDate: fmtDate(checkInIso),
             checkInTime: fmtTime(checkInIso),
@@ -782,7 +782,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
           } else if (row.rawData.cloudbedsReservationID) {
             patchBody.reservationID = row.rawData.cloudbedsReservationID;
           } else {
-            // No existing ID — use name + date to find the record
+            // No existing ID â€” use name + date to find the record
             patchBody.firstName = row.firstName;
             patchBody.lastName = row.lastName;
             patchBody.checkInDate = checkInDateYmd;
@@ -811,7 +811,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
         setCreateReservationResult({
           ok: true,
           message: reservationID
-            ? `Reservation created: ${reservationID}${data.reservationStatus === 'confirmed' ? ' (confirmed, unassigned — staff must assign room in Cloudbeds)' : ''}`
+            ? `Reservation created: ${reservationID}${data.reservationStatus === 'confirmed' ? ' (confirmed, unassigned â€” staff must assign room in Cloudbeds)' : ''}`
             : 'Reservation created in Cloudbeds.',
         });
       } else {
@@ -829,7 +829,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, width: '100%', gap: 0 }}>
-      {/* ── Toolbar ── */}
+      {/* â”€â”€ Toolbar â”€â”€ */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '10px', flexWrap: 'wrap', width: '100%' }}>
         <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 700, color: ADMIN_TEXT_PRIMARY, whiteSpace: 'nowrap' }}>
           Arrivals
@@ -840,7 +840,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
 
         <input
           type="text"
-          placeholder="Search name, CLC, phone, room…"
+          placeholder="Search name, CLC, phone, roomâ€¦"
           value={searchTerm}
           onChange={e => setSearchTerm(e.target.value)}
           style={{ flex: '1 1 200px', minWidth: '160px', padding: '8px 12px', border: `1px solid ${ADMIN_BORDER_STRONG}`, borderRadius: '8px', fontSize: '14px', background: ADMIN_INPUT_BG, color: ADMIN_TEXT_PRIMARY }}
@@ -852,12 +852,12 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
             onClick={toggleExportPanel}
             style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 14px', background: showExportPanel ? '#667eea' : ADMIN_SURFACE_RAISED, color: showExportPanel ? 'white' : ADMIN_TEXT_PRIMARY, border: `1px solid ${ADMIN_BORDER_STRONG}`, borderRadius: '8px', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}
           >
-            ↓ Export
+            â†“ Export
           </button>
         </div>
       </div>
 
-      {/* ── Date filter (defaults to today, local timezone) ── */}
+      {/* â”€â”€ Date filter (defaults to today, local timezone) â”€â”€ */}
       <div style={{
         display: 'flex',
         alignItems: 'center',
@@ -892,7 +892,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
               color: '#374151',
             }}
           >
-            ‹
+            â€¹
           </button>
           <input
             type="date"
@@ -919,7 +919,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
               color: '#374151',
             }}
           >
-            ›
+            â€º
           </button>
         </div>
         <span style={{ width: '1px', height: '24px', background: '#e5e7eb', flexShrink: 0 }} aria-hidden />
@@ -943,7 +943,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
             gap: '6px',
           }}
         >
-          <span aria-hidden>{newestFirst ? '↓' : '↑'}</span>
+          <span aria-hidden>{newestFirst ? 'â†“' : 'â†‘'}</span>
           {newestFirst ? 'Latest first' : 'Earliest first'}
         </button>
         <button
@@ -984,7 +984,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
         </button>
       </div>
 
-      {/* ── Export Panel ── */}
+      {/* â”€â”€ Export Panel â”€â”€ */}
       {showExportPanel && (
         <div style={{ marginBottom: '14px', padding: '14px 16px', background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: '10px', display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
           <span style={{ fontSize: '13px', fontWeight: 600, color: '#374151' }}>Export date range:</span>
@@ -995,7 +995,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
             style={{ padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '13px' }} />
           <span style={{ fontSize: '13px', color: '#6b7280' }}>
             {exportRows.length} guest{exportRows.length !== 1 ? 's' : ''}
-            {exportFrom && exportTo ? ` · ${fmtDateRange(new Date(exportFrom + 'T00:00:00'), new Date(exportTo + 'T00:00:00'))}` : ''}
+            {exportFrom && exportTo ? ` Â· ${fmtDateRange(new Date(exportFrom + 'T00:00:00'), new Date(exportTo + 'T00:00:00'))}` : ''}
           </span>
           <button
             onClick={() => exportCSV(exportRows, `${exportFrom}-to-${exportTo}`)}
@@ -1007,7 +1007,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
         </div>
       )}
 
-      {/* ── Main area: table + optional detail panel ── */}
+      {/* â”€â”€ Main area: table + optional detail panel â”€â”€ */}
       <div style={{ display: 'flex', gap: '16px', flex: 1, minHeight: 0, width: '100%', alignItems: 'stretch' }}>
         {/* Table */}
         <div style={{ flex: '1 1 auto', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
@@ -1029,7 +1029,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
           <div style={{ flex: 1, overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: '0 0 8px 8px', background: 'white' }}>
             {sortedFilteredRows.length === 0 ? (
               <div style={{ textAlign: 'center', padding: '60px 20px', color: '#9ca3af' }}>
-                <div style={{ fontSize: '40px', marginBottom: '8px' }}>📭</div>
+                <div style={{ fontSize: '40px', marginBottom: '8px' }}>ðŸ“­</div>
                 <div style={{ fontSize: '14px' }}>
                   {searchTerm
                     ? 'No guests match your search'
@@ -1062,7 +1062,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
                     }}
                     onClick={() => toggleMutedRow(row.markKey)}
                   >
-                    {/* Dot mark — independent from row mute */}
+                    {/* Dot mark â€” independent from row mute */}
                     <div
                       style={{ width: '40px', flexShrink: 0, display: 'flex', justifyContent: 'center', alignItems: 'center' }}
                       onClick={(e) => e.stopPropagation()}
@@ -1115,18 +1115,18 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
                     <div style={{ flex: '1 1 0', minWidth: '80px', padding: '0 12px', fontSize: '14px', color: secondaryText, fontWeight: 500 }}>{row.roomNumber}</div>
                     <div style={{ flex: '1.5 1 0', minWidth: '140px', padding: '0 12px', fontSize: '13px', color: secondaryText }}>
                       <span style={{ whiteSpace: 'nowrap' }}>{row.checkInDate}</span>
-                      <span style={{ color: '#9ca3af', margin: '0 4px' }}>·</span>
+                      <span style={{ color: '#9ca3af', margin: '0 4px' }}>Â·</span>
                       <span style={{ fontWeight: 600, color: primaryText }}>{row.checkInTime}</span>
                     </div>
                     <div style={{ flex: '1.5 1 0', minWidth: '140px', padding: '0 12px', fontSize: '13px', color: secondaryText }}>
                       {row.checkOutIso ? (
                         <>
                           <span style={{ whiteSpace: 'nowrap' }}>{fmtDate(row.checkOutIso)}</span>
-                          <span style={{ color: '#9ca3af', margin: '0 4px' }}>·</span>
+                          <span style={{ color: '#9ca3af', margin: '0 4px' }}>Â·</span>
                           <span style={{ fontWeight: 600, color: primaryText }}>{fmtTime(row.checkOutIso)}</span>
                         </>
                       ) : (
-                        <span style={{ color: '#9ca3af' }}>—</span>
+                        <span style={{ color: '#9ca3af' }}>â€”</span>
                       )}
                     </div>
 
@@ -1139,7 +1139,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
                         onMouseEnter={e => (e.currentTarget.style.color = '#ef4444')}
                         onMouseLeave={e => (e.currentTarget.style.color = '#9ca3af')}
                       >
-                        ×
+                        Ã—
                       </button>
                     </div>
                   </div>
@@ -1149,7 +1149,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
           </div>
         </div>
 
-        {/* ── Detail Panel ── */}
+        {/* â”€â”€ Detail Panel â”€â”€ */}
         {selectedRow && (
           <div style={{ width: 'min(340px, 32vw)', flexShrink: 0, border: '1px solid #e5e7eb', borderRadius: '10px', background: 'white', padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '16px' }}>
             {/* Avatar + name */}
@@ -1280,7 +1280,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
                       fontSize: '14px',
                     }}
                   >
-                    {creatingReservation ? 'Creating Reservation…' : 'Create Cloudbeds Reservation'}
+                    {creatingReservation ? 'Creating Reservationâ€¦' : 'Create Cloudbeds Reservation'}
                   </button>
                   {createReservationResult && (
                     <div style={{

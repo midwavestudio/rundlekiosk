@@ -7,7 +7,7 @@ import { saveFeedback, getAllFeedback, updateFeedback, deleteFeedback, type Feed
 // ---------------------------------------------------------------------------
 let cachedMessages: FeedbackMessage[] | null = null;
 let cacheExpiresAt = 0;
-const CACHE_TTL_MS = 60_000; // 60 seconds
+const CACHE_TTL_MS = 5 * 60_000; // 5 minutes — aligns with 15-min badge poll
 
 function bustCache() {
   cachedMessages = null;
@@ -50,7 +50,7 @@ export async function GET() {
     if (cachedMessages && now < cacheExpiresAt) {
       return NextResponse.json(
         { messages: cachedMessages },
-        { headers: { 'Cache-Control': 'private, max-age=60' } }
+        { headers: { 'Cache-Control': 'private, max-age=300' } }
       );
     }
 
@@ -60,7 +60,7 @@ export async function GET() {
 
     return NextResponse.json(
       { messages },
-      { headers: { 'Cache-Control': 'private, max-age=60' } }
+      { headers: { 'Cache-Control': 'private, max-age=300' } }
     );
   } catch (err) {
     console.error('[feedback] GET error:', err);

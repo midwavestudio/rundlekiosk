@@ -11,7 +11,7 @@ interface EventCache {
   expiresAt: number;
 }
 let eventCache: EventCache | null = null;
-const EVENT_CACHE_TTL_MS = 60_000; // 60 seconds
+const EVENT_CACHE_TTL_MS = 5 * 60_000; // 5 minutes — aligns with 15-min badge poll
 
 function bustEventCache() {
   eventCache = null;
@@ -66,7 +66,7 @@ export async function GET(req: NextRequest) {
     if (eventCache && eventCache.limit >= limit && now < eventCache.expiresAt) {
       return NextResponse.json(
         { events: eventCache.events.slice(0, limit) },
-        { headers: { 'Cache-Control': 'private, max-age=60' } }
+        { headers: { 'Cache-Control': 'private, max-age=300' } }
       );
     }
 
@@ -75,7 +75,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json(
       { events },
-      { headers: { 'Cache-Control': 'private, max-age=60' } }
+      { headers: { 'Cache-Control': 'private, max-age=300' } }
     );
   } catch (err) {
     console.error('[event-log] GET error:', err);

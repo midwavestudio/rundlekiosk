@@ -50,8 +50,9 @@ export default function KioskDataSync() {
     // Run immediately on mount
     sync();
 
-    // Then every 10 minutes — enough for recovery sync without adding meaningful read load
-    const interval = window.setInterval(sync, 10 * 60 * 1000);
+    // Then every 30 minutes — kiosk data is already written to Firestore at check-in time;
+    // this sync is only a safety net for recovery, so infrequent polling is fine.
+    const interval = window.setInterval(sync, 30 * 60 * 1000);
     return () => window.clearInterval(interval);
   }, []);
 

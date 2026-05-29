@@ -111,7 +111,7 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
       } catch { /* ignore */ }
     };
     refreshErrorBadge();
-    const pollId = setInterval(refreshErrorBadge, 5 * 60_000);
+    const pollId = setInterval(refreshErrorBadge, 15 * 60_000);
     return () => { cancelled = true; clearInterval(pollId); };
   }, []);
 
@@ -129,7 +129,7 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
       } catch { /* ignore */ }
     };
     refreshFeedbackBadge();
-    const pollId = setInterval(refreshFeedbackBadge, 5 * 60_000);
+    const pollId = setInterval(refreshFeedbackBadge, 15 * 60_000);
     return () => { cancelled = true; clearInterval(pollId); };
   }, []);
 
@@ -405,7 +405,7 @@ function DashboardTab({ firestoreStatus }: { firestoreStatus: FirebaseStatus | n
       } catch { /* ignore */ }
     };
     loadStats();
-    const id = setInterval(loadStats, 5 * 60_000);
+    const id = setInterval(loadStats, 15 * 60_000);
     return () => { cancelled = true; clearInterval(id); };
   }, []);
 

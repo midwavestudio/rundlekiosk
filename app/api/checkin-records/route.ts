@@ -10,7 +10,26 @@ import {
   upsertCheckinRecord,
   deleteCheckinRecord,
   deleteByReservationID,
+  type CheckinRecord,
 } from '@/lib/checkin-store';
+
+// ---------------------------------------------------------------------------
+// Server-side GET cache — avoids a Firestore read on every admin tab poll.
+// Busted on any write (POST / PATCH / DELETE) so data stays consistent.
+// ---------------------------------------------------------------------------
+interface RecordsCache {
+  records: CheckinRecord[];
+  from: string;
+  to: string;
+  limit: number;
+  expiresAt: number;
+}
+let recordsCache: RecordsCache | null = null;
+const RECORDS_CACHE_TTL_MS = 5 * 60_000; // 5 minutes
+
+function bustRecordsCache() {
+  recordsCache = null;
+}
 
 /**
  * GET /api/checkin-records?from=YYYY-MM-DD&to=YYYY-MM-DD&limit=N
@@ -23,19 +42,39 @@ import {
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
-    const from = searchParams.get('from') ?? undefined;
-    const to = searchParams.get('to') ?? undefined;
-    let limit: number | undefined;
+    const from = searchParams.get('from') ?? '';
+    const to = searchParams.get('to') ?? '';
+    let limit = 500;
     if (searchParams.has('limit')) {
       const n = parseInt(searchParams.get('limit')!, 10);
       if (Number.isFinite(n)) limit = Math.min(Math.max(n, 1), 500);
     }
+
+    const now = Date.now();
+    if (
+      recordsCache &&
+      recordsCache.from === from &&
+      recordsCache.to === to &&
+      recordsCache.limit >= limit &&
+      now < recordsCache.expiresAt
+    ) {
+      return NextResponse.json(
+        { success: true, records: recordsCache.records.slice(0, limit) },
+        { headers: { 'Cache-Control': 'private, max-age=300' } }
+      );
+    }
+
     const records = await getCheckinRecords({
-      from,
-      to,
-      ...(limit !== undefined ? { limit } : {}),
+      ...(from ? { from } : {}),
+      ...(to ? { to } : {}),
+      limit,
     });
-    return NextResponse.json({ success: true, records });
+    recordsCache = { records, from, to, limit, expiresAt: now + RECORDS_CACHE_TTL_MS };
+
+    return NextResponse.json(
+      { success: true, records },
+      { headers: { 'Cache-Control': 'private, max-age=300' } }
+    );
   } catch (err: any) {
     console.error('[checkin-records GET]', err);
     return NextResponse.json(
@@ -85,6 +124,7 @@ export async function POST(request: NextRequest) {
       ...(body.cloudbedsGuestID ? { cloudbedsGuestID: String(body.cloudbedsGuestID) } : {}),
       source: body.source ? String(body.source) : 'kiosk',
     });
+    bustRecordsCache();
     return NextResponse.json({ success: true, id });
   } catch (err: any) {
     console.error('[checkin-records POST]', err);
@@ -227,6 +267,7 @@ export async function PATCH(request: NextRequest) {
     }
 
     await updateCheckinRecord(id, updates);
+    bustRecordsCache();
     return NextResponse.json({ success: true, id });
   } catch (err: any) {
     console.error('[checkin-records PATCH]', err);
@@ -298,6 +339,7 @@ export async function DELETE(request: NextRequest) {
       const byReservation = await deleteByReservationID(reservationID);
       deleted = deleted || byReservation;
     }
+    bustRecordsCache();
     return NextResponse.json({ success: true, deleted });
   } catch (err: any) {
     console.error('[checkin-records DELETE]', err);

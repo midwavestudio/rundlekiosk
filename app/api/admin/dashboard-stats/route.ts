@@ -15,7 +15,7 @@ interface StatsCache {
   expiresAt: number;
 }
 let statsCache: StatsCache | null = null;
-const STATS_CACHE_TTL_MS = 5 * 60_000; // 5 minutes
+const STATS_CACHE_TTL_MS = 15 * 60_000; // 15 minutes
 
 function localYmd(d: Date = new Date()): string {
   const y = d.getFullYear();
@@ -401,7 +401,7 @@ export async function GET(_request: NextRequest) {
     const now = Date.now();
     if (statsCache && now < statsCache.expiresAt) {
       return NextResponse.json(statsCache.payload, {
-        headers: { 'Cache-Control': 'private, max-age=300' },
+        headers: { 'Cache-Control': 'private, max-age=900' },
       });
     }
 
@@ -426,7 +426,7 @@ export async function GET(_request: NextRequest) {
     const from = new Date();
     from.setDate(from.getDate() - ACTIVE_TYE_WINDOW_DAYS);
     const fromYmd = localYmd(from);
-    const records = await getCheckinRecords({ from: fromYmd, to: todayYmd, limit: 1000 });
+    const records = await getCheckinRecords({ from: fromYmd, to: todayYmd, limit: 200 });
     const arrivalsToday = records.filter((r) => isoToLocalYmd(r.checkInTime) === todayYmd).length;
     const departedToday = records.filter((r) => isoToLocalYmd(r.checkOutTime) === todayYmd).length;
 
@@ -481,7 +481,7 @@ export async function GET(_request: NextRequest) {
     statsCache = { payload, expiresAt: Date.now() + STATS_CACHE_TTL_MS };
 
     return NextResponse.json(payload, {
-      headers: { 'Cache-Control': 'private, max-age=300' },
+      headers: { 'Cache-Control': 'private, max-age=900' },
     });
   } catch (err: any) {
     return NextResponse.json(

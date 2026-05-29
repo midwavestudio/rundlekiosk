@@ -4,6 +4,17 @@ import { dedupePickerRoomsByDisplayLabel } from '@/lib/room-picker-dedupe';
 
 export const dynamic = 'force-dynamic';
 
+// ---------------------------------------------------------------------------
+// Short-lived cache for the available-rooms list keyed on check-in date.
+// Multiple kiosk devices loading on the same day share one Firestore read.
+// ---------------------------------------------------------------------------
+interface RoomsCache {
+  rooms: unknown[];
+  expiresAt: number;
+}
+const roomsCache = new Map<string, RoomsCache>();
+const ROOMS_CACHE_TTL_MS = 10 * 60_000; // 10 minutes
+
 /** Excluded from kiosk/admin room pickers. */
 const KIOSK_ROOM_PICKER_EXCLUSIONS = ['227', 'CON', '303'];
 
@@ -340,6 +351,17 @@ export async function GET(request: NextRequest) {
       dateParam: dateParam || '(today)',
     });
 
+    // Return cached result for this date if available and fresh
+    const cacheKey = `${today}|${tomorrow}`;
+    const nowMs = Date.now();
+    const hit = roomsCache.get(cacheKey);
+    if (hit && nowMs < hit.expiresAt) {
+      return NextResponse.json(
+        { success: true, rooms: hit.rooms, count: hit.rooms.length, cached: true },
+        { headers: { 'Cache-Control': 'private, max-age=600' } }
+      );
+    }
+
     if (!CLOUDBEDS_API_KEY || !CLOUDBEDS_PROPERTY_ID) {
       console.warn('Cloudbeds API credentials not configured');
       return NextResponse.json({
@@ -405,6 +427,7 @@ export async function GET(request: NextRequest) {
       // so the picker always reflects the current Cloudbeds room structure regardless
       // of what order getRooms pages were returned in.
       rooms = sortRoomsForPicker(rooms);
+      roomsCache.set(cacheKey, { rooms, expiresAt: nowMs + ROOMS_CACHE_TTL_MS });
       return NextResponse.json({
         success: true,
         rooms,
