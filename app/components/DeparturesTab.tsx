@@ -73,20 +73,20 @@ interface RoomDirectoryEntry {
 }
 
 function fmtDate(iso: string): string {
-  if (!iso) return 'â€”';
+  if (!iso) return '-';
   try { return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
   catch { return iso; }
 }
 
 function fmtTime(iso: string): string {
-  if (!iso) return 'â€”';
+  if (!iso) return '-';
   try { return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }); }
   catch { return iso; }
 }
 
 function fmtDateRange(from: Date, to: Date): string {
   const fmt = (d: Date) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-  return `${fmt(from)} â€“ ${fmt(to)}`;
+  return `${fmt(from)} - ${fmt(to)}`;
 }
 
 function localYmd(d: Date = new Date()): string {
@@ -186,15 +186,15 @@ function guestToRow(
     guestName: `${g.firstName} ${g.lastName}`.trim() || 'Guest',
     firstName: g.firstName,
     lastName: g.lastName,
-    clcNumber: g.clcNumber || 'â€”',
-    phoneNumber: g.phoneNumber || 'â€”',
-    class: g.class || 'â€”',
+    clcNumber: g.clcNumber || '-',
+    phoneNumber: g.phoneNumber || '-',
+    class: g.class || '-',
     roomNumber: resolveRoomNumberLabel(g.roomNumber, roomNameById),
-    checkInDate: checkInIso ? fmtDate(checkInIso) : 'â€”',
-    checkInTime: checkInIso ? fmtTime(checkInIso) : 'â€”',
+    checkInDate: checkInIso ? fmtDate(checkInIso) : '-',
+    checkInTime: checkInIso ? fmtTime(checkInIso) : '-',
     checkInIso,
-    checkOutDate: g.checkOutTime ? fmtDate(g.checkOutTime) : 'â€”',
-    checkOutTime: g.checkOutTime ? fmtTime(g.checkOutTime) : 'â€”',
+    checkOutDate: g.checkOutTime ? fmtDate(g.checkOutTime) : '-',
+    checkOutTime: g.checkOutTime ? fmtTime(g.checkOutTime) : '-',
     checkOutIso: g.checkOutTime || '',
     status: g.checkOutTime ? 'checked_out' : 'checked_in',
     cloudbedsReservationID: g.cloudbedsReservationID,
@@ -206,7 +206,7 @@ function guestToRow(
 /** Stable dedup key used to merge local + server records without duplicates.
  *
  * Must never collapse two distinct stays by the same guest. Name-only matching
- * is intentionally excluded â€” a guest can check in multiple times (different
+ * is intentionally excluded - a guest can check in multiple times (different
  * dates / rooms) and each stay must remain a separate row.
  */
 function guestDedupeKey(g: StoredGuest): string {
@@ -234,7 +234,7 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState<EditGuestForm | null>(null);
 
-  /** Activity date: check-outs that day; for â€œtodayâ€ also all in-house (pending). */
+  /** Activity date: check-outs that day; for "today" also all in-house (pending). */
   const [selectedDate, setSelectedDate] = useState<string>(() => localYmd(new Date()));
 
   const [exportFrom, setExportFrom] = useState(() => localYmd(new Date()));
@@ -294,7 +294,7 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
           setCheckOutHistory(mergeGuestLists(localHistory, history));
         }
       } catch {
-        // Non-fatal â€” fall back to localStorage data
+        // Non-fatal - fall back to localStorage data
       }
     };
 
@@ -394,8 +394,8 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
     setEditForm({
       firstName: selectedRow.firstName || '',
       lastName: selectedRow.lastName || '',
-      phoneNumber: selectedRow.phoneNumber === 'â€”' ? '' : selectedRow.phoneNumber || '',
-      clcNumber: selectedRow.clcNumber === 'â€”' ? '' : selectedRow.clcNumber || '',
+      phoneNumber: selectedRow.phoneNumber === '-' ? '' : selectedRow.phoneNumber || '',
+      clcNumber: selectedRow.clcNumber === '-' ? '' : selectedRow.clcNumber || '',
       class: selectedRow.class === 'MOW' ? 'MOW' : 'TYE',
       roomNumber: selectedRow.rawData.roomNumber || '',
       checkInDateTime: selectedRow.checkInIso ? isoToDatetimeLocalValue(selectedRow.checkInIso) : '',
@@ -588,15 +588,15 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
             firstName: nextGuest.firstName,
             lastName: nextGuest.lastName,
             guestName: `${nextGuest.firstName} ${nextGuest.lastName}`.trim() || 'Guest',
-            phoneNumber: nextGuest.phoneNumber || 'â€”',
-            clcNumber: nextGuest.clcNumber || 'â€”',
-            class: nextGuest.class || 'â€”',
+            phoneNumber: nextGuest.phoneNumber || '-',
+            clcNumber: nextGuest.clcNumber || '-',
+            class: nextGuest.class || '-',
             roomNumber: resolveRoomNumberLabel(nextGuest.roomNumber, roomNameById),
-            checkInDate: displayCheckInIso ? fmtDate(displayCheckInIso) : 'â€”',
-            checkInTime: displayCheckInIso ? fmtTime(displayCheckInIso) : 'â€”',
+            checkInDate: displayCheckInIso ? fmtDate(displayCheckInIso) : '-',
+            checkInTime: displayCheckInIso ? fmtTime(displayCheckInIso) : '-',
             checkInIso: displayCheckInIso,
-            checkOutDate: displayCheckOutIso ? fmtDate(displayCheckOutIso) : 'â€”',
-            checkOutTime: displayCheckOutIso ? fmtTime(displayCheckOutIso) : 'â€”',
+            checkOutDate: displayCheckOutIso ? fmtDate(displayCheckOutIso) : '-',
+            checkOutTime: displayCheckOutIso ? fmtTime(displayCheckOutIso) : '-',
             checkOutIso: displayCheckOutIso,
             status: nextGuest.checkOutTime ? 'checked_out' : 'checked_in',
             rawData: nextGuest,
@@ -641,7 +641,7 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
 
         <input
           type="text"
-          placeholder="Search name, CLC, phone, roomâ€¦"
+          placeholder="Search name, CLC, phone, room..."
           value={searchTerm}
           onChange={e => setSearchTerm(e.target.value)}
           style={{ flex: '1 1 200px', minWidth: '160px', padding: '8px 12px', border: `1px solid ${ADMIN_BORDER_STRONG}`, borderRadius: '8px', fontSize: '14px', background: ADMIN_INPUT_BG, color: ADMIN_TEXT_PRIMARY }}
@@ -653,7 +653,7 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
             onClick={toggleExportPanel}
             style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 14px', background: showExportPanel ? '#8b5cf6' : ADMIN_SURFACE_RAISED, color: showExportPanel ? 'white' : ADMIN_TEXT_PRIMARY, border: `1px solid ${ADMIN_BORDER_STRONG}`, borderRadius: '8px', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}
           >
-            â†“ Export
+            {'\u2193'} Export
           </button>
         </div>
       </div>
@@ -692,7 +692,7 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
               color: '#374151',
             }}
           >
-            â€¹
+            {'<'}
           </button>
           <input
             type="date"
@@ -719,7 +719,7 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
               color: '#374151',
             }}
           >
-            â€º
+            {'>'}
           </button>
         </div>
         <span style={{ width: '1px', height: '24px', background: '#e5e7eb', flexShrink: 0 }} aria-hidden />
@@ -743,7 +743,7 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
             gap: '6px',
           }}
         >
-          <span aria-hidden>{newestFirst ? 'â†“' : 'â†‘'}</span>
+          <span aria-hidden>{newestFirst ? '\u2193' : '\u2191'}</span>
           {newestFirst ? 'Latest first' : 'Earliest first'}
         </button>
       </div>
@@ -759,7 +759,7 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
             style={{ padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '13px' }} />
           <span style={{ fontSize: '13px', color: '#6b7280' }}>
             {exportRows.length} record{exportRows.length !== 1 ? 's' : ''}
-            {exportFrom && exportTo ? ` Â· ${fmtDateRange(new Date(exportFrom + 'T00:00:00'), new Date(exportTo + 'T00:00:00'))}` : ''}
+            {exportFrom && exportTo ? ` · ${fmtDateRange(new Date(exportFrom + 'T00:00:00'), new Date(exportTo + 'T00:00:00'))}` : ''}
           </span>
           <button
             onClick={() => exportCSV(exportRows, `${exportFrom}-to-${exportTo}`)}
@@ -834,18 +834,18 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
                     </div>
                     <div style={{ flex: '1.6 1 0', minWidth: '150px', padding: '0 12px', fontSize: '13px', color: '#374151' }}>
                       <span style={{ whiteSpace: 'nowrap' }}>{row.checkInDate}</span>
-                      <span style={{ color: '#9ca3af', margin: '0 4px' }}>Â·</span>
+                      <span style={{ color: '#9ca3af', margin: '0 4px' }}>·</span>
                       <span style={{ fontWeight: 600, color: '#111' }}>{row.checkInTime}</span>
                     </div>
                     <div style={{ flex: '1.6 1 0', minWidth: '150px', padding: '0 12px', fontSize: '13px', color: '#374151' }}>
-                      {row.checkOutDate !== 'â€”' ? (
+                      {row.checkOutDate !== '-' ? (
                         <>
                           <span style={{ whiteSpace: 'nowrap' }}>{row.checkOutDate}</span>
-                          <span style={{ color: '#9ca3af', margin: '0 4px' }}>Â·</span>
+                          <span style={{ color: '#9ca3af', margin: '0 4px' }}>·</span>
                           <span style={{ fontWeight: 600, color: '#111' }}>{row.checkOutTime}</span>
                         </>
                       ) : (
-                        <span style={{ color: '#9ca3af' }}>â€”</span>
+                        <span style={{ color: '#9ca3af' }}>-</span>
                       )}
                     </div>
                     <div style={{ flex: '0.8 1 0', minWidth: '80px', padding: '0 12px' }}>
@@ -950,7 +950,7 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
                   { label: 'Room', value: selectedRow.roomNumber },
                   { label: 'Class', value: selectedRow.class },
                   { label: 'Signed In', value: `${selectedRow.checkInDate}, ${selectedRow.checkInTime}` },
-                  { label: 'Signed Out', value: selectedRow.checkOutDate !== 'â€”' ? `${selectedRow.checkOutDate}, ${selectedRow.checkOutTime}` : 'â€”' },
+                  { label: 'Signed Out', value: selectedRow.checkOutDate !== '-' ? `${selectedRow.checkOutDate}, ${selectedRow.checkOutTime}` : '-' },
                   ...(selectedRow.cloudbedsReservationID ? [{ label: 'Reservation ID', value: selectedRow.cloudbedsReservationID }] : []),
                 ].map(({ label, value }) => (
                   <div key={label}>
