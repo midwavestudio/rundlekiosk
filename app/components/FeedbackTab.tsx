@@ -33,7 +33,12 @@ const STATUS_COLORS: Record<FeedbackMessage['status'], { bg: string; color: stri
   resolved: { bg: '#d1fae5', color: '#065f46' },
 };
 
-export default function FeedbackTab() {
+interface FeedbackTabProps {
+  /** Keeps the Messages tab badge in the dashboard nav in sync. */
+  onUnreadCountChange?: (count: number) => void;
+}
+
+export default function FeedbackTab({ onUnreadCountChange }: FeedbackTabProps) {
   const [messages, setMessages] = useState<FeedbackMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -60,6 +65,16 @@ export default function FeedbackTab() {
 
   useEffect(() => { fetchMessages(); }, [fetchMessages]);
   useEffect(() => { setReadIds(loadReadFeedbackIds()); }, []);
+
+  useEffect(() => {
+    if (!onUnreadCountChange || loading) return;
+    const unread = messages.reduce((n, m) => (readIds.has(m.id) ? n : n + 1), 0);
+    onUnreadCountChange(unread);
+  }, [messages, readIds, onUnreadCountChange, loading]);
+
+  const handleMarkUnread = (id: string) => {
+    setReadIds((prev) => removeFeedbackReadId(id, prev));
+  };
 
   async function updateMessage(id: string, status: FeedbackMessage['status'], notes?: string) {
     setSaving(id);
@@ -276,6 +291,30 @@ export default function FeedbackTab() {
                     </p>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                    {isRead && (
+                      <button
+                        type="button"
+                        disabled={saving === msg.id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleMarkUnread(msg.id);
+                        }}
+                        style={{
+                          padding: '6px 10px',
+                          borderRadius: '8px',
+                          border: `1px solid ${ADMIN_TINT_BORDER}`,
+                          background: ADMIN_TINT_BG,
+                          color: ADMIN_ACCENT,
+                          fontWeight: 600,
+                          fontSize: '12px',
+                          cursor: saving === msg.id ? 'not-allowed' : 'pointer',
+                          opacity: saving === msg.id ? 0.5 : 1,
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        Mark unread
+                      </button>
+                    )}
                     <button
                       type="button"
                       disabled={saving === msg.id}
@@ -330,6 +369,45 @@ export default function FeedbackTab() {
                     />
 
                     <div style={{ display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
+                      {isRead ? (
+                        <button
+                          type="button"
+                          disabled={saving === msg.id}
+                          onClick={() => handleMarkUnread(msg.id)}
+                          style={{
+                            padding: '8px 16px',
+                            borderRadius: '8px',
+                            border: `2px solid ${ADMIN_TINT_BORDER}`,
+                            background: ADMIN_TINT_BG,
+                            color: ADMIN_ACCENT,
+                            fontWeight: 600,
+                            fontSize: '13px',
+                            cursor: saving === msg.id ? 'not-allowed' : 'pointer',
+                            opacity: saving === msg.id ? 0.7 : 1,
+                          }}
+                        >
+                          Mark as unread
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={saving === msg.id}
+                          onClick={() => setReadIds((prev) => markFeedbackRead(msg.id, prev))}
+                          style={{
+                            padding: '8px 16px',
+                            borderRadius: '8px',
+                            border: '2px solid #e5e7eb',
+                            background: 'white',
+                            color: '#374151',
+                            fontWeight: 600,
+                            fontSize: '13px',
+                            cursor: saving === msg.id ? 'not-allowed' : 'pointer',
+                            opacity: saving === msg.id ? 0.7 : 1,
+                          }}
+                        >
+                          Mark as read
+                        </button>
+                      )}
                       {(['new', 'reviewed', 'resolved'] as const).filter((s) => s !== msg.status).map((s) => (
                         <button
                           key={s}

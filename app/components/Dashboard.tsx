@@ -31,7 +31,7 @@ import {
   recordErrorLogVisit,
   loadErrorLogLastVisited,
 } from '@/lib/event-log-read';
-import { loadReadFeedbackIds, markFeedbacksRead } from '@/lib/feedback-read';
+import { loadReadFeedbackIds } from '@/lib/feedback-read';
 import BackupButton from './BackupButton';
 
 interface DashboardProps {
@@ -146,25 +146,6 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
         const events: EventLogEntry[] = Array.isArray(data.events) ? data.events : [];
         if (!events.length || cancelled) return;
         markEventsRead(events.map((ev) => ev.id), loadReadEventIds());
-      } catch { /* non-fatal */ }
-    };
-    markVisible();
-    return () => { cancelled = true; };
-  }, [activeTab]);
-
-  useEffect(() => {
-    if (activeTab !== 'feedback') return;
-    let cancelled = false;
-    const markVisible = async () => {
-      try {
-        const res = await fetch('/api/feedback');
-        if (!res.ok || cancelled) return;
-        const data = await res.json();
-        const messages: FeedbackEntry[] = Array.isArray(data.messages) ? data.messages : [];
-        if (!cancelled) {
-          if (messages.length) markFeedbacksRead(messages.map((m) => m.id), loadReadFeedbackIds());
-          setFeedbackUnreadCount(0);
-        }
       } catch { /* non-fatal */ }
     };
     markVisible();
@@ -364,7 +345,7 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
             )}
             {activeTab === 'admin-checkin'    && <AdminCheckInTab />}
             {activeTab === 'tye-placeholders' && <TyePlaceholdersTab />}
-            {activeTab === 'feedback'         && <FeedbackTab />}
+            {activeTab === 'feedback'         && <FeedbackTab onUnreadCountChange={setFeedbackUnreadCount} />}
             {activeTab === 'event-log'        && <EventLogTab />}
           </div>
         </div>
