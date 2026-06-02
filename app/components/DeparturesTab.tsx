@@ -104,9 +104,9 @@ function addCalendarDaysToYmd(ymd: string, delta: number): string {
   return localYmd(dt);
 }
 
-const SERVER_DATE_WINDOW_DAYS = 14;
-const SERVER_RECORD_LIMIT = 100;
-const SERVER_POLL_MS = 20 * 60_000;
+const SERVER_DATE_WINDOW_DAYS = 1;
+const SERVER_RECORD_LIMIT = 500;
+const SERVER_POLL_MS = 10 * 60_000;
 
 function isoToLocalYmd(iso: string): string | undefined {
   if (!iso) return undefined;
@@ -302,12 +302,33 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
     loadServer();
 
     const localId = setInterval(loadLocal, 3000);
-    const serverId = setInterval(loadServer, SERVER_POLL_MS);
+
+    let serverId: ReturnType<typeof setInterval> | null = null;
+    const startServerPoll = () => {
+      if (serverId !== null) return;
+      serverId = setInterval(loadServer, SERVER_POLL_MS);
+    };
+    const stopServerPoll = () => {
+      if (serverId === null) return;
+      clearInterval(serverId);
+      serverId = null;
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        loadServer();
+        startServerPoll();
+      } else {
+        stopServerPoll();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    startServerPoll();
 
     return () => {
       cancelled = true;
       clearInterval(localId);
-      clearInterval(serverId);
+      stopServerPoll();
+      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, [selectedDate]);
 

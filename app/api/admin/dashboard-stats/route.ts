@@ -426,7 +426,7 @@ export async function GET(_request: NextRequest) {
     const from = new Date();
     from.setDate(from.getDate() - ACTIVE_TYE_WINDOW_DAYS);
     const fromYmd = localYmd(from);
-    const records = await getCheckinRecords({ from: fromYmd, to: todayYmd, limit: 200 });
+    const records = await getCheckinRecords({ from: fromYmd, to: todayYmd, limit: 500 });
     const arrivalsToday = records.filter((r) => isoToLocalYmd(r.checkInTime) === todayYmd).length;
     const departedToday = records.filter((r) => isoToLocalYmd(r.checkOutTime) === todayYmd).length;
 

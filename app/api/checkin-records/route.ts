@@ -25,7 +25,7 @@ interface RecordsCache {
   expiresAt: number;
 }
 let recordsCache: RecordsCache | null = null;
-const RECORDS_CACHE_TTL_MS = 5 * 60_000; // 5 minutes
+const RECORDS_CACHE_TTL_MS = 60_000; // 1 minute
 
 function bustRecordsCache() {
   recordsCache = null;
@@ -60,7 +60,7 @@ export async function GET(request: NextRequest) {
     ) {
       return NextResponse.json(
         { success: true, records: recordsCache.records.slice(0, limit) },
-        { headers: { 'Cache-Control': 'private, max-age=300' } }
+        { headers: { 'Cache-Control': 'private, max-age=60' } }
       );
     }
 
@@ -73,7 +73,7 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json(
       { success: true, records },
-      { headers: { 'Cache-Control': 'private, max-age=300' } }
+      { headers: { 'Cache-Control': 'private, max-age=60' } }
     );
   } catch (err: any) {
     console.error('[checkin-records GET]', err);

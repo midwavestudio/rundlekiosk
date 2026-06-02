@@ -88,18 +88,24 @@ function addCalendarDaysToYmd(ymd: string, delta: number): string {
   return localYmd(dt);
 }
 
-/** Wider window than a single day so server merge still works when browsing nearby dates. */
-const SERVER_DATE_WINDOW_DAYS = 14;
 /**
- * Max Firestore document reads per poll (one read per doc returned).
- * ~900 check-ins/month can cluster in this window during busy stretches.
+ * Fetch window around the selected date. ±1 day covers the adjacent dates
+ * when navigating without triggering a new fetch, while keeping the doc count
+ * low (3 days × ~50 check-ins = ~150 docs worst case).
  */
-const SERVER_RECORD_LIMIT = 100;
+const SERVER_DATE_WINDOW_DAYS = 1;
 /**
- * Poll interval - tuned so worst-case reads stay under Firestore's ~50k free reads/day
- * on Blaze (250 docs Ã— 86400s / 480000ms â‰ˆ 45k) with headroom for other API traffic.
+ * Max Firestore document reads per poll. With a 3-day window and typical
+ * ~30-50 check-ins/day this cap is never reached in normal operation.
+ * The API route allows up to 500; Firestore store allows up to 1000.
  */
-const SERVER_POLL_MS = 20 * 60_000;
+const SERVER_RECORD_LIMIT = 500;
+/**
+ * Background poll interval when the browser tab is visible. Polling is
+ * suspended entirely when the tab is hidden to avoid burning Firestore
+ * quota while no one is looking at the screen.
+ */
+const SERVER_POLL_MS = 10 * 60_000;
 
 function isoToLocalYmd(iso: string): string | undefined {
   if (!iso) return undefined;
@@ -323,14 +329,37 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
     loadLocal();
     loadServer();
 
-    // Local: 3s; server: wide date window + low limit to avoid Firestore quota exhaustion
+    // Local storage: poll every 3s (no Firestore cost).
     const localId = setInterval(loadLocal, 3000);
-    const serverId = setInterval(loadServer, SERVER_POLL_MS);
+
+    // Server: only poll while the browser tab is visible to avoid burning
+    // Firestore quota when the admin has left the tab open but isn't looking.
+    let serverId: ReturnType<typeof setInterval> | null = null;
+    const startServerPoll = () => {
+      if (serverId !== null) return;
+      serverId = setInterval(loadServer, SERVER_POLL_MS);
+    };
+    const stopServerPoll = () => {
+      if (serverId === null) return;
+      clearInterval(serverId);
+      serverId = null;
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        loadServer(); // refresh immediately on return
+        startServerPoll();
+      } else {
+        stopServerPoll();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    startServerPoll();
 
     return () => {
       cancelled = true;
       clearInterval(localId);
-      clearInterval(serverId);
+      stopServerPoll();
+      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, [selectedDate]);
 

@@ -2,6 +2,14 @@
 
 import { useEffect } from 'react';
 
+const SYNC_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+const LAST_SYNC_KEY = 'kioskDataSync_lastSyncHash';
+
+/** Cheap content fingerprint — avoids a full JSON.stringify diff on every tick. */
+function recordsHash(all: any[]): string {
+  return all.length + ':' + (all[all.length - 1]?.checkInTime ?? '') + ':' + (all[0]?.checkOutTime ?? '');
+}
+
 /**
  * KioskDataSync — invisible background component mounted in the kiosk layout.
  *
@@ -9,20 +17,31 @@ import { useEffect } from 'react';
  * Firestore store every time it runs, so the admin Arrivals / Departures tabs
  * reflect real data regardless of which device the guest checked in on.
  *
- * Runs immediately on mount, then every 10 minutes (keeps Firestore read/write volume low).
+ * Skips the network call entirely when the local data fingerprint has not
+ * changed since the last successful sync, eliminating unnecessary Firestore
+ * reads when the kiosk has been idle.
+ *
+ * Runs immediately on mount, then every 30 minutes.
  */
 export default function KioskDataSync() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    const sync = async () => {
+    const sync = async (force = false) => {
       try {
         const checkedIn: any[] = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
         const checkOutHistory: any[] = JSON.parse(localStorage.getItem('checkOutHistory') || '[]');
 
-        // Merge both lists — checkout history records just have checkOutTime set
         const all = [...checkedIn, ...checkOutHistory];
         if (all.length === 0) return;
+
+        // Skip the round-trip when nothing has changed since the last sync.
+        const hash = recordsHash(all);
+        const lastHash = sessionStorage.getItem(LAST_SYNC_KEY);
+        if (!force && hash === lastHash) {
+          console.log('[KioskDataSync] no changes since last sync — skipping');
+          return;
+        }
 
         const res = await fetch('/api/checkin-records/sync', {
           method: 'POST',
@@ -37,6 +56,7 @@ export default function KioskDataSync() {
 
         const data = await res.json();
         if (data.success) {
+          sessionStorage.setItem(LAST_SYNC_KEY, hash);
           console.log(
             `[KioskDataSync] synced ${all.length} records: ${data.created ?? 0} created, ${data.updated ?? 0} updated`
           );
@@ -47,12 +67,10 @@ export default function KioskDataSync() {
       }
     };
 
-    // Run immediately on mount
-    sync();
+    // Run immediately on mount (force=true so a fresh page load always syncs once).
+    sync(true);
 
-    // Then every 30 minutes — kiosk data is already written to Firestore at check-in time;
-    // this sync is only a safety net for recovery, so infrequent polling is fine.
-    const interval = window.setInterval(sync, 30 * 60 * 1000);
+    const interval = window.setInterval(() => sync(), SYNC_INTERVAL_MS);
     return () => window.clearInterval(interval);
   }, []);
 

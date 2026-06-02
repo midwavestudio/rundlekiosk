@@ -1313,6 +1313,8 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   const wantTye = String(classType ?? '').toUpperCase() === 'TYE';
   let rateID: string | number | null = null;
   let ratePlanID: string | number | null = null;
+  // Kept in outer scope so the unassigned last-resort fallback can look up the correct rate per room type.
+  let stayRatesForFallback: any[] = [];
   try {
     const stayRates = await fetchCloudbedsRatePlansRows(
       CLOUDBEDS_API_URL,
@@ -1321,6 +1323,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       checkInDate,
       checkOutDate
     );
+    stayRatesForFallback = stayRates;
     let { allRatesForRoomType, tyeRate } = findTyeRateForRoomType(stayRates, roomTypeID);
 
     if (!tyeRate && wantTye) {
@@ -1441,7 +1444,11 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
 
   /** True when the Cloudbeds error response indicates an overbooking or availability block. */
   function isOverbookingError(data: any): boolean {
-    const msg = String(data?.message ?? data?.error ?? data?.data?.message ?? '').toLowerCase();
+    // Cloudbeds may nest the error message under data.message, data.error, data.data.message,
+    // or data.data.error — check all common locations.
+    const msg = String(
+      data?.message ?? data?.error ?? data?.data?.message ?? data?.data?.error ?? ''
+    ).toLowerCase();
     return (
       msg.includes('overbook') ||
       msg.includes('not available') ||
@@ -1456,7 +1463,10 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       msg.includes('exceed') ||
       msg.includes('maximum occupancy') ||
       msg.includes('at capacity') ||
-      msg.includes('no vacancy')
+      msg.includes('no vacancy') ||
+      msg.includes('occupied') ||
+      msg.includes('already booked') ||
+      msg.includes('not bookable')
     );
   }
 
@@ -1705,6 +1715,20 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
 
     for (const typeID of candidateTypeIDs) {
       try {
+        // Resolve the correct rate for this specific room type so Cloudbeds accepts the request.
+        // Using the original room's rate ID for a different room type causes Cloudbeds to reject
+        // the request with an invalid-rate error rather than an availability error.
+        let rateIDForType: string | null = null;
+        if (wantTye) {
+          const { tyeRate: tyeForType } = findTyeRateForRoomType(stayRatesForFallback, typeID);
+          rateIDForType = tyeForType
+            ? String(tyeForType.rateID ?? tyeForType.rate_id ?? tyeForType.id ?? tyeForType.ratePlanID ?? 227753)
+            : '227753';
+        } else if (typeID === roomTypeIDStr && roomRateIDStr) {
+          // For the original room type, use the already-resolved rate.
+          rateIDForType = roomRateIDStr;
+        }
+
         const unassignedParams = new URLSearchParams();
         unassignedParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
         unassignedParams.append('startDate', checkInDate);
@@ -1718,13 +1742,12 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
         unassignedParams.append('paymentMethod', 'CLC');
         unassignedParams.append('rooms[0][roomTypeID]', typeID);
         unassignedParams.append('rooms[0][quantity]', '1');
-        if (roomRateIDStr) unassignedParams.append('rooms[0][roomRateID]', roomRateIDStr);
+        if (rateIDForType) unassignedParams.append('rooms[0][roomRateID]', rateIDForType);
         unassignedParams.append('adults[0][roomTypeID]', typeID);
         unassignedParams.append('adults[0][quantity]', '1');
         unassignedParams.append('children[0][roomTypeID]', typeID);
         unassignedParams.append('children[0][quantity]', '0');
         unassignedParams.append('sourceID', 's-945658-1');
-        // Always override property overbooking limits for the unassigned last resort.
         unassignedParams.append('allowOverbooking', '1');
 
         log('3_postReservation_unassigned_last_resort_request', {

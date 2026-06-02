@@ -87,6 +87,7 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
   useEffect(() => {
     let cancelled = false;
     const refreshErrorBadge = async () => {
+      if (document.visibilityState !== 'visible') return;
       try {
         const res = await fetch('/api/event-log?limit=250');
         if (!res.ok || cancelled) return;
@@ -111,13 +112,15 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
       } catch { /* ignore */ }
     };
     refreshErrorBadge();
-    const pollId = setInterval(refreshErrorBadge, 15 * 60_000);
+    // 30-minute poll — badge counts don't need to be real-time.
+    const pollId = setInterval(refreshErrorBadge, 30 * 60_000);
     return () => { cancelled = true; clearInterval(pollId); };
   }, []);
 
   useEffect(() => {
     let cancelled = false;
     const refreshFeedbackBadge = async () => {
+      if (document.visibilityState !== 'visible') return;
       try {
         const res = await fetch('/api/feedback');
         if (!res.ok || cancelled) return;
@@ -129,7 +132,8 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
       } catch { /* ignore */ }
     };
     refreshFeedbackBadge();
-    const pollId = setInterval(refreshFeedbackBadge, 15 * 60_000);
+    // 30-minute poll — badge counts don't need to be real-time.
+    const pollId = setInterval(refreshFeedbackBadge, 30 * 60_000);
     return () => { cancelled = true; clearInterval(pollId); };
   }, []);
 
