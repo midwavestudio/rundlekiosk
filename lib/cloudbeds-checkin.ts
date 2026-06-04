@@ -1787,8 +1787,265 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   };
 
   /**
+   * Nuclear overbooking override: create the reservation with allowOverbooking=1 (room-specific
+   * first, then type-only across all room types), then immediately convert it to unassigned status
+   * by calling putReservation(confirmed) → postRoomAssign(newRoomID='').
+   *
+   * Cloudbeds does not expose an "unassigned" flag on postReservation — the only supported way to
+   * land a reservation in unassigned state is to first confirm it and then strip the room assignment
+   * via postRoomAssign with an empty newRoomID.  This is the same two-step sequence used by the
+   * /api/unassign-room endpoint.
+   *
+   * Sets confirmedPayOnly=true on success so the caller settles the folio and returns confirmed.
+   */
+  const attemptCreateThenUnassign = async (): Promise<boolean> => {
+    if (stopAfterReservationCreate) return false;
+
+    log('3_create_then_unassign_start', {
+      note: 'All postReservation attempts failed — trying create+allowOverbooking then force-unassign',
+    });
+
+    // Ordered list of postReservation shapes to try: most-specific first.
+    const shapesToTry: PostReservationOpts[] = [];
+    if (roomIdForCreate != null) {
+      shapesToTry.push({ attachPhysicalRoom: true, allowOverbooking: true });
+      shapesToTry.push({ attachPhysicalRoom: true, roomIdOnly: true, allowOverbooking: true });
+    }
+    shapesToTry.push({ attachPhysicalRoom: false, allowOverbooking: true });
+
+    let createdReservationData: any = null;
+
+    // Try each shape with the selected room's type first.
+    for (const shape of shapesToTry) {
+      const r = await runPostReservation(shape);
+      if (r.ok) {
+        createdReservationData = r.data;
+        log('3_create_then_unassign_postReservation_ok', {
+          note: 'postReservation succeeded with allowOverbooking=1 for create+unassign path',
+          shape,
+        });
+        break;
+      }
+    }
+
+    // If the selected room type failed, iterate all other room types (type-only + allowOverbooking).
+    if (!createdReservationData) {
+      const guestEmail =
+        email != null && String(email).trim() !== ''
+          ? String(email).trim()
+          : buildGuestSyntheticEmail(guestFirstName, guestLastName);
+
+      let stayRatesForCreate: any[] = [];
+      try {
+        stayRatesForCreate = await fetchCloudbedsRatePlansRows(
+          CLOUDBEDS_API_URL,
+          CLOUDBEDS_PROPERTY_ID,
+          CLOUDBEDS_API_KEY,
+          checkInDate,
+          checkOutDate
+        );
+      } catch { /* non-fatal */ }
+
+      const candidateTypeIDs: string[] = [];
+      const seenCreate = new Set<string>();
+      const pushCreate = (val: unknown) => {
+        if (val == null) return;
+        const s = String(val).trim();
+        if (!s || seenCreate.has(s) || s === roomTypeIDStr) return;
+        seenCreate.add(s);
+        candidateTypeIDs.push(s);
+      };
+      try {
+        const allRoomsForCreate = await fetchAllRoomsPagesMerged(
+          apiV13, CLOUDBEDS_PROPERTY_ID, CLOUDBEDS_API_KEY
+        );
+        for (const r of allRoomsForCreate) pushCreate(r?.roomTypeID ?? r?.roomType_id);
+      } catch { /* ignore */ }
+
+      for (const typeID of candidateTypeIDs) {
+        let rateIDForType: string | null = null;
+        if (wantTye) {
+          const { tyeRate } = findTyeRateForRoomType(stayRatesForCreate, typeID);
+          rateIDForType = tyeRate
+            ? String(tyeRate.rateID ?? tyeRate.rate_id ?? tyeRate.id ?? tyeRate.ratePlanID ?? 227753)
+            : '227753';
+        }
+
+        const p = new URLSearchParams();
+        p.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+        p.append('startDate', checkInDate);
+        p.append('endDate', checkOutDate);
+        p.append('guestFirstName', guestFirstName);
+        p.append('guestLastName', guestLastName);
+        p.append('guestCountry', 'US');
+        p.append('guestZip', '00000');
+        p.append('guestEmail', guestEmail);
+        p.append('guestPhone', phoneNumber || '000-000-0000');
+        p.append('paymentMethod', 'CLC');
+        p.append('rooms[0][roomTypeID]', typeID);
+        p.append('rooms[0][quantity]', '1');
+        if (rateIDForType) p.append('rooms[0][roomRateID]', rateIDForType);
+        p.append('adults[0][roomTypeID]', typeID);
+        p.append('adults[0][quantity]', '1');
+        p.append('children[0][roomTypeID]', typeID);
+        p.append('children[0][quantity]', '0');
+        p.append('sourceID', 's-945658-1');
+        p.append('allowOverbooking', '1');
+
+        log('3_create_then_unassign_alt_type_request', { typeID, startDate: checkInDate, endDate: checkOutDate });
+        try {
+          const resp = await fetch(`${apiV13}/postReservation`, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: p.toString(),
+          });
+          const text = await resp.text();
+          let parsed: any = {};
+          try { parsed = JSON.parse(text); } catch { parsed = { success: false, message: text }; }
+          log('3_create_then_unassign_alt_type_response', { status: resp.status, typeID, body: parsed });
+          if (resp.ok && parsed.success === true) {
+            createdReservationData = parsed;
+            log('3_create_then_unassign_alt_type_ok', { typeID });
+            break;
+          }
+        } catch (e: any) {
+          log('3_create_then_unassign_alt_type_error', { typeID }, undefined, e?.message);
+        }
+      }
+    }
+
+    if (!createdReservationData) {
+      log('3_create_then_unassign_failed', { note: 'Could not create reservation even with allowOverbooking=1 across all room types' });
+      return false;
+    }
+
+    const createdResID = String(
+      createdReservationData.data?.reservationID ?? createdReservationData.reservationID ?? ''
+    ).trim();
+    if (!createdResID) {
+      log('3_create_then_unassign_no_id', { note: 'postReservation succeeded but no reservationID in response' });
+      return false;
+    }
+
+    // Step A: putReservation → confirmed (required before unassign per Cloudbeds API).
+    log('3_create_then_unassign_confirm_request', { reservationID: createdResID });
+    const confirmParams = new URLSearchParams();
+    confirmParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+    confirmParams.append('reservationID', createdResID);
+    confirmParams.append('status', 'confirmed');
+    const confirmResp = await fetch(`${apiV13}/putReservation`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: confirmParams.toString(),
+    });
+    const confirmText = await confirmResp.text();
+    let confirmData: any = {};
+    try { confirmData = JSON.parse(confirmText); } catch { confirmData = {}; }
+    log('3_create_then_unassign_confirm_response', {
+      status: confirmResp.status,
+      ok: confirmResp.ok && confirmData.success === true,
+      body: confirmData,
+    });
+    // Non-fatal — proceed to unassign regardless.
+
+    // Step B: Resolve reservationRoomID for the postRoomAssign unassign call.
+    // After postReservation, the room line ID may appear in unassigned[] or guestList.
+    let reservationRoomIDForUnassign: string | null = extractReservationRoomLineId(createdReservationData);
+    let subReservationIDForUnassign: string | null =
+      createdReservationData.unassigned?.[0]?.subReservationID
+      ?? createdReservationData.data?.subReservationID
+      ?? null;
+
+    // Fetch getReservation to get the definitive room line ID.
+    try {
+      const grUrl = `${apiV13}/getReservation?propertyID=${encodeURIComponent(CLOUDBEDS_PROPERTY_ID)}&reservationID=${encodeURIComponent(createdResID)}&includeAllRooms=true`;
+      log('3_create_then_unassign_getReservation_request', { url: grUrl });
+      const grResp = await fetch(grUrl, {
+        headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/json' },
+      });
+      const grText = await grResp.text();
+      let grParsed: any = null;
+      try { grParsed = JSON.parse(grText); } catch { grParsed = null; }
+      log('3_create_then_unassign_getReservation_response', { status: grResp.status, body: grParsed ?? grText });
+
+      if (grResp.ok && grParsed?.success) {
+        reservationRoomIDForUnassign = extractReservationRoomLineId(grParsed) ?? reservationRoomIDForUnassign;
+        // Resolve subReservationID from assigned or unassigned rooms.
+        const resData = grParsed.data ?? grParsed;
+        if (!subReservationIDForUnassign) {
+          const assigned = resData?.assigned;
+          if (Array.isArray(assigned) && assigned[0]?.subReservationID) {
+            subReservationIDForUnassign = String(assigned[0].subReservationID);
+          } else if (Array.isArray(resData?.rooms) && resData.rooms[0]?.subReservationID) {
+            subReservationIDForUnassign = String(resData.rooms[0].subReservationID);
+          }
+        }
+      }
+    } catch (e: any) {
+      log('3_create_then_unassign_getReservation_error', undefined, undefined, e?.message);
+    }
+
+    // Step C: postRoomAssign with newRoomID='' to unassign the physical room.
+    // Per Cloudbeds API: "newRoomID: Empty field must be sent if you want to unassign a room."
+    // "reservationRoomID: Must be set if you want to unassign a room."
+    if (reservationRoomIDForUnassign) {
+      const unassignParams = new URLSearchParams();
+      unassignParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+      unassignParams.append('reservationID', createdResID);
+      unassignParams.append('reservationRoomID', reservationRoomIDForUnassign);
+      unassignParams.append('newRoomID', '');
+      if (subReservationIDForUnassign && subReservationIDForUnassign !== createdResID) {
+        unassignParams.append('subReservationID', subReservationIDForUnassign);
+      }
+      log('3_create_then_unassign_postRoomAssign_request', {
+        reservationID: createdResID,
+        reservationRoomID: reservationRoomIDForUnassign,
+        subReservationID: subReservationIDForUnassign,
+      });
+      const unassignResp = await fetch(`${apiV13}/postRoomAssign`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${CLOUDBEDS_API_KEY}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: unassignParams.toString(),
+      });
+      const unassignText = await unassignResp.text();
+      let unassignData: any = {};
+      try { unassignData = JSON.parse(unassignText); } catch { unassignData = {}; }
+      log('3_create_then_unassign_postRoomAssign_response', {
+        status: unassignResp.status,
+        ok: unassignResp.ok && unassignData.success === true,
+        body: unassignData,
+      });
+      // Non-fatal — the reservation exists regardless of whether unassign succeeded.
+    } else {
+      log('3_create_then_unassign_no_room_line_id', {
+        note: 'Could not resolve reservationRoomID — reservation may already be unassigned or room-line missing',
+      });
+    }
+
+    // Expose the created reservation through the shared reservationData variable so the
+    // caller (confirmedPayOnly branch) can read reservationID / guestID.
+    reservationData = createdReservationData;
+    confirmedPayOnly = true;
+    log('3_create_then_unassign_succeeded', {
+      reservationID: createdResID,
+      note: 'Reservation created with allowOverbooking=1 and converted to unassigned/confirmed — staff must assign room when available',
+    });
+    return true;
+  };
+
+  /**
    * After postReservation fails: reuse an existing booking, or escalate through room fallbacks
    * and unassigned + allowOverbooking. For inventory/overbook errors, try unassigned first.
+   * Final nuclear option: create with allowOverbooking=1 then force-unassign via putReservation+postRoomAssign.
    */
   const escalateAfterFailedPostReservation = async (failedData: any): Promise<boolean> => {
     if (isOverbookingError(failedData)) {
@@ -1797,10 +2054,12 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
         message: failedData?.message,
       });
       if (await attemptUnassignedReservationLastResort()) return true;
-      return attemptRoomSpecificFallbacks(failedData);
+      if (await attemptRoomSpecificFallbacks(failedData)) return true;
+      return attemptCreateThenUnassign();
     }
     if (await attemptRoomSpecificFallbacks(failedData)) return true;
-    return attemptUnassignedReservationLastResort();
+    if (await attemptUnassignedReservationLastResort()) return true;
+    return attemptCreateThenUnassign();
   };
 
   if (stopAfterReservationCreate && (!canAttachPhysicalRoomToReservation || roomIdForCreate == null)) {

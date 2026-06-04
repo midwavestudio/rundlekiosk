@@ -138,6 +138,14 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
   }, []);
 
   useEffect(() => {
+    if (activeTab !== 'feedback') return;
+    // Zero the nav badge immediately when the Messages tab is opened.
+    // FeedbackTab will mark all loaded messages as read in localStorage; if any
+    // are later marked unread, onUnreadCountChange will push the count back up.
+    setFeedbackUnreadCount(0);
+  }, [activeTab]);
+
+  useEffect(() => {
     if (activeTab !== 'event-log') return;
     recordErrorLogVisit();
     setEventLogUnreadCount(0);

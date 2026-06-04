@@ -66,6 +66,15 @@ export default function FeedbackTab({ onUnreadCountChange }: FeedbackTabProps) {
   useEffect(() => { fetchMessages(); }, [fetchMessages]);
   useEffect(() => { setReadIds(loadReadFeedbackIds()); }, []);
 
+  // Mark all loaded messages as read when the tab is open and messages finish loading.
+  // This resets the badge. If a message is later marked unread, the badge reappears
+  // when the user navigates away because readIds will not contain that id.
+  useEffect(() => {
+    if (loading || messages.length === 0) return;
+    setReadIds((prev) => markFeedbacksRead(messages.map((m) => m.id), prev));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading]);
+
   useEffect(() => {
     if (!onUnreadCountChange || loading) return;
     const unread = messages.reduce((n, m) => (readIds.has(m.id) ? n : n + 1), 0);
