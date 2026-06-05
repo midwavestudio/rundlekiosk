@@ -44,10 +44,15 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const from = searchParams.get('from') ?? '';
     const to = searchParams.get('to') ?? '';
-    let limit = 500;
+    // When a date range is provided (export scenario), allow up to 2000 records
+    // so that multi-month exports are not silently truncated. Without a range
+    // (live-poll scenario) keep the conservative 500-doc cap to protect quotas.
+    const hasRange = searchParams.has('from') && searchParams.has('to');
+    const hardCap = hasRange ? 2000 : 500;
+    let limit = hasRange ? 2000 : 500;
     if (searchParams.has('limit')) {
       const n = parseInt(searchParams.get('limit')!, 10);
-      if (Number.isFinite(n)) limit = Math.min(Math.max(n, 1), 500);
+      if (Number.isFinite(n)) limit = Math.min(Math.max(n, 1), hardCap);
     }
 
     const now = Date.now();

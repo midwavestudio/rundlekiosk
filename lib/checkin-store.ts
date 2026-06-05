@@ -472,7 +472,7 @@ export async function getCheckinRecords(opts: {
   to?: string;
   limit?: number;
 } = {}): Promise<CheckinRecord[]> {
-  const cap = Math.min(opts.limit ?? 500, 1000);
+  const cap = Math.min(opts.limit ?? 500, 2000);
 
   const db = getDb();
   if (db) {

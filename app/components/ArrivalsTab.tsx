@@ -1,6 +1,6 @@
 ﻿'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { resolveRoomNumberLabel } from '@/lib/room-display';
 import {
   datetimeLocalValueToIso,
@@ -245,6 +245,11 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
   const [exportFrom, setExportFrom] = useState(() => localYmd(new Date()));
   const [exportTo, setExportTo] = useState(() => localYmd(new Date()));
   const [showExportPanel, setShowExportPanel] = useState(false);
+  const [exportLoading, setExportLoading] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+  /** Count of records currently previewed for the export range (fetched from server). */
+  const [exportPreviewCount, setExportPreviewCount] = useState<number | null>(null);
+  const exportPreviewAbortRef = useRef<AbortController | null>(null);
   /** When true, list is sorted by check-in time descending (latest at top). */
   const [newestFirst, setNewestFirst] = useState(true);
   /** Visual-only "already checked by me" marker, grouped by selected date. */
@@ -554,18 +559,128 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
     });
   }, [selectedRow]);
 
-  const exportRows = useMemo(() => {
-    if (!exportFrom || !exportTo) return rows;
-    const from = new Date(exportFrom + 'T00:00:00');
-    const to = new Date(exportTo + 'T23:59:59');
-    return rows.filter((r) => inDateRange(r.checkInIso, from, to));
-  }, [rows, exportFrom, exportTo]);
+  /**
+   * Fetch all check-in records for the export date range directly from the
+   * server API. This bypasses the in-memory `rows` state which only holds data
+   * for a ±1-day window around the currently-selected date — if we relied on
+   * that, any export spanning more than a few days would silently drop records
+   * outside that window.
+   *
+   * The API allows up to 2000 records when a date range is specified.
+   */
+  const fetchExportRecords = async (fromYmd: string, toYmd: string, signal?: AbortSignal): Promise<Row[]> => {
+    const params = new URLSearchParams({ from: fromYmd, to: toYmd, limit: '2000' });
+    const res = await fetch(`/api/checkin-records?${params.toString()}`, { signal });
+    if (!res.ok) throw new Error(`Server error: ${res.status}`);
+    const data = await res.json();
+    if (!data.success || !Array.isArray(data.records)) throw new Error(data.error || 'Unexpected server response');
+
+    const seen = new Set<string>();
+    const allRecords: Row[] = [];
+
+    for (const r of data.records as any[]) {
+      const g: CheckedInGuest = {
+        firstName: String(r.firstName ?? ''),
+        lastName: String(r.lastName ?? ''),
+        clcNumber: String(r.clcNumber ?? ''),
+        phoneNumber: String(r.phoneNumber ?? ''),
+        class: (r.class ?? 'TYE') as 'TYE' | 'MOW',
+        checkInTime: String(r.checkInTime ?? ''),
+        checkOutTime: r.checkOutTime ? String(r.checkOutTime) : undefined,
+        cloudbedsReservationID: r.cloudbedsReservationID ? String(r.cloudbedsReservationID) : undefined,
+        cloudbedsGuestID: r.cloudbedsGuestID ? String(r.cloudbedsGuestID) : undefined,
+        roomNumber: String(r.roomNumber ?? ''),
+        ...(r.id != null && String(r.id).trim() !== '' ? { _serverId: String(r.id) } : {}),
+      };
+
+      const dedupeKey = guestDedupeKey(g);
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+
+      allRecords.push({
+        id: g._serverId ?? `export-${dedupeKey}`,
+        markKey: rowMarkKey(g),
+        guestName: `${g.firstName} ${g.lastName}`.trim(),
+        firstName: g.firstName,
+        lastName: g.lastName,
+        clcNumber: g.clcNumber || '-',
+        phoneNumber: g.phoneNumber || '-',
+        class: g.class || '-',
+        roomNumber: resolveRoomNumberLabel(g.roomNumber, roomNameById),
+        checkInDate: fmtDate(g.checkInTime),
+        checkInTime: fmtTime(g.checkInTime),
+        checkInIso: g.checkInTime,
+        checkOutIso: g.checkOutTime,
+        fromHistory: !!g.checkOutTime,
+        cloudbedsReservationID: g.cloudbedsReservationID,
+        cloudbedsGuestID: g.cloudbedsGuestID,
+        rawData: g,
+      });
+    }
+
+    // Secondary filter in JS to guarantee boundary dates are exactly correct
+    // regardless of how the server applied the date range query.
+    const fromDate = new Date(fromYmd + 'T00:00:00');
+    const toDate = new Date(toYmd + 'T23:59:59');
+    return allRecords.filter((r) => inDateRange(r.checkInIso, fromDate, toDate));
+  };
+
+  /** Preview count: update whenever export range dates change while panel is open. */
+  useEffect(() => {
+    if (!showExportPanel || !exportFrom || !exportTo) {
+      setExportPreviewCount(null);
+      return;
+    }
+    const ctrl = new AbortController();
+    exportPreviewAbortRef.current?.abort();
+    exportPreviewAbortRef.current = ctrl;
+    setExportPreviewCount(null);
+
+    const params = new URLSearchParams({ from: exportFrom, to: exportTo, limit: '2000' });
+    fetch(`/api/checkin-records?${params.toString()}`, { signal: ctrl.signal })
+      .then((r) => r.json())
+      .then((data) => {
+        if (ctrl.signal.aborted) return;
+        if (data.success && Array.isArray(data.records)) {
+          const from = new Date(exportFrom + 'T00:00:00');
+          const to = new Date(exportTo + 'T23:59:59');
+          const count = (data.records as any[]).filter((r) =>
+            inDateRange(String(r.checkInTime ?? ''), from, to)
+          ).length;
+          setExportPreviewCount(count);
+        }
+      })
+      .catch(() => {});
+
+    return () => ctrl.abort();
+  }, [showExportPanel, exportFrom, exportTo]);
+
+  const handleExportDownload = async () => {
+    if (!exportFrom || !exportTo || exportLoading) return;
+    setExportLoading(true);
+    setExportError(null);
+    try {
+      const allRows = await fetchExportRecords(exportFrom, exportTo);
+      if (allRows.length === 0) {
+        setExportError('No records found for the selected date range.');
+        return;
+      }
+      exportCSV(allRows, `${exportFrom}-to-${exportTo}`);
+    } catch (err: any) {
+      if (err?.name === 'AbortError') return;
+      setExportError(err?.message ?? 'Export failed. Please try again.');
+    } finally {
+      setExportLoading(false);
+    }
+  };
 
   const toggleExportPanel = () => {
     setShowExportPanel((v) => {
       if (!v) {
         setExportFrom(selectedDate);
         setExportTo(selectedDate);
+        setExportError(null);
+        setExportPreviewCount(null);
       }
       return !v;
     });
@@ -1015,24 +1130,48 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
 
       {/* â”€â”€ Export Panel â”€â”€ */}
       {showExportPanel && (
-        <div style={{ marginBottom: '14px', padding: '14px 16px', background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: '10px', display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-          <span style={{ fontSize: '13px', fontWeight: 600, color: '#374151' }}>Export date range:</span>
-          <input type="date" value={exportFrom} onChange={e => setExportFrom(e.target.value)}
-            style={{ padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '13px' }} />
-          <span style={{ color: '#6b7280' }}>to</span>
-          <input type="date" value={exportTo} onChange={e => setExportTo(e.target.value)}
-            style={{ padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '13px' }} />
-          <span style={{ fontSize: '13px', color: '#6b7280' }}>
-            {exportRows.length} guest{exportRows.length !== 1 ? 's' : ''}
-            {exportFrom && exportTo ? ` · ${fmtDateRange(new Date(exportFrom + 'T00:00:00'), new Date(exportTo + 'T00:00:00'))}` : ''}
-          </span>
-          <button
-            onClick={() => exportCSV(exportRows, `${exportFrom}-to-${exportTo}`)}
-            disabled={exportRows.length === 0}
-            style={{ padding: '7px 16px', background: exportRows.length > 0 ? '#667eea' : '#e5e7eb', color: exportRows.length > 0 ? 'white' : '#9ca3af', border: 'none', borderRadius: '7px', cursor: exportRows.length > 0 ? 'pointer' : 'not-allowed', fontWeight: 600, fontSize: '13px' }}
-          >
-            Download CSV
-          </button>
+        <div style={{ marginBottom: '14px', padding: '14px 16px', background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: '10px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: '13px', fontWeight: 600, color: '#374151' }}>Export date range:</span>
+            <input type="date" value={exportFrom} onChange={e => { setExportFrom(e.target.value); setExportError(null); }}
+              style={{ padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '13px' }} />
+            <span style={{ color: '#6b7280' }}>to</span>
+            <input type="date" value={exportTo} onChange={e => { setExportTo(e.target.value); setExportError(null); }}
+              style={{ padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '13px' }} />
+            <span style={{ fontSize: '13px', color: '#6b7280' }}>
+              {exportPreviewCount !== null
+                ? `~${exportPreviewCount} guest${exportPreviewCount !== 1 ? 's' : ''}`
+                : exportFrom && exportTo ? 'Loading...' : ''}
+              {exportFrom && exportTo ? ` \u00b7 ${fmtDateRange(new Date(exportFrom + 'T00:00:00'), new Date(exportTo + 'T00:00:00'))}` : ''}
+            </span>
+            <button
+              onClick={handleExportDownload}
+              disabled={exportLoading || !exportFrom || !exportTo}
+              style={{
+                padding: '7px 16px',
+                background: exportLoading || !exportFrom || !exportTo ? '#e5e7eb' : '#667eea',
+                color: exportLoading || !exportFrom || !exportTo ? '#9ca3af' : 'white',
+                border: 'none',
+                borderRadius: '7px',
+                cursor: exportLoading || !exportFrom || !exportTo ? 'not-allowed' : 'pointer',
+                fontWeight: 600,
+                fontSize: '13px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+              }}
+            >
+              {exportLoading ? 'Fetching...' : 'Download CSV'}
+            </button>
+          </div>
+          {exportError && (
+            <div style={{ fontSize: '13px', color: '#dc2626', background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: '6px', padding: '8px 12px' }}>
+              {exportError}
+            </div>
+          )}
+          <div style={{ fontSize: '12px', color: '#9ca3af' }}>
+            Records are fetched directly from the server — all guests in the selected range will be included.
+          </div>
         </div>
       )}
 
