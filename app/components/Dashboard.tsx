@@ -461,6 +461,17 @@ function DashboardTab({ firestoreStatus }: { firestoreStatus: FirebaseStatus | n
           </p>
           <BackupButton />
         </div>
+
+        <div style={{ padding: '14px 20px 18px', borderTop: `1px solid ${ADMIN_BORDER}` }}>
+          <p style={{ margin: '0 0 4px', fontSize: '13px', fontWeight: 600, color: ADMIN_TEXT_MUTED }}>
+            Fix Export Date Range
+          </p>
+          <p style={{ margin: '0 0 12px', fontSize: '12px', color: ADMIN_TEXT_FAINT, lineHeight: '1.5' }}>
+            Run this once to stamp a date field on older records so the CSV export includes all guests.
+            Safe to run multiple times — records that already have the field are skipped.
+          </p>
+          <BackfillDatesButton />
+        </div>
       </div>
     </div>
   );
@@ -525,6 +536,65 @@ function StatusRow({ label, status, warning, error }: { label: string; status: s
         <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: dot, display: 'inline-block' }} />
         {status}
       </span>
+    </div>
+  );
+}
+
+// ─── Backfill dates button ─────────────────────────────────────────────────────
+
+function BackfillDatesButton() {
+  const [state, setState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
+  const [result, setResult] = useState<{ updated?: number; skipped?: number; errors?: number; error?: string } | null>(null);
+
+  const run = async () => {
+    if (state === 'loading') return;
+    setState('loading');
+    setResult(null);
+    try {
+      const res = await fetch('/api/admin/backfill-checkin-dates', { method: 'POST' });
+      const data = await res.json();
+      setResult(data);
+      setState(data.success ? 'done' : 'error');
+    } catch (err: any) {
+      setResult({ error: err?.message ?? 'Network error' });
+      setState('error');
+    }
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      <button
+        onClick={run}
+        disabled={state === 'loading'}
+        style={{
+          padding: '9px 18px',
+          background: state === 'done' ? '#16a34a' : state === 'error' ? '#dc2626' : '#b87333',
+          color: 'white',
+          border: 'none',
+          borderRadius: '8px',
+          fontSize: '13px',
+          fontWeight: 600,
+          cursor: state === 'loading' ? 'not-allowed' : 'pointer',
+          opacity: state === 'loading' ? 0.7 : 1,
+          alignSelf: 'flex-start',
+        }}
+      >
+        {state === 'loading' ? 'Running...' : state === 'done' ? 'Done \u2713' : state === 'error' ? 'Failed \u2014 Retry' : 'Stamp Date Field on Old Records'}
+      </button>
+      {result && (
+        <div style={{
+          fontSize: '12px',
+          padding: '8px 12px',
+          borderRadius: '6px',
+          background: state === 'done' ? 'rgba(22,163,74,0.1)' : 'rgba(220,38,38,0.1)',
+          border: `1px solid ${state === 'done' ? 'rgba(22,163,74,0.3)' : 'rgba(220,38,38,0.3)'}`,
+          color: state === 'done' ? '#16a34a' : '#dc2626',
+        }}>
+          {state === 'done'
+            ? `Updated ${result.updated ?? 0} records, skipped ${result.skipped ?? 0} already-set, ${result.errors ?? 0} errors.`
+            : `Error: ${result.error ?? 'Unknown error'}`}
+        </div>
+      )}
     </div>
   );
 }

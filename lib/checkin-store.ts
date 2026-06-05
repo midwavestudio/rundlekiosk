@@ -477,52 +477,99 @@ export async function getCheckinRecords(opts: {
   const db = getDb();
   if (db) {
     try {
-      // Indexed date-range path (requires composite index in firestore.indexes.json).
-      if (
+      const hasRange =
         opts.from &&
         opts.to &&
         /^\d{4}-\d{2}-\d{2}$/.test(opts.from) &&
-        /^\d{4}-\d{2}-\d{2}$/.test(opts.to)
-      ) {
-        try {
-          const rangeSnap = await db
+        /^\d{4}-\d{2}-\d{2}$/.test(opts.to);
+
+      if (hasRange) {
+        // Run two parallel queries and merge:
+        //
+        // Query A — indexed `checkInDateYmd` range: returns records that were
+        //   saved with the checkInDateYmd field (most records from ~mid-April
+        //   onward once the field was introduced).
+        //
+        // Query B — `checkInTime` ISO string range: catches older records that
+        //   were saved before checkInDateYmd was added.  ISO date strings sort
+        //   lexicographically identically to calendar order, so this works
+        //   reliably as long as checkInTime starts with "YYYY-MM-DD".
+        //
+        // Merging both result sets with a dedup-by-doc-id gives complete
+        // coverage regardless of which field a record has.
+        const fromIsoStart = `${opts.from}T00:00:00`;
+        const toIsoEnd   = `${opts.to}T23:59:59.999Z`;
+
+        const [snapA, snapB] = await Promise.all([
+          // Query A: indexed date field
+          db
             .collection(COLLECTION)
-            .where('checkInDateYmd', '>=', opts.from)
-            .where('checkInDateYmd', '<=', opts.to)
+            .where('checkInDateYmd', '>=', opts.from!)
+            .where('checkInDateYmd', '<=', opts.to!)
             .orderBy('checkInDateYmd', 'desc')
             .orderBy('checkInTime', 'desc')
             .limit(cap)
-            .get();
-          return rangeSnap.docs.map(docToRecord);
-        } catch (rangeErr) {
-          console.warn(
-            '[checkin-store] Indexed date-range query failed (missing index or old docs?). Falling back.',
-            rangeErr
-          );
+            .get()
+            .catch((err) => {
+              console.warn('[checkin-store] checkInDateYmd range query failed:', err?.message);
+              return null;
+            }),
+          // Query B: checkInTime ISO string range (lexicographic = chronological)
+          db
+            .collection(COLLECTION)
+            .where('checkInTime', '>=', fromIsoStart)
+            .where('checkInTime', '<=', toIsoEnd)
+            .orderBy('checkInTime', 'desc')
+            .limit(cap)
+            .get()
+            .catch((err) => {
+              console.warn('[checkin-store] checkInTime range query failed:', err?.message);
+              return null;
+            }),
+        ]);
+
+        // Merge by doc ID, backfilling checkInDateYmd in memory for any record
+        // that still lacks it (so the JS date filter below works correctly).
+        const merged = new Map<string, CheckinRecord>();
+        for (const snap of [snapA, snapB]) {
+          if (!snap) continue;
+          for (const doc of snap.docs) {
+            if (!merged.has(doc.id)) {
+              const record = docToRecord(doc);
+              if (!record.checkInDateYmd && record.checkInTime) {
+                record.checkInDateYmd = deriveCheckInDateYmd(record.checkInTime);
+              }
+              merged.set(doc.id, record);
+            }
+          }
         }
+
+        // Final JS filter to catch any edge-case records that slipped through
+        // (e.g. checkInTime stored without timezone suffix — compare as YMD).
+        const results = Array.from(merged.values()).filter((r) => {
+          const ymd = r.checkInDateYmd ?? r.checkInTime?.slice(0, 10);
+          if (!ymd) return false;
+          return ymd >= opts.from! && ymd <= opts.to!;
+        });
+
+        // Re-sort newest first (merged map order is undefined)
+        results.sort((a, b) => {
+          const ta = a.checkInTime ?? '';
+          const tb = b.checkInTime ?? '';
+          return tb < ta ? -1 : tb > ta ? 1 : 0;
+        });
+
+        return results.slice(0, cap);
       }
 
-      // Default: recent records by check-in time (single-field index, auto-created).
+      // No date range: return the most-recent records.
       const snap = await db
         .collection(COLLECTION)
         .orderBy('checkInTime', 'desc')
         .limit(cap)
         .get();
 
-      let records = snap.docs.map(docToRecord);
-
-      // Partial date filter (only from or only to) — filter in JS
-      if (opts.from || opts.to) {
-        records = records.filter((r) => {
-          const ymd = r.checkInDateYmd ?? r.checkInTime?.slice(0, 10);
-          if (!ymd) return !opts.from;
-          if (opts.from && ymd < opts.from) return false;
-          if (opts.to && ymd > opts.to) return false;
-          return true;
-        });
-      }
-
-      return records;
+      return snap.docs.map(docToRecord);
     } catch (err) {
       console.error('[checkin-store] Firestore getCheckinRecords failed — using in-memory store.', err);
     }
