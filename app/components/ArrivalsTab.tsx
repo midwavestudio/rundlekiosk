@@ -229,6 +229,13 @@ function mergeGuestLists(
 }
 
 export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
+  /**
+   * Set of dedup keys for records deleted in this session.
+   * Used to prevent deleted records from reappearing when the server-side
+   * cache (1-minute TTL) returns stale data on the next poll.
+   */
+  const deletedKeysRef = useRef<Set<string>>(new Set());
+
   const [checkedInGuests, setCheckedInGuests] = useState<CheckedInGuest[]>([]);
   const [checkOutHistory, setCheckOutHistory] = useState<CheckedInGuest[]>([]);
   const [roomNameById, setRoomNameById] = useState<Record<string, string>>({});
@@ -278,11 +285,13 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
     let cancelled = false;
 
     const loadLocal = () => {
-      const g: CheckedInGuest[] = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
-      const h: CheckedInGuest[] = JSON.parse(localStorage.getItem('checkOutHistory') || '[]');
+      const deletedKeys = deletedKeysRef.current;
+      const notDeleted = (r: CheckedInGuest) => !deletedKeys.has(guestDedupeKey(r));
+      const g: CheckedInGuest[] = (JSON.parse(localStorage.getItem('checkedInGuests') || '[]') as CheckedInGuest[]).filter(notDeleted);
+      const h: CheckedInGuest[] = (JSON.parse(localStorage.getItem('checkOutHistory') || '[]') as CheckedInGuest[]).filter(notDeleted);
       if (!cancelled) {
-        setCheckedInGuests((prev) => mergeGuestLists(g, prev.filter((r) => r._serverId)));
-        setCheckOutHistory((prev) => mergeGuestLists(h, prev.filter((r) => r._serverId)));
+        setCheckedInGuests((prev) => mergeGuestLists(g, prev.filter((r) => r._serverId && notDeleted(r))));
+        setCheckOutHistory((prev) => mergeGuestLists(h, prev.filter((r) => r._serverId && notDeleted(r))));
       }
     };
 
@@ -314,8 +323,13 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
           ...(r.id != null && String(r.id).trim() !== '' ? { _serverId: String(r.id) } : {}),
         }));
 
-        const active = allRecords.filter((r) => !r.checkOutTime);
-        const history = allRecords.filter((r) => !!r.checkOutTime);
+        // Filter out any records that were deleted in this session but may still
+        // be returned by the server due to the 1-minute server-side cache TTL.
+        const deletedKeys = deletedKeysRef.current;
+        const notDeleted = (r: CheckedInGuest) => !deletedKeys.has(guestDedupeKey(r));
+
+        const active = allRecords.filter((r) => !r.checkOutTime && notDeleted(r));
+        const history = allRecords.filter((r) => !!r.checkOutTime && notDeleted(r));
 
         // Merge: local-only records (no _serverId, not yet synced) kept alongside server records
         const localGuests: CheckedInGuest[] = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
@@ -718,6 +732,10 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
       if (!serverRes.ok || delData.success === false) {
         throw new Error(delData?.error || 'Failed to remove check-in record');
       }
+      // Register the deleted record's key so polling loops won't re-add it from
+      // stale server cache (1-minute TTL) before Firestore is fully consistent.
+      deletedKeysRef.current.add(guestDedupeKey(row.rawData));
+
       // deleted: false means the document wasn't found in Firestore (already removed or
       // never persisted). This is not an error - treat it as a successful deletion.
       if (row.fromHistory) {

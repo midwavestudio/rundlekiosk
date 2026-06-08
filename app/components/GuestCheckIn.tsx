@@ -136,7 +136,7 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
       return;
     }
     if (!formData.clcNumber.trim()) {
-      setError('CLC Number is required. Please enter your CLC number before continuing.');
+      setError('Failed to check in: Please enter your CLC number.');
       return;
     }
     // Require a complete 10-digit phone number: formatted as (XXX) XXX-XXXX → 14 chars,
@@ -423,8 +423,6 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
             value={formData.clcNumber}
             onChange={(e) => handleChange('clcNumber', e.target.value)}
             placeholder="Enter your CLC number"
-            required
-            minLength={1}
           />
         </div>
 
