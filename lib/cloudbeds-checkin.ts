@@ -1025,9 +1025,13 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     debugLog,
   } = params;
 
-  const clcValidation = validateClcNumberRequired(clcNumber);
-  if (!clcValidation.ok) {
-    throw new Error(clcValidation.error);
+  // CLC is required for real guest check-ins but not for block/placeholder reservations
+  // (stopAfterReservationCreate is set exclusively by the Blocks tab).
+  if (!stopAfterReservationCreate) {
+    const clcValidation = validateClcNumberRequired(clcNumber);
+    if (!clcValidation.ok) {
+      throw new Error(clcValidation.error);
+    }
   }
 
   const guestFirstName = String(firstName).trim().replace(/\s+/g, ' ');
