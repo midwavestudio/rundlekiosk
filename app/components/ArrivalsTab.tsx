@@ -246,6 +246,11 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
   const [creatingReservation, setCreatingReservation] = useState(false);
   const [createReservationResult, setCreateReservationResult] = useState<{ ok: boolean; message: string } | null>(null);
 
+  const [showCorrectRoom, setShowCorrectRoom] = useState(false);
+  const [correctRoomId, setCorrectRoomId] = useState('');
+  const [correctingRoom, setCorrectingRoom] = useState(false);
+  const [correctRoomResult, setCorrectRoomResult] = useState<{ ok: boolean; message: string } | null>(null);
+
   /** Which calendar day's check-ins to list (local) - defaults to today. */
   const [selectedDate, setSelectedDate] = useState<string>(() => localYmd(new Date()));
 
@@ -559,8 +564,14 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
     if (!selectedRow) {
       setIsEditing(false);
       setEditForm(null);
+      setShowCorrectRoom(false);
+      setCorrectRoomId('');
+      setCorrectRoomResult(null);
       return;
     }
+    setShowCorrectRoom(false);
+    setCorrectRoomId('');
+    setCorrectRoomResult(null);
     setEditForm({
       firstName: selectedRow.firstName || '',
       lastName: selectedRow.lastName || '',
@@ -986,6 +997,50 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
       setCreateReservationResult({ ok: false, message: err?.message ?? 'Network error' });
     } finally {
       setCreatingReservation(false);
+    }
+  };
+
+  /** Reassign a reservation to a different physical room in Cloudbeds + update Firestore. */
+  const handleCorrectRoom = async (row: Row) => {
+    if (!row.cloudbedsReservationID || !correctRoomId) return;
+    const targetRoomName = roomNameById[correctRoomId] ?? correctRoomId;
+    setCorrectingRoom(true);
+    setCorrectRoomResult(null);
+    try {
+      const res = await fetch('/api/admin/reassign-room', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reservationID: row.cloudbedsReservationID,
+          newRoomID: correctRoomId,
+          newRoomName: targetRoomName,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        const updateGuest = (g: CheckedInGuest): CheckedInGuest => {
+          const matchRes = g.cloudbedsReservationID && g.cloudbedsReservationID === row.cloudbedsReservationID;
+          const matchName = g.firstName === row.firstName && g.lastName === row.lastName && g.checkInTime === row.rawData.checkInTime;
+          if (!matchRes && !matchName) return g;
+          return { ...g, roomNumber: targetRoomName };
+        };
+        setCheckedInGuests((prev) => prev.map(updateGuest));
+        setCheckOutHistory((prev) => prev.map(updateGuest));
+        setSelectedRow((prev) =>
+          prev && prev.id === row.id
+            ? { ...prev, roomNumber: targetRoomName, rawData: { ...prev.rawData, roomNumber: targetRoomName } }
+            : prev
+        );
+        setShowCorrectRoom(false);
+        setCorrectRoomId('');
+        setCorrectRoomResult({ ok: true, message: data.message ?? `Room corrected to ${targetRoomName}.` });
+      } else {
+        setCorrectRoomResult({ ok: false, message: data.error ?? 'Failed to reassign room in Cloudbeds.' });
+      }
+    } catch (err: any) {
+      setCorrectRoomResult({ ok: false, message: err?.message ?? 'Network error' });
+    } finally {
+      setCorrectingRoom(false);
     }
   };
 
@@ -1480,6 +1535,88 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
                       wordBreak: 'break-all',
                     }}>
                       {createReservationResult.message}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Correct room — visible when a Cloudbeds reservation exists (to/from room mismatch fix) */}
+              {selectedRow.cloudbedsReservationID && !isEditing && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <button
+                    onClick={() => {
+                      setShowCorrectRoom((v) => !v);
+                      setCorrectRoomId('');
+                      setCorrectRoomResult(null);
+                    }}
+                    style={{
+                      padding: '10px',
+                      background: showCorrectRoom ? '#92400e' : '#b45309',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '8px',
+                      cursor: 'pointer',
+                      fontWeight: 600,
+                      fontSize: '14px',
+                    }}
+                  >
+                    {showCorrectRoom ? 'Cancel Room Correction' : 'Correct Room in Cloudbeds'}
+                  </button>
+
+                  {showCorrectRoom && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: '8px' }}>
+                      <div style={{ fontSize: '12px', color: '#92400e', fontWeight: 600 }}>
+                        Move reservation {selectedRow.cloudbedsReservationID} to a different room
+                      </div>
+                      <div style={{ fontSize: '11px', color: '#b45309' }}>
+                        Currently recorded as: <strong>{selectedRow.roomNumber}</strong>
+                      </div>
+                      <select
+                        value={correctRoomId}
+                        onChange={(e) => setCorrectRoomId(e.target.value)}
+                        style={{ width: '100%', padding: '8px 10px', border: '1px solid #fcd34d', borderRadius: '6px', fontSize: '14px', color: '#374151', background: 'white' }}
+                      >
+                        <option value="">— Select correct room —</option>
+                        {Object.entries(roomNameById)
+                          .sort(([, a], [, b]) => {
+                            const collator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
+                            return collator.compare(a, b);
+                          })
+                          .map(([id, name]) => (
+                            <option key={id} value={id}>{name}</option>
+                          ))}
+                      </select>
+                      <button
+                        onClick={() => handleCorrectRoom(selectedRow)}
+                        disabled={!correctRoomId || correctingRoom}
+                        style={{
+                          padding: '9px',
+                          background: !correctRoomId || correctingRoom ? '#d1d5db' : '#d97706',
+                          color: !correctRoomId || correctingRoom ? '#9ca3af' : 'white',
+                          border: 'none',
+                          borderRadius: '7px',
+                          cursor: !correctRoomId || correctingRoom ? 'not-allowed' : 'pointer',
+                          fontWeight: 600,
+                          fontSize: '13px',
+                        }}
+                      >
+                        {correctingRoom ? 'Correcting…' : 'Apply Correction'}
+                      </button>
+                    </div>
+                  )}
+
+                  {correctRoomResult && (
+                    <div style={{
+                      padding: '8px 12px',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      fontWeight: 500,
+                      background: correctRoomResult.ok ? '#f0fdf4' : '#fef2f2',
+                      border: `1px solid ${correctRoomResult.ok ? '#86efac' : '#fca5a5'}`,
+                      color: correctRoomResult.ok ? '#15803d' : '#991b1b',
+                      wordBreak: 'break-all',
+                    }}>
+                      {correctRoomResult.message}
                     </div>
                   )}
                 </div>
