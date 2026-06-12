@@ -266,6 +266,7 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
           email: buildGuestSyntheticEmail(firstName, lastName),
           checkInDate: checkInYmd,
           checkOutDate: checkOutYmd,
+          allowOverbooking: true,
           ...(placeholderReservationID ? { placeholderReservationID } : {}),
         });
 
