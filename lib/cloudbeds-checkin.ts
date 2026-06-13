@@ -1446,6 +1446,25 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     allowOverbooking?: boolean;
   }
 
+  /**
+   * Room types that must never be used as the "vehicle" type when creating an overbooking
+   * reservation in a different room type (unassigned-last-resort / create-then-unassign paths).
+   * These are premium or incompatible room classes that should not be billed or assigned to
+   * TYE / interior-room guests even temporarily.
+   */
+  function isExcludedOverbookingFallbackType(roomTypeName: string | null | undefined): boolean {
+    if (!roomTypeName) return false;
+    const n = roomTypeName.trim().toLowerCase().replace(/\s+/g, ' ');
+    return (
+      n.includes('deluxe double queen') ||
+      n.includes('deluxe queen') ||
+      n === 'king' ||
+      n.includes('deluxe king') ||
+      n.includes('suite') ||
+      n.includes('conference')
+    );
+  }
+
   /** True when the Cloudbeds error response indicates an overbooking or availability block. */
   function isOverbookingError(data: any): boolean {
     // Cloudbeds may nest the error message under data.message, data.error, data.data.message,
@@ -1716,11 +1735,15 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       candidateTypeIDs.push(s);
     };
     pushLastResort(roomTypeIDStr);
-    // Add all other room types from the full property room list
+    // Add other room types from the full property room list, skipping premium/incompatible types
+    // that should never be used as a vehicle for overbooking reservations (e.g. Deluxe Double Queen, King).
     try {
       const allRoomsForFallback = await fetchAllRoomsPagesMerged(apiV13, CLOUDBEDS_PROPERTY_ID, CLOUDBEDS_API_KEY);
       for (const r of allRoomsForFallback) {
-        pushLastResort(r?.roomTypeID ?? r?.roomType_id);
+        const tname = String(r?.roomTypeName ?? r?.roomType ?? '').trim();
+        if (!isExcludedOverbookingFallbackType(tname)) {
+          pushLastResort(r?.roomTypeID ?? r?.roomType_id);
+        }
       }
     } catch { /* ignore — candidateTypeIDs already has the primary type */ }
 
@@ -1874,7 +1897,12 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
         const allRoomsForCreate = await fetchAllRoomsPagesMerged(
           apiV13, CLOUDBEDS_PROPERTY_ID, CLOUDBEDS_API_KEY
         );
-        for (const r of allRoomsForCreate) pushCreate(r?.roomTypeID ?? r?.roomType_id);
+        for (const r of allRoomsForCreate) {
+          const tname = String(r?.roomTypeName ?? r?.roomType ?? '').trim();
+          if (!isExcludedOverbookingFallbackType(tname)) {
+            pushCreate(r?.roomTypeID ?? r?.roomType_id);
+          }
+        }
       } catch { /* ignore */ }
 
       for (const typeID of candidateTypeIDs) {
@@ -2137,7 +2165,17 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
         reservationID: recoveredPayload.reservationID ?? recoveredPayload.data?.reservationID,
         note: 'postReservation failed but same guest+stay+room reservation exists — reusing for retry',
       });
-    } else if (!(await escalateAfterFailedPostReservation(first.data))) {
+    } else if (await escalateAfterFailedPostReservation(first.data)) {
+      // The initial booking was rejected — we succeeded via an overbooking/fallback path.
+      // The guest's physical room is occupied by another guest, so the reservation must stay
+      // in confirmed (unassigned) status. Staff will assign the room in Cloudbeds.
+      // Do NOT check the guest in, regardless of physicalRoomPinnedInCreate.
+      confirmedPayOnly = true;
+      log('3_escalation_confirmed_pay_only', {
+        note: 'Initial postReservation failed; escalation succeeded — locking to confirmedPayOnly to prevent check-in of occupied room',
+        physicalRoomPinnedInCreate,
+      });
+    } else {
       const msg = first.data?.message || first.text || 'Failed to create reservation in Cloudbeds';
       throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
     }
@@ -2150,7 +2188,14 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
         'Room ' + JSON.stringify(selectedRoomName ?? roomName) + ' is not available for ' + checkInDate + ' (Cloudbeds could not book that specific room).';
       throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
     }
-    if (!(await escalateAfterFailedPostReservation(first.data))) {
+    if (await escalateAfterFailedPostReservation(first.data)) {
+      // Same as above — escalation succeeded after initial failure, stay confirmed.
+      confirmedPayOnly = true;
+      log('3_escalation_confirmed_pay_only_no_room', {
+        note: 'Initial postReservation failed (no room ID path); escalation succeeded — locking to confirmedPayOnly',
+        physicalRoomPinnedInCreate,
+      });
+    } else {
       const msg = first.data?.message || first.text || 'Failed to create reservation in Cloudbeds';
       throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
     }
