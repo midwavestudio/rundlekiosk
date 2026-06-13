@@ -1449,8 +1449,8 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   /**
    * Room types that must never be used as the "vehicle" type when creating an overbooking
    * reservation in a different room type (unassigned-last-resort / create-then-unassign paths).
-   * These are premium or incompatible room classes that should not be billed or assigned to
-   * TYE / interior-room guests even temporarily.
+   * Excluded: Deluxe Double Queen, Silver Suite, Copper Suite, Conference Room.
+   * King rooms are intentionally allowed as a valid fallback vehicle.
    */
   function isExcludedOverbookingFallbackType(roomTypeName: string | null | undefined): boolean {
     if (!roomTypeName) return false;
@@ -1458,9 +1458,8 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     return (
       n.includes('deluxe double queen') ||
       n.includes('deluxe queen') ||
-      n === 'king' ||
-      n.includes('deluxe king') ||
-      n.includes('suite') ||
+      n.startsWith('silver suite') ||
+      n.startsWith('copper suite') ||
       n.includes('conference')
     );
   }
@@ -2234,8 +2233,9 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     };
   }
 
-  // Physical room was not bookable for these dates, but an unassigned reservation was created:
-  // collect payment and leave status confirmed (no check-in / room assign).
+  // Physical room was not bookable for these dates: collect payment, ensure the reservation
+  // is unassigned (strip any auto-assigned room), and return confirmed status.
+  // Staff will assign the correct room in Cloudbeds once the prior guest has departed.
   if (confirmedPayOnly) {
     const postReservationAmountHint = extractPostReservationAmountHint(reservationData);
     await settleReservationFolio(
@@ -2251,6 +2251,91 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
         settleState,
       }
     );
+
+    // When the escalation path booked with allowOverbooking=1 + a physical room, Cloudbeds
+    // assigned that room. Strip the assignment so the reservation lands in unassigned/confirmed
+    // state — the room belongs to another guest and must not be double-assigned.
+    if (physicalRoomPinnedInCreate) {
+      try {
+        // Fetch the current room line ID — needed by postRoomAssign to target the specific line.
+        let unassignLineId: string | null = extractReservationRoomLineId(reservationData);
+        let unassignSubResID: string | null = null;
+        const grUrl = `${apiV13}/getReservation?propertyID=${encodeURIComponent(CLOUDBEDS_PROPERTY_ID)}&reservationID=${encodeURIComponent(String(reservationID))}`;
+        log('confirmedPayOnly_getReservation_for_unassign_request', { url: grUrl });
+        const grResp = await fetch(grUrl, {
+          headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/json' },
+        });
+        const grText = await grResp.text();
+        let grParsed: any = null;
+        try { grParsed = JSON.parse(grText); } catch { grParsed = null; }
+        log('confirmedPayOnly_getReservation_for_unassign_response', { status: grResp.status, body: grParsed ?? grText });
+        if (grResp.ok && grParsed?.success) {
+          unassignLineId = extractReservationRoomLineId(grParsed) ?? unassignLineId;
+          const d = grParsed.data ?? grParsed;
+          if (!unassignSubResID && Array.isArray(d?.assigned) && d.assigned[0]?.subReservationID) {
+            unassignSubResID = String(d.assigned[0].subReservationID);
+          }
+          if (!unassignLineId && Array.isArray(d?.assigned) && d.assigned[0]?.reservationRoomID) {
+            unassignLineId = String(d.assigned[0].reservationRoomID);
+          }
+        }
+
+        if (unassignLineId) {
+          // Set confirmed before unassigning (Cloudbeds requires confirmed status for postRoomAssign unassign).
+          const confirmParams = new URLSearchParams();
+          confirmParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+          confirmParams.append('reservationID', String(reservationID));
+          confirmParams.append('status', 'confirmed');
+          log('confirmedPayOnly_putReservation_confirm_request', { reservationID: String(reservationID) });
+          try {
+            const cResp = await fetch(`${apiV13}/putReservation`, {
+              method: 'PUT',
+              headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: confirmParams.toString(),
+            });
+            const cText = await cResp.text();
+            let cData: any = {};
+            try { cData = JSON.parse(cText); } catch { cData = {}; }
+            log('confirmedPayOnly_putReservation_confirm_response', { status: cResp.status, ok: cResp.ok && cData.success === true });
+          } catch (e: any) {
+            log('confirmedPayOnly_putReservation_confirm_error', undefined, undefined, e?.message);
+          }
+
+          // Unassign: postRoomAssign with newRoomID='' removes the physical room.
+          const unassignParams = new URLSearchParams();
+          unassignParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+          unassignParams.append('reservationID', String(reservationID));
+          unassignParams.append('reservationRoomID', unassignLineId);
+          unassignParams.append('newRoomID', '');
+          if (unassignSubResID && unassignSubResID !== String(reservationID)) {
+            unassignParams.append('subReservationID', unassignSubResID);
+          }
+          log('confirmedPayOnly_postRoomAssign_unassign_request', {
+            reservationID: String(reservationID),
+            reservationRoomID: unassignLineId,
+          });
+          try {
+            const uResp = await fetch(`${apiV13}/postRoomAssign`, {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: unassignParams.toString(),
+            });
+            const uText = await uResp.text();
+            let uData: any = {};
+            try { uData = JSON.parse(uText); } catch { uData = {}; }
+            log('confirmedPayOnly_postRoomAssign_unassign_response', { status: uResp.status, ok: uResp.ok && uData.success === true, body: uData });
+          } catch (e: any) {
+            log('confirmedPayOnly_postRoomAssign_unassign_error', undefined, undefined, e?.message);
+          }
+        } else {
+          log('confirmedPayOnly_unassign_skipped', { note: 'No reservationRoomID found — reservation may already be unassigned' });
+        }
+      } catch (e: any) {
+        log('confirmedPayOnly_unassign_outer_error', undefined, undefined, e?.message);
+        // Non-fatal — the reservation exists and is paid; staff will see it as assigned and can manually unassign.
+      }
+    }
+
     return {
       success: true,
       guestID,
