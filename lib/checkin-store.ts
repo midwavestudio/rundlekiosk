@@ -465,25 +465,26 @@ export async function findByGuestName(
 
 /** Max records returned for live polling (no date range). */
 const MAX_POLL_RECORDS = 2000;
-/** Max records returned for date-range exports (~35 days at typical volume). */
-const MAX_RANGE_RECORDS = 10_000;
+/** Safety ceiling for date-range exports — pagination runs until the query is exhausted. */
+const MAX_RANGE_SAFETY = 50_000;
 const RANGE_QUERY_PAGE_SIZE = 500;
+/** Firestore prefix-range upper bound (includes all strings starting with a YYYY-MM-DD date). */
+const YMD_RANGE_END_SUFFIX = '\uf8ff';
 
 /**
- * Page through a Firestore query until exhausted or `maxDocs` is reached.
- * Required for exports: a single `.limit(2000)` on each sub-query silently
- * drops the oldest days when the range spans more records than the cap.
+ * Page through a Firestore query until exhausted or `safetyMax` is reached.
+ * Do not treat `safetyMax` as a target — it only guards runaway reads.
  */
 async function paginateFirestoreQuery(
   buildQuery: () => FirebaseFirestore.Query,
-  maxDocs: number,
+  safetyMax: number,
   pageSize = RANGE_QUERY_PAGE_SIZE,
 ): Promise<FirebaseFirestore.QueryDocumentSnapshot[]> {
   const docs: FirebaseFirestore.QueryDocumentSnapshot[] = [];
   let lastDoc: FirebaseFirestore.QueryDocumentSnapshot | null = null;
 
-  while (docs.length < maxDocs) {
-    const take = Math.min(pageSize, maxDocs - docs.length);
+  while (docs.length < safetyMax) {
+    const take = Math.min(pageSize, safetyMax - docs.length);
     let query = buildQuery();
     if (lastDoc) query = query.startAfter(lastDoc);
     const snap = await query.limit(take).get();
@@ -493,7 +494,21 @@ async function paginateFirestoreQuery(
     if (snap.docs.length < take) break;
   }
 
+  if (docs.length >= safetyMax) {
+    console.warn(
+      `[checkin-store] Range export hit safety cap (${safetyMax} docs). Older records may be missing — widen pagination or run backfill.`,
+    );
+  }
+
   return docs;
+}
+
+/** Resolve YYYY-MM-DD for range filtering — prefers stored field, then ISO date prefix. */
+function resolveCheckInDateYmd(record: CheckinRecord): string | undefined {
+  if (record.checkInDateYmd && /^\d{4}-\d{2}-\d{2}$/.test(record.checkInDateYmd)) {
+    return record.checkInDateYmd;
+  }
+  return deriveCheckInDateYmd(record.checkInTime);
 }
 
 /**
@@ -511,7 +526,7 @@ export async function getCheckinRecords(opts: {
     /^\d{4}-\d{2}-\d{2}$/.test(opts.from) &&
     /^\d{4}-\d{2}-\d{2}$/.test(opts.to);
   const cap = hasRange
-    ? Math.min(opts.limit ?? MAX_RANGE_RECORDS, MAX_RANGE_RECORDS)
+    ? Math.min(opts.limit ?? MAX_RANGE_SAFETY, MAX_RANGE_SAFETY)
     : Math.min(opts.limit ?? 500, MAX_POLL_RECORDS);
 
   const db = getDb();
@@ -524,16 +539,12 @@ export async function getCheckinRecords(opts: {
         //   saved with the checkInDateYmd field (most records from ~mid-April
         //   onward once the field was introduced).
         //
-        // Query B — `checkInTime` ISO string range: catches older records that
-        //   were saved before checkInDateYmd was added.  ISO date strings sort
-        //   lexicographically identically to calendar order, so this works
-        //   reliably as long as checkInTime starts with "YYYY-MM-DD".
-        //
-        // Merging both result sets with a dedup-by-doc-id gives complete
-        // coverage regardless of which field a record has.
-        const fromIsoStart = `${opts.from}T00:00:00`;
-        // Upper bound without forcing Z so local ISO strings on the last day match.
-        const toIsoEnd = `${opts.to}T23:59:59.999`;
+        // Query B — `checkInTime` string range: catches older records that
+        //   were saved before checkInDateYmd was added.  Bounds use bare YMD
+        //   at the low end (so date-only values like "2026-03-31" match) and
+        //   a Unicode suffix at the high end (so "2026-04-30T23:59:59" matches).
+        const fromTimeBound = opts.from!;
+        const toTimeBound = `${opts.to!}${YMD_RANGE_END_SUFFIX}`;
 
         const [docsA, docsB] = await Promise.all([
           paginateFirestoreQuery(
@@ -553,8 +564,8 @@ export async function getCheckinRecords(opts: {
             () =>
               db
                 .collection(COLLECTION)
-                .where('checkInTime', '>=', fromIsoStart)
-                .where('checkInTime', '<=', toIsoEnd)
+                .where('checkInTime', '>=', fromTimeBound)
+                .where('checkInTime', '<=', toTimeBound)
                 .orderBy('checkInTime', 'desc'),
             cap,
           ).catch((err) => {
@@ -579,7 +590,7 @@ export async function getCheckinRecords(opts: {
         // Final JS filter to catch any edge-case records that slipped through
         // (e.g. checkInTime stored without timezone suffix — compare as YMD).
         const results = Array.from(merged.values()).filter((r) => {
-          const ymd = r.checkInDateYmd ?? r.checkInTime?.slice(0, 10);
+          const ymd = resolveCheckInDateYmd(r);
           if (!ymd) return false;
           return ymd >= opts.from! && ymd <= opts.to!;
         });
@@ -591,7 +602,7 @@ export async function getCheckinRecords(opts: {
           return tb < ta ? -1 : tb > ta ? 1 : 0;
         });
 
-        return results.slice(0, cap);
+        return results;
       }
 
       // No date range: return the most-recent records.

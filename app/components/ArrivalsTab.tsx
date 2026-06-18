@@ -27,6 +27,8 @@ interface CheckedInGuest {
   phoneNumber: string;
   class: 'TYE' | 'MOW';
   checkInTime: string;
+  /** Calendar check-in date (YYYY-MM-DD) when present on server records. */
+  checkInDateYmd?: string;
   checkOutTime?: string;
   cloudbedsGuestID?: string;
   cloudbedsReservationID?: string;
@@ -140,6 +142,19 @@ function inDateRange(iso: string, from: Date, to: Date): boolean {
     const toDay = new Date(to.getFullYear(), to.getMonth(), to.getDate());
     return day >= fromDay && day <= toDay;
   } catch { return false; }
+}
+
+/** YMD range check for exports — avoids timezone drift from bare ISO date strings. */
+function recordCheckInYmd(iso: string, explicitYmd?: string): string | undefined {
+  if (explicitYmd && /^\d{4}-\d{2}-\d{2}$/.test(explicitYmd)) return explicitYmd;
+  if (iso.length === 10 && /^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
+  return isoToLocalYmd(iso);
+}
+
+function inYmdRange(iso: string, fromYmd: string, toYmd: string, explicitYmd?: string): boolean {
+  const ymd = recordCheckInYmd(iso, explicitYmd);
+  if (!ymd) return false;
+  return ymd >= fromYmd && ymd <= toYmd;
 }
 
 function exportCSV(rows: Row[], label: string) {
@@ -591,10 +606,10 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
    * that, any export spanning more than a few days would silently drop records
    * outside that window.
    *
-   * The API allows up to 10 000 records when a date range is specified.
+   * The API paginates until the full range is loaded (50k safety cap).
    */
   const fetchExportRecords = async (fromYmd: string, toYmd: string, signal?: AbortSignal): Promise<Row[]> => {
-    const params = new URLSearchParams({ from: fromYmd, to: toYmd, limit: '10000' });
+    const params = new URLSearchParams({ from: fromYmd, to: toYmd, limit: '50000' });
     const res = await fetch(`/api/checkin-records?${params.toString()}`, { signal });
     if (!res.ok) throw new Error(`Server error: ${res.status}`);
     const data = await res.json();
@@ -611,6 +626,9 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
         phoneNumber: String(r.phoneNumber ?? ''),
         class: (r.class ?? 'TYE') as 'TYE' | 'MOW',
         checkInTime: String(r.checkInTime ?? ''),
+        ...(r.checkInDateYmd && /^\d{4}-\d{2}-\d{2}$/.test(String(r.checkInDateYmd))
+          ? { checkInDateYmd: String(r.checkInDateYmd) }
+          : {}),
         checkOutTime: r.checkOutTime ? String(r.checkOutTime) : undefined,
         cloudbedsReservationID: r.cloudbedsReservationID ? String(r.cloudbedsReservationID) : undefined,
         cloudbedsGuestID: r.cloudbedsGuestID ? String(r.cloudbedsGuestID) : undefined,
@@ -643,11 +661,10 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
       });
     }
 
-    // Secondary filter in JS to guarantee boundary dates are exactly correct
-    // regardless of how the server applied the date range query.
-    const fromDate = new Date(fromYmd + 'T00:00:00');
-    const toDate = new Date(toYmd + 'T23:59:59');
-    return allRecords.filter((r) => inDateRange(r.checkInIso, fromDate, toDate));
+    // Secondary filter — match server YMD logic (prefer stored checkInDateYmd).
+    return allRecords.filter((r) =>
+      inYmdRange(r.checkInIso, fromYmd, toYmd, r.rawData.checkInDateYmd),
+    );
   };
 
   /** Preview count: update whenever export range dates change while panel is open. */
@@ -661,16 +678,19 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
     exportPreviewAbortRef.current = ctrl;
     setExportPreviewCount(null);
 
-    const params = new URLSearchParams({ from: exportFrom, to: exportTo, limit: '10000' });
+    const params = new URLSearchParams({ from: exportFrom, to: exportTo, limit: '50000' });
     fetch(`/api/checkin-records?${params.toString()}`, { signal: ctrl.signal })
       .then((r) => r.json())
       .then((data) => {
         if (ctrl.signal.aborted) return;
         if (data.success && Array.isArray(data.records)) {
-          const from = new Date(exportFrom + 'T00:00:00');
-          const to = new Date(exportTo + 'T23:59:59');
           const count = (data.records as any[]).filter((r) =>
-            inDateRange(String(r.checkInTime ?? ''), from, to)
+            inYmdRange(
+              String(r.checkInTime ?? ''),
+              exportFrom,
+              exportTo,
+              r.checkInDateYmd ? String(r.checkInDateYmd) : undefined,
+            ),
           ).length;
           setExportPreviewCount(count);
         }
