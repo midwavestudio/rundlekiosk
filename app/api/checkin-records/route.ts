@@ -36,20 +36,19 @@ function bustRecordsCache() {
  *
  * Returns check-in records whose checkInTime falls within [from, to].
  * Both date params are optional; when omitted, returns the most-recent records.
- * `limit` caps Firestore reads (default 500, max 500); admin UI should pass a
- * smaller limit and a date window to stay under Spark daily quotas.
+ * `limit` caps Firestore reads (default 500 without range, 10 000 with range).
  */
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const from = searchParams.get('from') ?? '';
     const to = searchParams.get('to') ?? '';
-    // When a date range is provided (export scenario), allow up to 2000 records
-    // so that multi-month exports are not silently truncated. Without a range
+    // When a date range is provided (export scenario), allow up to 10 000 records
+    // so that multi-week exports are not silently truncated. Without a range
     // (live-poll scenario) keep the conservative 500-doc cap to protect quotas.
     const hasRange = searchParams.has('from') && searchParams.has('to');
-    const hardCap = hasRange ? 2000 : 500;
-    let limit = hasRange ? 2000 : 500;
+    const hardCap = hasRange ? 10_000 : 500;
+    let limit = hasRange ? 10_000 : 500;
     if (searchParams.has('limit')) {
       const n = parseInt(searchParams.get('limit')!, 10);
       if (Number.isFinite(n)) limit = Math.min(Math.max(n, 1), hardCap);

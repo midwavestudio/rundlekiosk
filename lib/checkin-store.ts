@@ -463,6 +463,39 @@ export async function findByGuestName(
   return memStore.find(isMatch) ?? null;
 }
 
+/** Max records returned for live polling (no date range). */
+const MAX_POLL_RECORDS = 2000;
+/** Max records returned for date-range exports (~35 days at typical volume). */
+const MAX_RANGE_RECORDS = 10_000;
+const RANGE_QUERY_PAGE_SIZE = 500;
+
+/**
+ * Page through a Firestore query until exhausted or `maxDocs` is reached.
+ * Required for exports: a single `.limit(2000)` on each sub-query silently
+ * drops the oldest days when the range spans more records than the cap.
+ */
+async function paginateFirestoreQuery(
+  buildQuery: () => FirebaseFirestore.Query,
+  maxDocs: number,
+  pageSize = RANGE_QUERY_PAGE_SIZE,
+): Promise<FirebaseFirestore.QueryDocumentSnapshot[]> {
+  const docs: FirebaseFirestore.QueryDocumentSnapshot[] = [];
+  let lastDoc: FirebaseFirestore.QueryDocumentSnapshot | null = null;
+
+  while (docs.length < maxDocs) {
+    const take = Math.min(pageSize, maxDocs - docs.length);
+    let query = buildQuery();
+    if (lastDoc) query = query.startAfter(lastDoc);
+    const snap = await query.limit(take).get();
+    if (snap.empty) break;
+    docs.push(...snap.docs);
+    lastDoc = snap.docs[snap.docs.length - 1];
+    if (snap.docs.length < take) break;
+  }
+
+  return docs;
+}
+
 /**
  * Retrieve the most recent check-in records.
  * Optionally filter to a YYYY-MM-DD date range (applied in JS after fetching a large page).
@@ -472,19 +505,20 @@ export async function getCheckinRecords(opts: {
   to?: string;
   limit?: number;
 } = {}): Promise<CheckinRecord[]> {
-  const cap = Math.min(opts.limit ?? 500, 2000);
+  const hasRange =
+    opts.from &&
+    opts.to &&
+    /^\d{4}-\d{2}-\d{2}$/.test(opts.from) &&
+    /^\d{4}-\d{2}-\d{2}$/.test(opts.to);
+  const cap = hasRange
+    ? Math.min(opts.limit ?? MAX_RANGE_RECORDS, MAX_RANGE_RECORDS)
+    : Math.min(opts.limit ?? 500, MAX_POLL_RECORDS);
 
   const db = getDb();
   if (db) {
     try {
-      const hasRange =
-        opts.from &&
-        opts.to &&
-        /^\d{4}-\d{2}-\d{2}$/.test(opts.from) &&
-        /^\d{4}-\d{2}-\d{2}$/.test(opts.to);
-
       if (hasRange) {
-        // Run two parallel queries and merge:
+        // Run two parallel paginated queries and merge:
         //
         // Query A — indexed `checkInDateYmd` range: returns records that were
         //   saved with the checkInDateYmd field (most records from ~mid-April
@@ -498,49 +532,47 @@ export async function getCheckinRecords(opts: {
         // Merging both result sets with a dedup-by-doc-id gives complete
         // coverage regardless of which field a record has.
         const fromIsoStart = `${opts.from}T00:00:00`;
-        const toIsoEnd   = `${opts.to}T23:59:59.999Z`;
+        // Upper bound without forcing Z so local ISO strings on the last day match.
+        const toIsoEnd = `${opts.to}T23:59:59.999`;
 
-        const [snapA, snapB] = await Promise.all([
-          // Query A: indexed date field
-          db
-            .collection(COLLECTION)
-            .where('checkInDateYmd', '>=', opts.from!)
-            .where('checkInDateYmd', '<=', opts.to!)
-            .orderBy('checkInDateYmd', 'desc')
-            .orderBy('checkInTime', 'desc')
-            .limit(cap)
-            .get()
-            .catch((err) => {
-              console.warn('[checkin-store] checkInDateYmd range query failed:', err?.message);
-              return null;
-            }),
-          // Query B: checkInTime ISO string range (lexicographic = chronological)
-          db
-            .collection(COLLECTION)
-            .where('checkInTime', '>=', fromIsoStart)
-            .where('checkInTime', '<=', toIsoEnd)
-            .orderBy('checkInTime', 'desc')
-            .limit(cap)
-            .get()
-            .catch((err) => {
-              console.warn('[checkin-store] checkInTime range query failed:', err?.message);
-              return null;
-            }),
+        const [docsA, docsB] = await Promise.all([
+          paginateFirestoreQuery(
+            () =>
+              db
+                .collection(COLLECTION)
+                .where('checkInDateYmd', '>=', opts.from!)
+                .where('checkInDateYmd', '<=', opts.to!)
+                .orderBy('checkInDateYmd', 'desc')
+                .orderBy('checkInTime', 'desc'),
+            cap,
+          ).catch((err) => {
+            console.warn('[checkin-store] checkInDateYmd range query failed:', err?.message);
+            return [] as FirebaseFirestore.QueryDocumentSnapshot[];
+          }),
+          paginateFirestoreQuery(
+            () =>
+              db
+                .collection(COLLECTION)
+                .where('checkInTime', '>=', fromIsoStart)
+                .where('checkInTime', '<=', toIsoEnd)
+                .orderBy('checkInTime', 'desc'),
+            cap,
+          ).catch((err) => {
+            console.warn('[checkin-store] checkInTime range query failed:', err?.message);
+            return [] as FirebaseFirestore.QueryDocumentSnapshot[];
+          }),
         ]);
 
         // Merge by doc ID, backfilling checkInDateYmd in memory for any record
         // that still lacks it (so the JS date filter below works correctly).
         const merged = new Map<string, CheckinRecord>();
-        for (const snap of [snapA, snapB]) {
-          if (!snap) continue;
-          for (const doc of snap.docs) {
-            if (!merged.has(doc.id)) {
-              const record = docToRecord(doc);
-              if (!record.checkInDateYmd && record.checkInTime) {
-                record.checkInDateYmd = deriveCheckInDateYmd(record.checkInTime);
-              }
-              merged.set(doc.id, record);
+        for (const doc of [...docsA, ...docsB]) {
+          if (!merged.has(doc.id)) {
+            const record = docToRecord(doc);
+            if (!record.checkInDateYmd && record.checkInTime) {
+              record.checkInDateYmd = deriveCheckInDateYmd(record.checkInTime);
             }
+            merged.set(doc.id, record);
           }
         }
 

@@ -591,10 +591,10 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
    * that, any export spanning more than a few days would silently drop records
    * outside that window.
    *
-   * The API allows up to 2000 records when a date range is specified.
+   * The API allows up to 10 000 records when a date range is specified.
    */
   const fetchExportRecords = async (fromYmd: string, toYmd: string, signal?: AbortSignal): Promise<Row[]> => {
-    const params = new URLSearchParams({ from: fromYmd, to: toYmd, limit: '2000' });
+    const params = new URLSearchParams({ from: fromYmd, to: toYmd, limit: '10000' });
     const res = await fetch(`/api/checkin-records?${params.toString()}`, { signal });
     if (!res.ok) throw new Error(`Server error: ${res.status}`);
     const data = await res.json();
@@ -661,7 +661,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
     exportPreviewAbortRef.current = ctrl;
     setExportPreviewCount(null);
 
-    const params = new URLSearchParams({ from: exportFrom, to: exportTo, limit: '2000' });
+    const params = new URLSearchParams({ from: exportFrom, to: exportTo, limit: '10000' });
     fetch(`/api/checkin-records?${params.toString()}`, { signal: ctrl.signal })
       .then((r) => r.json())
       .then((data) => {
