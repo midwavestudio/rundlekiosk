@@ -5,10 +5,16 @@ import { findActiveByName } from '@/lib/checkin-store';
  * Search currently checked-in reservations by name for kiosk checkout.
  *
  * Primary source: Cloudbeds getReservations (status=checked_in).
- * Fallback source: local Firestore kiosk_checkin_records (guests who checked
- * in via the kiosk but whose reservation is no longer queryable from Cloudbeds,
- * e.g. because the reservation was modified after check-in).  Fallback results
- * carry `source: 'local'` so the UI can display a contextual note.
+ * Secondary source: Firestore kiosk_checkin_records (ALWAYS merged in, not just
+ * when Cloudbeds returns zero results). This ensures guests who checked in via
+ * the kiosk can always find themselves at checkout even when:
+ *   - The Cloudbeds check-in failed or was not completed
+ *   - The reservation was modified after kiosk check-in
+ *   - Cloudbeds returned partial results that don't include this guest
+ *
+ * Firestore results carry `source: 'local'` so the UI can display a contextual note.
+ * Deduplication by reservationID prevents the same guest showing twice when
+ * both sources return them.
  *
  * Important: Cloudbeds getReservations uses firstName / lastName filters (not guestName).
  * We keep requests small to avoid provider-side "could not accommodate your request" errors.
@@ -173,7 +179,25 @@ export async function GET(request: NextRequest) {
   const apiBase = `${baseUrl.replace(/\/$/, '')}/v1.3`;
 
   if (!CLOUDBEDS_API_KEY || !CLOUDBEDS_PROPERTY_ID) {
-    return NextResponse.json({ success: true, guests: [], mockMode: true });
+    // No Cloudbeds credentials — search Firestore only.
+    try {
+      const localRecords = await findActiveByName(name);
+      const localGuests = localRecords.map((r) => ({
+        firstName: r.firstName,
+        lastName: r.lastName,
+        displayName: [r.firstName, r.lastName].filter(Boolean).join(' ') || 'Guest',
+        roomNumber: r.roomNumber ?? '',
+        cloudbedsReservationID: r.cloudbedsReservationID ?? '',
+        cloudbedsGuestID: r.cloudbedsGuestID ?? '',
+        checkInDate: r.checkInDateYmd ?? r.checkInTime?.slice(0, 10) ?? '',
+        checkOutDate: '',
+        localRecordID: r.id,
+        source: 'local' as const,
+      }));
+      return NextResponse.json({ success: true, guests: localGuests, mockMode: true });
+    } catch {
+      return NextResponse.json({ success: true, guests: [], mockMode: true });
+    }
   }
 
   const headers: HeadersInit = {
@@ -181,71 +205,93 @@ export async function GET(request: NextRequest) {
     'Content-Type': 'application/json',
   };
 
-  try {
-    const parts = name.split(/\s+/).filter(Boolean);
-    let rawList: any[] = [];
-    if (parts.length >= 2) {
-      rawList = await fetchCheckedIn(apiBase, CLOUDBEDS_PROPERTY_ID, headers, {
-        firstName: parts[0],
-        lastName: parts.slice(1).join(' '),
-      });
-    } else {
-      const token = parts[0];
-      const [asFirst, asLast] = await Promise.all([
-        fetchCheckedIn(apiBase, CLOUDBEDS_PROPERTY_ID, headers, { firstName: token }),
-        fetchCheckedIn(apiBase, CLOUDBEDS_PROPERTY_ID, headers, { lastName: token }),
-      ]);
-      rawList = uniqueByReservation([...asFirst, ...asLast]);
-    }
+  // Run Cloudbeds search and Firestore search in parallel so neither blocks the other.
+  // Firestore results are ALWAYS merged in (not just when Cloudbeds returns zero) so that
+  // guests who checked in via the kiosk can always find themselves at checkout regardless
+  // of whether the Cloudbeds reservation was successfully created / updated.
+  const parts = name.split(/\s+/).filter(Boolean);
 
-    const matched = rawList.filter((r) => reservationMatchesQuery(r, name));
-    const deduped = keepMostRecentPerGuest(matched);
-
-    const guests = deduped.map((r) => {
-      const { firstName, lastName, displayName } = extractDisplayName(r);
-      return {
-        firstName,
-        lastName,
-        displayName,
-        roomNumber: extractRoomName(r),
-        cloudbedsReservationID: String(r.reservationID ?? ''),
-        cloudbedsGuestID: String(r.guestID ?? ''),
-        checkInDate: r.startDate ?? r.checkInDate ?? '',
-        checkOutDate: r.endDate ?? r.checkOutDate ?? '',
-        source: 'cloudbeds' as const,
-      };
-    });
-
-    // When Cloudbeds returns no matches, fall back to locally stored check-in
-    // records so guests who were checked in via the kiosk but whose reservation
-    // is no longer visible in Cloudbeds can still check out.
-    if (guests.length === 0) {
-      try {
-        const localRecords = await findActiveByName(name);
-        const localGuests = localRecords.map((r) => ({
-          firstName: r.firstName,
-          lastName: r.lastName,
-          displayName: [r.firstName, r.lastName].filter(Boolean).join(' ') || 'Guest',
-          roomNumber: r.roomNumber ?? '',
-          cloudbedsReservationID: r.cloudbedsReservationID ?? '',
-          cloudbedsGuestID: r.cloudbedsGuestID ?? '',
-          checkInDate: r.checkInDateYmd ?? r.checkInTime?.slice(0, 10) ?? '',
-          checkOutDate: '',
-          /** Firestore document ID — used to record checkout when no Cloudbeds reservation ID. */
-          localRecordID: r.id,
-          source: 'local' as const,
-        }));
-        return NextResponse.json({ success: true, guests: localGuests });
-      } catch (localErr) {
-        console.error('search-checked-in local fallback error:', localErr);
-        // Return the empty Cloudbeds result rather than surfacing the error.
+  const [cloudbedsResult, localResult] = await Promise.allSettled([
+    // Cloudbeds search
+    (async (): Promise<any[]> => {
+      let rawList: any[] = [];
+      if (parts.length >= 2) {
+        rawList = await fetchCheckedIn(apiBase, CLOUDBEDS_PROPERTY_ID, headers, {
+          firstName: parts[0],
+          lastName: parts.slice(1).join(' '),
+        });
+      } else {
+        const token = parts[0];
+        const [asFirst, asLast] = await Promise.all([
+          fetchCheckedIn(apiBase, CLOUDBEDS_PROPERTY_ID, headers, { firstName: token }),
+          fetchCheckedIn(apiBase, CLOUDBEDS_PROPERTY_ID, headers, { lastName: token }),
+        ]);
+        rawList = uniqueByReservation([...asFirst, ...asLast]);
       }
-    }
+      return rawList.filter((r) => reservationMatchesQuery(r, name));
+    })(),
+    // Firestore search (always run, not just as fallback)
+    findActiveByName(name),
+  ]);
 
-    return NextResponse.json({ success: true, guests });
-  } catch (err) {
-    console.error('search-checked-in error:', err);
-    // Keep kiosk flow smooth: return empty list instead of surfacing provider internals to guests.
-    return NextResponse.json({ success: true, guests: [] });
+  if (cloudbedsResult.status === 'rejected') {
+    console.error('search-checked-in cloudbeds error:', cloudbedsResult.reason);
   }
+  if (localResult.status === 'rejected') {
+    console.error('search-checked-in firestore error:', localResult.reason);
+  }
+
+  const cloudbedsMatched = cloudbedsResult.status === 'fulfilled' ? cloudbedsResult.value : [];
+  const firestoreRecords = localResult.status === 'fulfilled' ? localResult.value : [];
+
+  // Build the Cloudbeds guest list
+  const cloudbedsGuests = keepMostRecentPerGuest(cloudbedsMatched).map((r) => {
+    const { firstName, lastName, displayName } = extractDisplayName(r);
+    return {
+      firstName,
+      lastName,
+      displayName,
+      roomNumber: extractRoomName(r),
+      cloudbedsReservationID: String(r.reservationID ?? ''),
+      cloudbedsGuestID: String(r.guestID ?? ''),
+      checkInDate: r.startDate ?? r.checkInDate ?? '',
+      checkOutDate: r.endDate ?? r.checkOutDate ?? '',
+      source: 'cloudbeds' as const,
+    };
+  });
+
+  // Build Firestore guest list — exclude any reservation already returned by Cloudbeds
+  // (matched by reservationID) so the same guest doesn't appear twice.
+  const cloudbedsReservationIDs = new Set(
+    cloudbedsGuests
+      .map((g) => g.cloudbedsReservationID)
+      .filter(Boolean)
+  );
+
+  const localGuests = firestoreRecords
+    .filter((r) => {
+      // Skip if already covered by Cloudbeds
+      if (r.cloudbedsReservationID && cloudbedsReservationIDs.has(r.cloudbedsReservationID)) {
+        return false;
+      }
+      return true;
+    })
+    .map((r) => ({
+      firstName: r.firstName,
+      lastName: r.lastName,
+      displayName: [r.firstName, r.lastName].filter(Boolean).join(' ') || 'Guest',
+      roomNumber: r.roomNumber ?? '',
+      cloudbedsReservationID: r.cloudbedsReservationID ?? '',
+      cloudbedsGuestID: r.cloudbedsGuestID ?? '',
+      checkInDate: r.checkInDateYmd ?? r.checkInTime?.slice(0, 10) ?? '',
+      checkOutDate: '',
+      /** Firestore document ID — used to record checkout when no Cloudbeds reservation ID. */
+      localRecordID: r.id,
+      source: 'local' as const,
+    }));
+
+  // Cloudbeds results first (authoritative), then any additional Firestore-only guests.
+  const guests = [...cloudbedsGuests, ...localGuests];
+
+  return NextResponse.json({ success: true, guests });
 }
