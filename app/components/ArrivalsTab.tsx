@@ -190,7 +190,7 @@ function initials(name: string): string {
 function confirmDeleteWithPhrase(message: string): boolean {
   const typed = prompt(`${message}\n\nEnter the passcode:`);
   if (typed === null) return false;
-  if ((typed ?? '').trim().toLowerCase() !== 'gj') {
+  if ((typed ?? '').trim().toLowerCase() !== 'rs') {
     alert('Deletion cancelled. Passcode did not match.');
     return false;
   }
@@ -1400,7 +1400,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
                         onMouseEnter={e => (e.currentTarget.style.color = '#ef4444')}
                         onMouseLeave={e => (e.currentTarget.style.color = '#9ca3af')}
                       >
-                        Ã—
+                        {'\u00D7'}
                       </button>
                     </div>
                   </div>

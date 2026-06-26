@@ -885,7 +885,7 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
                         onMouseEnter={e => (e.currentTarget.style.color = '#ef4444')}
                         onMouseLeave={e => (e.currentTarget.style.color = '#9ca3af')}
                       >
-                        Ã—
+                        {'\u00D7'}
                       </button>
                     </div>
                   </div>
