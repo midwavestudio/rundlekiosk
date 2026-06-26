@@ -1,56 +1,82 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 
 /**
- * Keeps the kiosk PWA fresh when running under Guided Access on an iPad.
+ * Keeps the kiosk PWA fresh without interrupting an active guest session.
  *
- * Two complementary strategies:
- *
- * 1. Service-worker update detection — whenever the browser installs a new
- *    service worker (triggered by a deploy), `controllerchange` fires and we
- *    reload immediately. Because `skipWaiting: true` is set in next.config.js
- *    the new SW activates right away, so no manual prompt is needed.
- *
- * 2. Periodic hard-reload every 30 minutes — catches edge cases where the SW
- *    update event was missed (e.g. the iPad was asleep) and also clears any
- *    stale React state that may have built up during a long kiosk session.
+ * - Reloads only after a new service worker activates AND the kiosk has been
+ *   idle for a short period (no touches / typing).
+ * - Skips reload on the first service-worker install (controllerchange on
+ *   first visit used to cause immediate reload loops).
+ * - Does not schedule periodic hard reloads — those reset check-in/out flows.
  */
+const IDLE_BEFORE_RELOAD_MS = 60_000;
+const SW_UPDATE_CHECK_MS = 60 * 60 * 1000;
+const IDLE_POLL_MS = 5_000;
+
+const ACTIVITY_EVENTS = [
+  'mousedown',
+  'mousemove',
+  'touchstart',
+  'keydown',
+  'click',
+  'scroll',
+] as const;
+
 export default function KioskAutoUpdate() {
+  const lastActivityRef = useRef(Date.now());
+  const pendingReloadRef = useRef(false);
+
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    // --- Strategy 1: react to a new SW taking control ---
-    const sw = navigator.serviceWorker;
-    if (sw) {
-      const onControllerChange = () => {
-        // A new service worker just activated — reload to serve fresh assets.
-        window.location.reload();
-      };
-      sw.addEventListener('controllerchange', onControllerChange);
+    const markActive = () => {
+      lastActivityRef.current = Date.now();
+    };
 
-      // Proactively check for a new SW every 30 minutes as well.
-      const checkInterval = window.setInterval(() => {
-        sw.ready.then((reg) => reg.update()).catch(() => {/* network offline, ignore */});
-      }, 30 * 60 * 1000);
-
-      return () => {
-        sw.removeEventListener('controllerchange', onControllerChange);
-        window.clearInterval(checkInterval);
-      };
+    for (const ev of ACTIVITY_EVENTS) {
+      window.addEventListener(ev, markActive, { passive: true });
     }
-  }, []);
 
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-
-    // --- Strategy 2: hard reload every 30 minutes as a safety net ---
-    const THIRTY_MIN = 30 * 60 * 1000;
-    const reloadTimer = window.setTimeout(() => {
+    const tryReloadWhenIdle = () => {
+      if (!pendingReloadRef.current) return;
+      if (Date.now() - lastActivityRef.current < IDLE_BEFORE_RELOAD_MS) return;
+      pendingReloadRef.current = false;
       window.location.reload();
-    }, THIRTY_MIN);
+    };
 
-    return () => window.clearTimeout(reloadTimer);
+    const idlePoll = window.setInterval(tryReloadWhenIdle, IDLE_POLL_MS);
+
+    const scheduleReload = () => {
+      pendingReloadRef.current = true;
+      tryReloadWhenIdle();
+    };
+
+    const hadController = Boolean(navigator.serviceWorker?.controller);
+    const sw = navigator.serviceWorker;
+
+    let checkInterval: number | undefined;
+    const onControllerChange = () => {
+      if (!hadController) return;
+      scheduleReload();
+    };
+
+    if (sw) {
+      sw.addEventListener('controllerchange', onControllerChange);
+      checkInterval = window.setInterval(() => {
+        sw.ready.then((reg) => reg.update()).catch(() => {});
+      }, SW_UPDATE_CHECK_MS);
+    }
+
+    return () => {
+      for (const ev of ACTIVITY_EVENTS) {
+        window.removeEventListener(ev, markActive);
+      }
+      window.clearInterval(idlePoll);
+      if (checkInterval !== undefined) window.clearInterval(checkInterval);
+      sw?.removeEventListener('controllerchange', onControllerChange);
+    };
   }, []);
 
   return null;

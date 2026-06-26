@@ -9,6 +9,8 @@ import KioskDataSync from './components/KioskDataSync';
 
 type Screen = 'home' | 'checkin' | 'checkout';
 
+const KIOSK_SCREEN_KEY = 'kioskScreen';
+
 export default function Home() {
   const [currentScreen, setCurrentScreen] = useState<Screen>('home');
   const [showFeedback, setShowFeedback] = useState(false);
@@ -16,14 +18,17 @@ export default function Home() {
   const tapCount = useRef(0);
   const tapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Restore the last kiosk screen after an unexpected reload (e.g. deploy update).
   useEffect(() => {
-    // Clean up any previously registered service workers so stale kiosk bundles
-    // do not keep serving old client code after updates.
-    if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return;
-    void navigator.serviceWorker.getRegistrations()
-      .then((registrations) => Promise.all(registrations.map((r) => r.unregister())))
-      .catch(() => {});
+    const saved = sessionStorage.getItem(KIOSK_SCREEN_KEY);
+    if (saved === 'checkin' || saved === 'checkout') {
+      setCurrentScreen(saved);
+    }
   }, []);
+
+  useEffect(() => {
+    sessionStorage.setItem(KIOSK_SCREEN_KEY, currentScreen);
+  }, [currentScreen]);
 
   const handleTitleTap = useCallback(() => {
     tapCount.current += 1;

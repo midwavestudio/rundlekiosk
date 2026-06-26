@@ -13,7 +13,8 @@ const withPWA = require('@ducanh2912/next-pwa').default({
   register: true,
   skipWaiting: true,
   cacheOnFrontEndNav: true,
-  reloadOnOnline: true,
+  // Avoid surprise full-page reloads when Wi‑Fi reconnects mid check-in/out.
+  reloadOnOnline: false,
 });
 
 module.exports = withPWA(nextConfig);
