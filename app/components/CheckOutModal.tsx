@@ -50,15 +50,19 @@ export default function CheckOutModal({ reservation, onClose }: CheckOutModalPro
 
   const handleCheckOut = async () => {
     setStep('processing');
-    
+
+    // Capture checkout time once and reuse it everywhere so localStorage,
+    // Firestore, and Cloudbeds all record the exact same timestamp.
+    const checkoutAt = new Date();
+    const checkOutTime = checkoutAt.toISOString();
+    const y = checkoutAt.getFullYear();
+    const m = String(checkoutAt.getMonth() + 1).padStart(2, '0');
+    const day = String(checkoutAt.getDate()).padStart(2, '0');
+    const checkoutLocalDate = `${y}-${m}-${day}`;
+
     try {
       // If reservation has Cloudbeds reservation ID, check out in Cloudbeds
       if (reservation.rawData?.cloudbedsReservationID) {
-        const checkoutAt = new Date();
-        const y = checkoutAt.getFullYear();
-        const m = String(checkoutAt.getMonth() + 1).padStart(2, '0');
-        const day = String(checkoutAt.getDate()).padStart(2, '0');
-        const checkoutLocalDate = `${y}-${m}-${day}`;
         const cloudbedsResponse = await fetch('/api/cloudbeds-checkout', {
           method: 'POST',
           headers: {
@@ -66,7 +70,7 @@ export default function CheckOutModal({ reservation, onClose }: CheckOutModalPro
           },
           body: JSON.stringify({
             reservationID: reservation.rawData.cloudbedsReservationID,
-            checkoutAtIso: checkoutAt.toISOString(),
+            checkoutAtIso: checkOutTime,
             checkoutDate: checkoutLocalDate,
             checkInDate: reservation.checkInDate || reservation.rawData?.checkInDate,
           }),
@@ -82,31 +86,54 @@ export default function CheckOutModal({ reservation, onClose }: CheckOutModalPro
       }
 
       // Update localStorage - move from checkedInGuests to checkOutHistory
-      const checkedInGuests = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
-      const checkOutHistory = JSON.parse(localStorage.getItem('checkOutHistory') || '[]');
-      
-      const guestIndex = checkedInGuests.findIndex(
-        (g: any) => g.firstName === reservation.rawData?.firstName && 
-                   g.lastName === reservation.rawData?.lastName &&
-                   g.checkInTime === reservation.rawData?.checkInTime
-      );
-
-      const checkOutTime = new Date().toISOString();
-      if (guestIndex >= 0) {
-        const checkedOutGuest = {
-          ...checkedInGuests[guestIndex],
-          checkOutTime,
-        };
-        checkOutHistory.push(checkedOutGuest);
-        checkedInGuests.splice(guestIndex, 1);
-
-        localStorage.setItem('checkedInGuests', JSON.stringify(checkedInGuests));
-        localStorage.setItem('checkOutHistory', JSON.stringify(checkOutHistory));
+      try {
+        const checkedInGuests = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
+        const checkOutHistory = JSON.parse(localStorage.getItem('checkOutHistory') || '[]');
+        const guestIndex = checkedInGuests.findIndex(
+          (g: any) => g.firstName === reservation.rawData?.firstName &&
+                     g.lastName === reservation.rawData?.lastName &&
+                     g.checkInTime === reservation.rawData?.checkInTime
+        );
+        if (guestIndex >= 0) {
+          checkOutHistory.push({ ...checkedInGuests[guestIndex], checkOutTime });
+          checkedInGuests.splice(guestIndex, 1);
+          localStorage.setItem('checkedInGuests', JSON.stringify(checkedInGuests));
+          localStorage.setItem('checkOutHistory', JSON.stringify(checkOutHistory));
+        }
+      } catch {
+        // localStorage is not critical; continue to persist server-side
       }
 
-      // Persist checkout to Firestore before success UI so Arrivals/Departures always
-      // have a departure timestamp, even when reservation links are incomplete.
-      await persistCheckoutRecord(checkOutTime);
+      // Persist checkout to Firestore. This MUST succeed for the checkout time to
+      // appear in Arrivals / Departures. If it fails, show an error but do NOT reset
+      // to 'confirm' — Cloudbeds is already checked out and retrying would duplicate.
+      // Instead surface the failure clearly so staff can manually fix in Arrivals.
+      try {
+        await persistCheckoutRecord(checkOutTime);
+      } catch (firestoreErr: any) {
+        console.error('[CheckOutModal] Firestore persist failed after successful Cloudbeds checkout:', firestoreErr);
+        // Log to server event log so missing records can be investigated
+        void fetch('/api/event-log', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            source: 'admin:check-out',
+            level: 'error',
+            message: 'Cloudbeds checkout succeeded but failed to record checkout time to Firestore',
+            detail: {
+              reservationID: reservation.rawData?.cloudbedsReservationID,
+              guestName: reservation.guestName,
+              checkOutTime,
+              error: firestoreErr?.message ?? String(firestoreErr),
+            },
+          }),
+        }).catch(() => {});
+        // Still proceed to success — Cloudbeds is checked out. Staff should see the
+        // warning in the event log and can manually add the checkout time in Arrivals.
+        alert(
+          `Check-out was completed in Cloudbeds, but the checkout time could not be saved to the Arrivals log (${firestoreErr?.message ?? 'server error'}). Please manually record the checkout time in the Arrivals tab.`
+        );
+      }
 
       setStep('success');
     } catch (error: any) {

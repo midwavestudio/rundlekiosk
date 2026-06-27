@@ -273,15 +273,14 @@ export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutP
 
     // Update the server-side record immediately so admin Arrivals / Departures
     // show the checkout time even if the Cloudbeds call below fails.
-    // Pass full guest context so the server can create a stub record if no
-    // existing Firestore document is found (e.g. the Cloudbeds reservation was
-    // modified after kiosk check-in and the record has no reservationID link).
-    // Always persist this before Cloudbeds call — if this fails we still continue
-    // checkout, but we emit an event so missing timestamps can be investigated.
+    // Track whether the first attempt succeeded so we can retry after Cloudbeds
+    // if it failed — this is the most common cause of missing checkout times.
+    let firestorePersisted = false;
     try {
       await persistCheckoutRecord(checkoutIso, selectedGuest);
+      firestorePersisted = true;
     } catch (patchErr: any) {
-      postKioskEvent('Failed to record checkout time to server', {
+      postKioskEvent('Failed to record checkout time to server (pre-Cloudbeds attempt)', {
         reservationID: selectedGuest.cloudbedsReservationID,
         localRecordID: selectedGuest.localRecordID,
         checkoutIso,
@@ -360,6 +359,28 @@ export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutP
             return;
           }
           // Local guest + fetch/network failure before response — silent (checkout saved locally).
+        }
+      }
+
+      // If the initial Firestore persist failed, retry now that the guest has
+      // successfully checked out (either in Cloudbeds or locally). This is the
+      // most important safety net: without it, Cloudbeds shows checked_out but
+      // admin Arrivals still shows the guest as active indefinitely.
+      if (!firestorePersisted) {
+        try {
+          await persistCheckoutRecord(checkoutIso, selectedGuest);
+          firestorePersisted = true;
+        } catch (retryErr: any) {
+          // Both attempts failed — log with higher severity so it can be found
+          // in the event log and manually corrected in the Arrivals tab.
+          postKioskEvent('CRITICAL: checkout time could not be saved to server after two attempts — please manually record in Arrivals', {
+            reservationID: selectedGuest.cloudbedsReservationID,
+            localRecordID: selectedGuest.localRecordID,
+            guestName: `${selectedGuest.firstName} ${selectedGuest.lastName}`.trim() || selectedGuest.displayName,
+            roomNumber: selectedGuest.roomNumber,
+            checkoutIso,
+            error: retryErr?.message ?? String(retryErr),
+          });
         }
       }
 

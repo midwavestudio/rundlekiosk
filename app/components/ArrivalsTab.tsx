@@ -917,7 +917,14 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
           checkInDateYmd,
           checkOutTime: checkOutIso ?? '',
         }),
-      }).catch(() => {});
+      }).then(async (res) => {
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          alert(`Record saved locally but could not be updated on the server: ${data?.error ?? res.status}. Refresh to see the latest server data.`);
+        }
+      }).catch(() => {
+        alert('Record saved locally but could not reach the server. Refresh to see the latest server data.');
+      });
     }
   };
 
