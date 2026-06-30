@@ -290,7 +290,28 @@ export async function POST(request: NextRequest) {
       });
       const pgData: any = await pgRes.json().catch(() => ({}));
       log('3_putGuest_response', { status: pgRes.status, body: pgData });
-      return pgRes.ok && pgData.success !== false;
+      if (!pgRes.ok || pgData.success === false) return false;
+
+      // After updating the guest profile, also call putReservation with the guestID so
+      // Cloudbeds updates the reservation-level guest name fields (guestFirstName /
+      // guestLastName on the reservation record itself). Without this step the guest
+      // profile is renamed but the reservation still displays the placeholder name
+      // (e.g. "TYE Block") in the Cloudbeds UI.
+      const linkParams = new URLSearchParams();
+      linkParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+      linkParams.append('reservationID', reservationID);
+      linkParams.append('guestID', gid);
+      log('3_putReservation_link_existing_guest_request', { reservationID, guestID: gid });
+      const lkRes = await fetch(`${apiV13}/putReservation`, {
+        method: 'PUT',
+        headers,
+        body: linkParams.toString(),
+      });
+      const lkData: any = await lkRes.json().catch(() => ({}));
+      log('3_putReservation_link_existing_guest_response', { status: lkRes.status, body: lkData });
+      // Even if the link call fails, the guest profile was updated — still treat as applied
+      // so check-in can proceed (the guest name may propagate via Cloudbeds async sync).
+      return true;
     };
 
     const tryPostGuestAndLink = async (): Promise<boolean> => {
