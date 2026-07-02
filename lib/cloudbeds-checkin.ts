@@ -1759,6 +1759,28 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     throw new Error('No reservationID returned from Cloudbeds');
   }
 
+  // When postReservation succeeded with a pinned physical room but Cloudbeds assigned a DIFFERENT
+  // room (i.e. the selected room was occupied/booked and Cloudbeds placed the guest elsewhere),
+  // treat this like a confirmed-pay-only case: post payment, unassign the room, and do NOT
+  // check the guest in. Staff will assign the correct room once it becomes available.
+  if (physicalRoomPinnedInCreate && !confirmedPayOnly && roomIdForCreate != null) {
+    const requestedRoomId = String(roomIdForCreate).trim();
+    const assignedRoomIds = (Array.isArray(assignedRooms) ? assignedRooms : [])
+      .map((a: any) => String(a?.roomID ?? '').trim())
+      .filter(Boolean);
+    const assignedMatchesRequested =
+      assignedRoomIds.length === 0 || // unassigned — normal flow handles this via hasUnassigned
+      assignedRoomIds.some((id) => id === requestedRoomId);
+    if (!assignedMatchesRequested) {
+      confirmedPayOnly = true;
+      log('3e_wrong_room_assigned_confirmed_pay_only', {
+        note: 'postReservation succeeded but Cloudbeds assigned a different room than requested — locking to confirmedPayOnly so guest is not checked into wrong room',
+        requestedRoomId,
+        assignedRoomIds,
+      });
+    }
+  }
+
   // TYE placeholders: identical postReservation to kiosk, but no payment / assign / check-in.
   if (stopAfterReservationCreate === true) {
     const expectedPhysicalRoomId = String(roomIdForStayPeriod ?? actualRoomID ?? '').trim();
