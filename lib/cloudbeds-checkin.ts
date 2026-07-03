@@ -1759,35 +1759,6 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     throw new Error('No reservationID returned from Cloudbeds');
   }
 
-  // When postReservation succeeded with a pinned physical room but either:
-  //   (a) Cloudbeds assigned a DIFFERENT room (room was occupied/booked; Cloudbeds picked another), or
-  //   (b) Cloudbeds left the reservation UNASSIGNED (room is overbooked; allowOverbooking=1 accepted the
-  //       reservation but could not assign the occupied room),
-  // treat this as a confirmed-pay-only case: post payment, strip any wrong assignment, and do NOT
-  // check the guest in. Staff will assign the correct room once it becomes available.
-  if (physicalRoomPinnedInCreate && !confirmedPayOnly && roomIdForCreate != null) {
-    const requestedRoomId = String(roomIdForCreate).trim();
-    const assignedRoomIds = (Array.isArray(assignedRooms) ? assignedRooms : [])
-      .map((a: any) => String(a?.roomID ?? '').trim())
-      .filter(Boolean);
-    // Left unassigned (overbooking accepted but room not free) OR assigned to a different room.
-    const roomUnavailable =
-      assignedRoomIds.length === 0
-        ? hasUnassigned // truly unassigned due to overbooking — not a clean unassigned-type booking
-        : !assignedRoomIds.some((id) => id === requestedRoomId);
-    if (roomUnavailable) {
-      confirmedPayOnly = true;
-      log('3e_room_unavailable_confirmed_pay_only', {
-        note: assignedRoomIds.length === 0
-          ? 'postReservation succeeded with pinned room but reservation is unassigned — room is overbooked; locking to confirmedPayOnly'
-          : 'postReservation succeeded but Cloudbeds assigned a different room than requested — locking to confirmedPayOnly so guest is not checked into wrong room',
-        requestedRoomId,
-        assignedRoomIds,
-        hasUnassigned,
-      });
-    }
-  }
-
   // TYE placeholders: identical postReservation to kiosk, but no payment / assign / check-in.
   if (stopAfterReservationCreate === true) {
     const expectedPhysicalRoomId = String(roomIdForStayPeriod ?? actualRoomID ?? '').trim();
@@ -1945,6 +1916,8 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   // postRoomAssign needs the unassigned *line* id (reservationRoomID). postReservation often still lists unassigned[]
   // even after rooms[0][roomID] succeeded — getReservation is the source of truth.
   let reservationRoomLineId: string | null = extractReservationRoomLineId(reservationData);
+  // Tracks the most recent getReservation payload so we can inspect which room was actually assigned.
+  let latestGetReservationParsed: any = null;
   if (hasUnassigned) {
     try {
       const grUrl = `${apiV13}/getReservation?propertyID=${encodeURIComponent(CLOUDBEDS_PROPERTY_ID)}&reservationID=${encodeURIComponent(String(reservationID))}`;
@@ -1965,6 +1938,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       }
       log('3b_getReservation_response', { status: grResp.status, body: grParsed ?? grText });
       if (grResp.ok && grParsed?.success) {
+        latestGetReservationParsed = grParsed;
         reservationRoomLineId = extractReservationRoomLineId(grParsed) ?? reservationRoomLineId;
         if (reservationAlreadyHasPhysicalRoom(grParsed)) {
           hasUnassigned = false;
@@ -2019,6 +1993,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       }
       log('4b_getReservation_after_payment_response', { status: grResp.status, body: grParsed ?? grText });
       if (grResp.ok && grParsed?.success) {
+        latestGetReservationParsed = grParsed;
         reservationRoomLineId = extractReservationRoomLineId(grParsed) ?? reservationRoomLineId;
         if (reservationAlreadyHasPhysicalRoom(grParsed)) {
           hasUnassigned = false;
@@ -2027,6 +2002,117 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       }
     } catch (e: any) {
       log('4b_getReservation_after_payment_error', undefined, undefined, e?.message);
+    }
+  }
+
+  // After both getReservation reconciliation passes, check whether the physical room is truly
+  // unavailable. We only act when a specific physical room was pinned in postReservation AND the
+  // situation is one of:
+  //   (a) The reservation is still unassigned after reconciliation — the room is overbooked
+  //       (allowOverbooking=1 was accepted by Cloudbeds but the room could not be assigned), OR
+  //   (b) The reservation was assigned to a DIFFERENT room than requested — the selected room was
+  //       occupied and Cloudbeds substituted another available room.
+  // In either case: payment is already collected; strip any wrong room, leave as confirmed/unassigned,
+  // and let staff assign the correct room in Cloudbeds. Do NOT check the guest in.
+  if (physicalRoomPinnedInCreate && !confirmedPayOnly && roomIdForCreate != null) {
+    const requestedRoomId = String(roomIdForCreate).trim();
+    let roomUnavailableReason: string | null = null;
+
+    if (hasUnassigned) {
+      // Room is still unassigned after payment and reconciliation — overbooking accepted but room
+      // not freed. Must not check in.
+      roomUnavailableReason = 'Room is overbooked — postReservation succeeded with pinned room but getReservation confirms reservation is still unassigned after reconciliation';
+    } else if (latestGetReservationParsed != null) {
+      // Room is assigned — verify it is the room the guest actually requested.
+      const actuallyAssignedIds = extractAssignedRoomIdsFromGetReservationRoot(latestGetReservationParsed);
+      if (actuallyAssignedIds.length > 0 && !actuallyAssignedIds.some((id) => id === requestedRoomId)) {
+        roomUnavailableReason = 'postReservation succeeded but Cloudbeds assigned a different room than requested';
+      }
+    }
+
+    if (roomUnavailableReason != null) {
+      log('3e_room_unavailable_confirmed_pay_only', {
+        note: roomUnavailableReason + ' — unassigning and returning confirmed status',
+        requestedRoomId,
+        hasUnassigned,
+        assignedIds: latestGetReservationParsed != null
+          ? extractAssignedRoomIdsFromGetReservationRoot(latestGetReservationParsed)
+          : [],
+      });
+
+      // Payment already settled above (step 4). Just unassign whatever room Cloudbeds put on the
+      // reservation and return confirmed so staff can assign the correct room.
+      try {
+        let unassignLineId: string | null = reservationRoomLineId;
+        let unassignSubResID: string | null = null;
+        if (latestGetReservationParsed != null) {
+          unassignLineId = extractReservationRoomLineId(latestGetReservationParsed) ?? unassignLineId;
+          const d = latestGetReservationParsed.data ?? latestGetReservationParsed;
+          if (!unassignSubResID && Array.isArray(d?.assigned) && d.assigned[0]?.subReservationID) {
+            unassignSubResID = String(d.assigned[0].subReservationID);
+          }
+          if (!unassignLineId && Array.isArray(d?.assigned) && d.assigned[0]?.reservationRoomID) {
+            unassignLineId = String(d.assigned[0].reservationRoomID);
+          }
+        }
+
+        if (unassignLineId) {
+          const confirmParams = new URLSearchParams();
+          confirmParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+          confirmParams.append('reservationID', String(reservationID));
+          confirmParams.append('status', 'confirmed');
+          log('3e_putReservation_confirm_before_unassign_request', { reservationID: String(reservationID) });
+          try {
+            const cResp = await fetch(`${apiV13}/putReservation`, {
+              method: 'PUT',
+              headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: confirmParams.toString(),
+            });
+            const cText = await cResp.text();
+            let cData: any = {};
+            try { cData = JSON.parse(cText); } catch { cData = {}; }
+            log('3e_putReservation_confirm_before_unassign_response', { status: cResp.status, ok: cResp.ok && cData.success === true });
+          } catch (e: any) {
+            log('3e_putReservation_confirm_before_unassign_error', undefined, undefined, e?.message);
+          }
+
+          const unassignParams = new URLSearchParams();
+          unassignParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+          unassignParams.append('reservationID', String(reservationID));
+          unassignParams.append('reservationRoomID', unassignLineId);
+          unassignParams.append('newRoomID', '');
+          if (unassignSubResID && unassignSubResID !== String(reservationID)) {
+            unassignParams.append('subReservationID', unassignSubResID);
+          }
+          log('3e_postRoomAssign_unassign_request', { reservationID: String(reservationID), reservationRoomID: unassignLineId });
+          try {
+            const uResp = await fetch(`${apiV13}/postRoomAssign`, {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: unassignParams.toString(),
+            });
+            const uText = await uResp.text();
+            let uData: any = {};
+            try { uData = JSON.parse(uText); } catch { uData = {}; }
+            log('3e_postRoomAssign_unassign_response', { status: uResp.status, ok: uResp.ok && uData.success === true, body: uData });
+          } catch (e: any) {
+            log('3e_postRoomAssign_unassign_error', undefined, undefined, e?.message);
+          }
+        } else {
+          log('3e_unassign_skipped', { note: 'No reservationRoomID found — reservation may already be unassigned' });
+        }
+      } catch (e: any) {
+        log('3e_unassign_outer_error', undefined, undefined, e?.message);
+      }
+
+      return {
+        success: true,
+        guestID,
+        reservationID: String(reservationID),
+        roomName: String(selectedRoomName ?? roomName),
+        message: 'Room not available: reservation created, payment collected, and room set to unassigned. Staff will assign the correct room in Cloudbeds.',
+        reservationStatus: 'confirmed',
+      };
     }
   }
 
