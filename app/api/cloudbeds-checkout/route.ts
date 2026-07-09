@@ -5,6 +5,11 @@ import {
   unwrapReservationFromGetReservation,
 } from '@/lib/cloudbeds-rate-preserve';
 import { saveEventLog } from '@/lib/event-log-store';
+import {
+  findByReservationID,
+  updateCheckinRecord,
+  saveCheckinRecord,
+} from '@/lib/checkin-store';
 
 export const maxDuration = 60;
 
@@ -318,6 +323,66 @@ async function unassignRoom(
   return { ok: unassignRes.ok, tried: true };
 }
 
+/**
+ * Write checkOutTime to the Firestore kiosk record for this reservation.
+ *
+ * Called server-side immediately after Cloudbeds confirms the checkout so the
+ * timestamp is always recorded — even when both client-side PATCH attempts fail
+ * due to network issues or a kiosk crash. Guests who check out through Cloudbeds
+ * directly (not via the kiosk) also get a checkout-stub created here so they
+ * don't continue to appear in the kiosk name search.
+ *
+ * Errors are non-fatal: Cloudbeds has already confirmed the checkout at this point
+ * and the response to the client must not be delayed.
+ */
+async function stampCheckOutTime(
+  reservationID: string,
+  checkOutAt: string,
+  reservationRecord: any
+): Promise<void> {
+  try {
+    const existing = await findByReservationID(reservationID);
+    if (existing) {
+      if (!existing.checkOutTime) {
+        await updateCheckinRecord(existing.id, { checkOutTime: checkOutAt });
+      }
+      return;
+    }
+
+    // No kiosk record found — create a checkout stub so the guest no longer
+    // appears as checked-in in the kiosk name search. This covers guests who
+    // checked in via Cloudbeds directly rather than through the kiosk.
+    const guestName: string = String(
+      reservationRecord?.guestName ??
+      reservationRecord?.guestFirstName ??
+      ''
+    ).trim();
+    const parts = guestName.split(/\s+/).filter(Boolean);
+    const firstName = parts[0] ?? 'Unknown';
+    const lastName = parts.slice(1).join(' ');
+
+    const startYmd: string =
+      String(reservationRecord?.startDate ?? reservationRecord?.checkInDate ?? '').slice(0, 10);
+    const checkInTime = startYmd ? `${startYmd}T18:00:00.000Z` : checkOutAt;
+
+    await saveCheckinRecord({
+      firstName,
+      lastName,
+      clcNumber: '',
+      phoneNumber: '',
+      class: 'TYE',
+      roomNumber: '',
+      checkInTime,
+      ...(startYmd ? { checkInDateYmd: startYmd } : {}),
+      checkOutTime: checkOutAt,
+      cloudbedsReservationID: reservationID,
+      source: 'kiosk:checkout-stub',
+    });
+  } catch (err: any) {
+    console.warn('[cloudbeds-checkout] stampCheckOutTime failed (non-fatal):', err?.message ?? err);
+  }
+}
+
 export async function POST(request: NextRequest) {
   let submittedRequestLog: Record<string, unknown> | null = null;
   /** Kiosk local-name fallback: Cloudbeds failure is expected — avoid duplicate admin error logs. */
@@ -614,6 +679,9 @@ export async function POST(request: NextRequest) {
           JSON.stringify({ reservationID, checkoutDate, error: msg, debugLog: log })
         );
 
+        const checkOutAt = new Date(checkOutMs).toISOString();
+        void stampCheckOutTime(String(reservationID), checkOutAt, reservationRecord);
+
         const startForDays = startYmd ?? checkInYmdFromBody ?? checkoutDate;
         const daysStayed = computeDaysStayed(startForDays, checkoutDate);
         return NextResponse.json({
@@ -623,7 +691,7 @@ export async function POST(request: NextRequest) {
           daysStayed,
           isSameDay: true,
           localOnly: true,
-          checkOutAt: new Date(checkOutMs).toISOString(),
+          checkOutAt,
         });
       }
 
@@ -653,6 +721,9 @@ export async function POST(request: NextRequest) {
 
     console.log('cloudbeds-checkout: success', JSON.stringify(log));
 
+    const checkOutAt = new Date(checkOutMs).toISOString();
+    void stampCheckOutTime(String(reservationID), checkOutAt, reservationRecord);
+
     return NextResponse.json({
       success: true,
       reservationID,
@@ -660,7 +731,7 @@ export async function POST(request: NextRequest) {
       daysStayed,
       isSameDay,
       roomUnassigned: isSameDay ? roomUnassigned : undefined,
-      checkOutAt: new Date(checkOutMs).toISOString(),
+      checkOutAt,
     });
   } catch (error: any) {
     if (!localFallbackCheckout) {

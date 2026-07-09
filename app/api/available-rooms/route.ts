@@ -58,13 +58,32 @@ function isExcludedFromKioskPicker(room: { roomID: string; roomName: string }): 
 /**
  * Merge every `data[].rooms` array from getRooms — Cloudbeds returns one object per room type;
  * using only `data[0].rooms` hides all other types (e.g. only Queen + first type showed in the dropdown).
+ *
+ * Individual physical room objects inside d.rooms[] do NOT carry roomTypeName / roomTypeID —
+ * those fields live only on the parent type object (d). We inherit them onto each room so that
+ * downstream formatting and deduplication have the correct type information.
  */
 function parseAllRoomsFromGetRoomsJson(roomsData: any): any[] {
   let rooms: any[] = [];
   if (Array.isArray(roomsData.data) && roomsData.data.length > 0) {
-    rooms = roomsData.data.flatMap((d: any) =>
-      d && Array.isArray(d.rooms) ? d.rooms : d.rooms ? [d.rooms] : []
-    );
+    rooms = roomsData.data.flatMap((d: any) => {
+      if (!d) return [];
+      const typeFields = {
+        roomTypeID: d.roomTypeID ?? d.roomType_id ?? d.id ?? undefined,
+        roomTypeName: d.roomTypeName ?? d.roomType ?? d.name ?? undefined,
+        roomBlocked: d.roomBlocked ?? undefined,
+      };
+      const physicalRooms: any[] = Array.isArray(d.rooms) ? d.rooms : d.rooms ? [d.rooms] : [];
+      if (physicalRooms.length === 0) return [];
+      return physicalRooms.map((r: any) => ({
+        ...typeFields,
+        ...r,
+        // Prefer the room-level field when present, fall back to type-level
+        roomTypeID: r.roomTypeID ?? r.roomType_id ?? typeFields.roomTypeID,
+        roomTypeName: r.roomTypeName ?? r.roomType ?? typeFields.roomTypeName,
+        roomBlocked: r.roomBlocked ?? typeFields.roomBlocked,
+      }));
+    });
   }
   if (rooms.length === 0 && roomsData.data?.[0]?.rooms) {
     rooms = roomsData.data[0].rooms;
@@ -107,8 +126,14 @@ async function fetchAllRoomsPages(
       break;
     }
     const roomsData = await res.json();
+
+    // Count how many room-type entries Cloudbeds returned on this page so we know
+    // whether there is a next page.  Some types legitimately have an empty rooms[]
+    // (archived / no physical rooms), so we cannot use batch.length == 0 to decide
+    // pagination — that would stop early and miss types on the following page.
+    const typeCount: number = Array.isArray(roomsData.data) ? roomsData.data.length : 0;
+
     const batch = parseAllRoomsFromGetRoomsJson(roomsData);
-    if (batch.length === 0) break;
 
     let newCount = 0;
     for (const room of batch) {
@@ -120,8 +145,12 @@ async function fetchAllRoomsPages(
         newCount += 1;
       }
     }
-    // If API keeps returning the same page (all duplicates), stop to avoid spinning.
-    if (newCount === 0) break;
+
+    // Stop when Cloudbeds returned fewer types than requested (last page),
+    // or when every room on this page was already seen (duplicate-only page).
+    if (typeCount < pageSize || (batch.length > 0 && newCount === 0)) break;
+    // Also stop when the page had no type entries at all.
+    if (typeCount === 0) break;
 
     pageNumber += 1;
     if (pageNumber > maxPages) break;

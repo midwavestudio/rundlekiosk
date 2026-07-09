@@ -441,7 +441,23 @@ export async function settleReservationFolio(
 function parseRoomsArrayFromGetRoomsJson(roomsData: any): any[] {
   let rooms: any[] = [];
   if (Array.isArray(roomsData.data) && roomsData.data.length > 0) {
-    rooms = roomsData.data.flatMap((d: any) => (d && Array.isArray(d.rooms) ? d.rooms : d.rooms ? [d.rooms] : []));
+    rooms = roomsData.data.flatMap((d: any) => {
+      if (!d) return [];
+      const typeFields = {
+        roomTypeID: d.roomTypeID ?? d.roomType_id ?? d.id ?? undefined,
+        roomTypeName: d.roomTypeName ?? d.roomType ?? d.name ?? undefined,
+        roomBlocked: d.roomBlocked ?? undefined,
+      };
+      const physicalRooms: any[] = Array.isArray(d.rooms) ? d.rooms : d.rooms ? [d.rooms] : [];
+      if (physicalRooms.length === 0) return [];
+      return physicalRooms.map((r: any) => ({
+        ...typeFields,
+        ...r,
+        roomTypeID: r.roomTypeID ?? r.roomType_id ?? typeFields.roomTypeID,
+        roomTypeName: r.roomTypeName ?? r.roomType ?? typeFields.roomTypeName,
+        roomBlocked: r.roomBlocked ?? typeFields.roomBlocked,
+      }));
+    });
   }
   if (rooms.length === 0 && roomsData.data?.[0]?.rooms) {
     rooms = roomsData.data[0].rooms;
@@ -498,8 +514,13 @@ async function fetchAllRoomsPagesMerged(
       break;
     }
     const roomsData = await res.json();
+
+    // Count room-type entries on this page to drive pagination — some types have an
+    // empty rooms[] (archived/no physical rooms), so batch.length alone would stop
+    // early and miss room types (and their physical rooms) on subsequent pages.
+    const typeCount: number = Array.isArray(roomsData.data) ? roomsData.data.length : 0;
+
     const batch = parseRoomsArrayFromGetRoomsJson(roomsData);
-    if (batch.length === 0) break;
 
     let newCount = 0;
     for (const room of batch) {
@@ -511,7 +532,10 @@ async function fetchAllRoomsPagesMerged(
         newCount += 1;
       }
     }
-    if (newCount === 0) break;
+
+    if (typeCount < pageSize || (batch.length > 0 && newCount === 0)) break;
+    if (typeCount === 0) break;
+
     pageNumber += 1;
     if (pageNumber > maxPages) break;
   }
