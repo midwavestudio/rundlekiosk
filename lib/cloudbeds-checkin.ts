@@ -1684,11 +1684,70 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     );
   }
 
-  const first = await runPostReservation({
+  // Pre-flight duplicate guard: before calling postReservation, check if a reservation already
+  // exists for this guest on this room + stay window. This prevents duplicate reservations when:
+  //   1. The client retries because the HTTP response was lost (most common cause)
+  //   2. The guest double-submits the check-in form before the first attempt completes
+  //   3. A network timeout on the client side causes a spurious retry
+  // TYE placeholder creation (stopAfterReservationCreate) is intentionally exempt — those are
+  // pre-created block reservations that staff create in bulk before guests arrive.
+  let preflightDuplicateFound = false;
+  if (!stopAfterReservationCreate && !forceUnassigned) {
+    const targetRoomForPreflight = String(roomIdForStayPeriod ?? actualRoomID ?? '').trim();
+    if (targetRoomForPreflight) {
+      try {
+        const preflightCandidates = await fetchGuestReservationsForStayWindow(
+          apiV13,
+          CLOUDBEDS_PROPERTY_ID,
+          CLOUDBEDS_API_KEY,
+          guestFirstName,
+          guestLastName,
+          checkInDate,
+          checkOutDate,
+          log
+        );
+        const existingReservation = pickMatchingReservationForSameRoomStay(
+          preflightCandidates,
+          guestFirstName,
+          guestLastName,
+          checkInDate,
+          checkOutDate,
+          targetRoomForPreflight
+        );
+        if (existingReservation) {
+          const existingRid = String(existingReservation.reservationID ?? '').trim();
+          log('3_preflight_duplicate_found', {
+            reservationID: existingRid,
+            note: 'Reservation already exists for this guest+room+stay — skipping postReservation to prevent duplicate',
+          });
+          if (existingRid) {
+            const existingPayload = await loadReservationPayloadFromCloudbeds(
+              apiV13,
+              CLOUDBEDS_PROPERTY_ID,
+              CLOUDBEDS_API_KEY,
+              existingRid
+            );
+            if (existingPayload) {
+              reservationData = existingPayload;
+              preflightDuplicateFound = true;
+            }
+          }
+        }
+      } catch (preflightErr: any) {
+        // Non-fatal: if the lookup fails, fall through and attempt postReservation normally.
+        log('3_preflight_lookup_error', undefined, undefined, preflightErr?.message);
+      }
+    }
+  }
+
+  const first = preflightDuplicateFound ? null : await runPostReservation({
     attachPhysicalRoom: canAttachPhysicalRoomToReservation,
     allowOverbooking: useOverbooking,
   });
-  if (first.ok) {
+  if (first === null) {
+    // reservationData was already populated by the pre-flight duplicate guard — skip postReservation.
+    physicalRoomPinnedInCreate = canAttachPhysicalRoomToReservation;
+  } else if (first.ok) {
     reservationData = first.data;
     physicalRoomPinnedInCreate = canAttachPhysicalRoomToReservation;
   } else if (canAttachPhysicalRoomToReservation && !stopAfterReservationCreate) {
@@ -1942,7 +2001,10 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   let reservationRoomLineId: string | null = extractReservationRoomLineId(reservationData);
   // Tracks the most recent getReservation payload so we can inspect which room was actually assigned.
   let latestGetReservationParsed: any = null;
-  if (hasUnassigned) {
+  // Fetch getReservation when the reservation came back unassigned OR when a specific physical room
+  // was pinned during postReservation (so we can verify whether Cloudbeds actually assigned the
+  // requested room — it may have silently assigned a different one when the room was occupied).
+  if (hasUnassigned || (physicalRoomPinnedInCreate && !confirmedPayOnly && roomIdForCreate != null)) {
     try {
       const grUrl = `${apiV13}/getReservation?propertyID=${encodeURIComponent(CLOUDBEDS_PROPERTY_ID)}&reservationID=${encodeURIComponent(String(reservationID))}`;
       log('3b_getReservation_request', { url: grUrl, method: 'GET' });
@@ -1997,7 +2059,8 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   );
 
   // Refresh reservation after payment (reservationRoomID may appear; room may show as assigned only now).
-  if (hasUnassigned) {
+  // Also re-fetch when a physical room was pinned to catch late room assignment changes after payment.
+  if (hasUnassigned || (physicalRoomPinnedInCreate && !confirmedPayOnly && roomIdForCreate != null)) {
     try {
       const grUrl = `${apiV13}/getReservation?propertyID=${encodeURIComponent(CLOUDBEDS_PROPERTY_ID)}&reservationID=${encodeURIComponent(String(reservationID))}`;
       log('4b_getReservation_after_payment_request', { url: grUrl, method: 'GET' });
