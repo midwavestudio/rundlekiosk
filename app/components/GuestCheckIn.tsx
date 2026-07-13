@@ -166,7 +166,7 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
 
     // Show success immediately — guest does not need to wait on any storage/network work.
     setSuccess(true);
-    setTimeout(() => { onBack(); }, 2000);
+    setTimeout(() => { onBack(); }, 6000);
 
     // Move all heavy and network work off this synchronous click path.
     window.setTimeout(() => {
@@ -365,6 +365,11 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
           <h1 className="animated-message">
             {successIsConfirmedOnly ? 'Reservation confirmed' : 'Enjoy your stay!'}
           </h1>
+          {!successIsConfirmedOnly && (
+            <p style={{ marginTop: '16px', maxWidth: '420px', marginLeft: 'auto', marginRight: 'auto', fontSize: 'clamp(13px, 2vw, 16px)', lineHeight: 1.5, opacity: 0.75 }}>
+              Please let us know if you&apos;re unable to check out.
+            </p>
+          )}
           {successIsConfirmedOnly && (
             <p style={{ marginTop: '16px', maxWidth: '420px', marginLeft: 'auto', marginRight: 'auto', fontSize: 'clamp(15px, 2.5vw, 18px)', lineHeight: 1.5, opacity: 0.95 }}>
               Your stay is paid and confirmed. The front desk will assign your room when it is available.
