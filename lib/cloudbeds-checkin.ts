@@ -1605,23 +1605,32 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
    *     This is the "book into available room then set unassigned" path.
    */
   const escalateAfterFailedPostReservation = async (failedData: any): Promise<boolean> => {
-    log('3_escalate_overbooking_unassigned', {
-      note: 'postReservation failed — attempting escalation paths to create unassigned reservation',
-      failedMessage: failedData?.message ?? '(none)',
-      roomTypeID: roomTypeIDStr,
-      roomTypeIDFallback: !roomTypeIDStr ? 'none available' : undefined,
-    });
-
     const guestEmail =
       email != null && String(email).trim() !== ''
         ? String(email).trim()
         : buildGuestSyntheticEmail(guestFirstName, guestLastName);
 
+    // For past check-in dates, Cloudbeds rejects postReservation regardless of allowOverbooking.
+    // Use today's date as the booking window so the escalation call is accepted.
+    // The reservation will be created for today → staff can correct the dates in Cloudbeds.
+    const escalateStartDate = isPastCheckInDate ? serverUtcToday : checkInDate;
+    const escalateEndDate   = isPastCheckInDate ? addOneCalendarDayYmd(serverUtcToday) : checkOutDate;
+
+    log('3_escalate_overbooking_unassigned', {
+      note: 'postReservation failed — attempting escalation paths to create unassigned reservation',
+      failedMessage: failedData?.message ?? '(none)',
+      roomTypeID: roomTypeIDStr,
+      roomTypeIDFallback: !roomTypeIDStr ? 'none available' : undefined,
+      originalDates: { checkInDate, checkOutDate },
+      escalateDates: { escalateStartDate, escalateEndDate },
+      isPastCheckInDate,
+    });
+
     const buildEscalateParams = (overrideTypeID?: string, overrideRoomID?: string): URLSearchParams => {
       const p = new URLSearchParams();
       p.append('propertyID', CLOUDBEDS_PROPERTY_ID);
-      p.append('startDate', checkInDate);
-      p.append('endDate', checkOutDate);
+      p.append('startDate', escalateStartDate);
+      p.append('endDate', escalateEndDate);
       p.append('guestFirstName', guestFirstName);
       p.append('guestLastName', guestLastName);
       p.append('guestCountry', 'US');
@@ -1648,7 +1657,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     };
 
     const tryPostReservation = async (params: URLSearchParams, stepLabel: string): Promise<{ ok: boolean; parsed: any }> => {
-      log(`${stepLabel}_request`, { roomTypeID: params.get('rooms[0][roomTypeID]'), roomID: params.get('rooms[0][roomID]') ?? '(none)', startDate: checkInDate, endDate: checkOutDate });
+      log(`${stepLabel}_request`, { roomTypeID: params.get('rooms[0][roomTypeID]'), roomID: params.get('rooms[0][roomID]') ?? '(none)', startDate: escalateStartDate, endDate: escalateEndDate });
       try {
         const resp = await fetch(`${apiV13}/postReservation`, {
           method: 'POST',
@@ -1695,8 +1704,8 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     let alternativeRooms: any[] = [];
     try {
       alternativeRooms = await fetchAllRoomsPagesMerged(apiV13, CLOUDBEDS_PROPERTY_ID, CLOUDBEDS_API_KEY, {
-        startDate: checkInDate,
-        endDate: checkOutDate,
+        startDate: escalateStartDate,
+        endDate: escalateEndDate,
       });
     } catch (e: any) {
       log('3_escalate_path2_rooms_error', undefined, undefined, e?.message);
