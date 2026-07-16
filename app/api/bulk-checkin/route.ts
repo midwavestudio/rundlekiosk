@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { performCloudbedsCheckIn } from '@/lib/cloudbeds-checkin';
 
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 interface GuestRow {
   name: string;

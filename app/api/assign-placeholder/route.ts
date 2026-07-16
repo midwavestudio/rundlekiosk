@@ -8,8 +8,8 @@ import {
 } from '@/lib/tye-placeholder-store';
 import { buildGuestSyntheticEmail } from '@/lib/guest-email';
 
-// Allow up to 60 seconds for the full placeholder assignment + payment + check-in flow
-export const maxDuration = 60;
+// Allow up to 300 seconds for the full placeholder assignment + payment + check-in flow
+export const maxDuration = 300;
 
 function parseReservationFromGetReservationJson(grData: any): any {
   return (

@@ -258,6 +258,11 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
   const [selectedRow, setSelectedRow] = useState<Row | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState<EditGuestForm | null>(null);
+  /** Per-row Cloudbeds reservation creation state, keyed by row.id */
+  const [rowCreatingId, setRowCreatingId] = useState<string | null>(null);
+  const [rowCreateResults, setRowCreateResults] = useState<Record<string, { ok: boolean; message: string }>>({});
+
+  // Legacy single-selection state kept for the detail panel
   const [creatingReservation, setCreatingReservation] = useState(false);
   const [createReservationResult, setCreateReservationResult] = useState<{ ok: boolean; message: string } | null>(null);
 
@@ -928,11 +933,35 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
     }
   };
 
-  /** Create a Cloudbeds reservation for a guest who checked in but didn't get one. */
-  const handleCreateCloudbedsReservation = async (row: Row) => {
-    if (creatingReservation) return;
-    setCreatingReservation(true);
-    setCreateReservationResult(null);
+  /**
+   * Create a Cloudbeds reservation for a guest.
+   * Always uses allowOverbooking=true so the full escalation path fires:
+   *   1. Try the guest's specific room
+   *   2. If unavailable: book any available room, then immediately unassign it
+   *      → reservation lands as confirmed + paid + unassigned in Cloudbeds
+   *
+   * @param row      The arrivals row to process
+   * @param inlineRowId  When set, updates per-row UI state instead of the detail-panel state
+   */
+  const handleCreateCloudbedsReservation = async (row: Row, inlineRowId?: string) => {
+    if (inlineRowId) {
+      if (rowCreatingId === inlineRowId) return;
+      setRowCreatingId(inlineRowId);
+      setRowCreateResults((prev) => { const n = { ...prev }; delete n[inlineRowId]; return n; });
+    } else {
+      if (creatingReservation) return;
+      setCreatingReservation(true);
+      setCreateReservationResult(null);
+    }
+
+    const setResult = (result: { ok: boolean; message: string }) => {
+      if (inlineRowId) {
+        setRowCreateResults((prev) => ({ ...prev, [inlineRowId]: result }));
+      } else {
+        setCreateReservationResult(result);
+      }
+    };
+
     try {
       const checkInDateYmd = row.rawData.checkInTime
         ? localYmd(new Date(row.rawData.checkInTime))
@@ -950,11 +979,16 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
       const body: Record<string, unknown> = {
         firstName: row.firstName,
         lastName: row.lastName,
-        phoneNumber: row.phoneNumber,
-        clcNumber: row.clcNumber,
-        classType: row.class || 'TYE',
+        phoneNumber: row.phoneNumber === '-' ? '' : row.phoneNumber,
+        clcNumber: row.clcNumber === '-' ? '' : row.clcNumber,
+        classType: row.class === '-' ? 'TYE' : row.class || 'TYE',
         checkInDate: checkInDateYmd,
         checkOutDate: checkOutDateYmd,
+        // Always allow overbooking so the escalation path fires when the room
+        // is occupied: book any available room then immediately unassign it,
+        // leaving the reservation as confirmed + paid + unassigned.
+        allowOverbooking: true,
+        ...(row.rawData._serverId ? { checkinRecordId: row.rawData._serverId } : {}),
         ...(forceUnassigned
           ? { roomName: 'UNASSIGNED', forceUnassigned: true }
           : { roomName, roomNameHint: roomName }),
@@ -969,6 +1003,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
 
       if (data.success) {
         const reservationID = data.reservationID as string | undefined;
+        const isUnassigned = data.reservationStatus === 'confirmed';
 
         // Patch the Firestore record with the new reservation ID
         if (reservationID) {
@@ -982,7 +1017,6 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
           } else if (row.rawData.cloudbedsReservationID) {
             patchBody.reservationID = row.rawData.cloudbedsReservationID;
           } else {
-            // No existing ID - use name + date to find the record
             patchBody.firstName = row.firstName;
             patchBody.lastName = row.lastName;
             patchBody.checkInDate = checkInDateYmd;
@@ -1008,22 +1042,26 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
           );
         }
 
-        setCreateReservationResult({
+        setResult({
           ok: true,
           message: reservationID
-            ? `Reservation created: ${reservationID}${data.reservationStatus === 'confirmed' ? ' (confirmed, unassigned - staff must assign room in Cloudbeds)' : ''}`
+            ? `✓ ${reservationID}${isUnassigned ? ' · Unassigned (room unavailable — assign in Cloudbeds)' : ' · Checked in'}`
             : 'Reservation created in Cloudbeds.',
         });
       } else {
-        setCreateReservationResult({
+        setResult({
           ok: false,
           message: typeof data.error === 'string' ? data.error : 'Failed to create reservation in Cloudbeds.',
         });
       }
     } catch (err: any) {
-      setCreateReservationResult({ ok: false, message: err?.message ?? 'Network error' });
+      setResult({ ok: false, message: err?.message ?? 'Network error' });
     } finally {
-      setCreatingReservation(false);
+      if (inlineRowId) {
+        setRowCreatingId(null);
+      } else {
+        setCreatingReservation(false);
+      }
     }
   };
 
@@ -1290,6 +1328,9 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
             <div style={{ flex: '1 1 0', minWidth: '80px', padding: '0 12px', fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Room</div>
             <div style={{ flex: '1.5 1 0', minWidth: '140px', padding: '0 12px', fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Check-in</div>
             <div style={{ flex: '1.5 1 0', minWidth: '140px', padding: '0 12px', fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Check-out</div>
+            <div style={{ width: '136px', flexShrink: 0, padding: '0 8px', fontSize: '11px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }} title="Create or re-sync this guest's reservation in Cloudbeds">
+              Cloudbeds
+            </div>
             <div style={{ width: '48px', flexShrink: 0 }} />
           </div>
 
@@ -1398,7 +1439,86 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
                       )}
                     </div>
 
-                    {/* Sign out action */}
+                    {/* Inline Cloudbeds create/re-sync button */}
+                    <div
+                      style={{ width: '136px', flexShrink: 0, padding: '0 8px', display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'flex-start' }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {(() => {
+                        const isLoading = rowCreatingId === row.id;
+                        const result = rowCreateResults[row.id];
+                        const hasReservation = !!row.cloudbedsReservationID;
+                        return (
+                          <>
+                            <button
+                              type="button"
+                              disabled={isLoading}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleCreateCloudbedsReservation(row, row.id);
+                              }}
+                              title={hasReservation
+                                ? `Re-sync reservation for ${row.guestName} in Cloudbeds (current: ${row.cloudbedsReservationID})`
+                                : `Create Cloudbeds reservation for ${row.guestName}`}
+                              style={{
+                                padding: '5px 10px',
+                                fontSize: '12px',
+                                fontWeight: 600,
+                                borderRadius: '6px',
+                                border: 'none',
+                                cursor: isLoading ? 'not-allowed' : 'pointer',
+                                whiteSpace: 'nowrap',
+                                background: isLoading
+                                  ? '#d1d5db'
+                                  : result
+                                    ? result.ok
+                                      ? '#dcfce7'
+                                      : '#fee2e2'
+                                    : hasReservation
+                                      ? '#ede9fe'
+                                      : '#dcfce7',
+                                color: isLoading
+                                  ? '#9ca3af'
+                                  : result
+                                    ? result.ok
+                                      ? '#15803d'
+                                      : '#991b1b'
+                                    : hasReservation
+                                      ? '#6d28d9'
+                                      : '#15803d',
+                              }}
+                            >
+                              {isLoading
+                                ? 'Creating…'
+                                : result
+                                  ? result.ok
+                                    ? '✓ Created'
+                                    : '✗ Retry'
+                                  : hasReservation
+                                    ? '↻ Re-sync'
+                                    : '+ Create'}
+                            </button>
+                            {result && (
+                              <div
+                                style={{
+                                  fontSize: '10px',
+                                  lineHeight: 1.35,
+                                  color: result.ok ? '#15803d' : '#b91c1c',
+                                  maxWidth: '120px',
+                                  wordBreak: 'break-all',
+                                  cursor: 'default',
+                                }}
+                                title={result.message}
+                              >
+                                {result.message.length > 60 ? result.message.slice(0, 57) + '…' : result.message}
+                              </div>
+                            )}
+                          </>
+                        );
+                      })()}
+                    </div>
+
+                    {/* Delete action */}
                     <div style={{ width: '48px', flexShrink: 0, display: 'flex', justifyContent: 'center' }}>
                       <button
                         onClick={e => { e.stopPropagation(); handleDelete(row); }}
@@ -1528,8 +1648,8 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
                 </button>
               )}
 
-              {/* Create Cloudbeds reservation for guests who are missing one */}
-              {!selectedRow.fromHistory && !selectedRow.cloudbedsReservationID && !isEditing && (
+              {/* Create / re-sync Cloudbeds reservation — always available so staff can fix missing reservations */}
+              {!isEditing && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                   <button
                     onClick={() => {
@@ -1539,7 +1659,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
                     disabled={creatingReservation}
                     style={{
                       padding: '10px',
-                      background: creatingReservation ? '#9ca3af' : '#10b981',
+                      background: creatingReservation ? '#9ca3af' : selectedRow.cloudbedsReservationID ? '#7c3aed' : '#10b981',
                       color: 'white',
                       border: 'none',
                       borderRadius: '8px',
@@ -1548,8 +1668,17 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
                       fontSize: '14px',
                     }}
                   >
-                    {creatingReservation ? 'Creating Reservation...' : 'Create Cloudbeds Reservation'}
+                    {creatingReservation
+                      ? 'Creating…'
+                      : selectedRow.cloudbedsReservationID
+                        ? 'Re-sync Cloudbeds Reservation'
+                        : 'Create Cloudbeds Reservation'}
                   </button>
+                  {selectedRow.cloudbedsReservationID && !creatingReservation && !createReservationResult && (
+                    <div style={{ fontSize: '11px', color: '#6b7280', padding: '0 2px' }}>
+                      Current ID: {selectedRow.cloudbedsReservationID}
+                    </div>
+                  )}
                   {createReservationResult && (
                     <div style={{
                       padding: '8px 12px',

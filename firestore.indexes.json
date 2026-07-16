@@ -16,6 +16,14 @@
         { "fieldPath": "checkInDateYmd", "order": "DESCENDING" },
         { "fieldPath": "checkInTime", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "pending_cloudbeds_checkins",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

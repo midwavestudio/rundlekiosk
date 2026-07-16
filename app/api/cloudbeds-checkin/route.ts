@@ -2,9 +2,20 @@ import { NextRequest, NextResponse } from 'next/server';
 import { performCloudbedsCheckIn } from '@/lib/cloudbeds-checkin';
 import { validateClcNumberRequired } from '@/lib/checkin-validation';
 import { saveEventLog } from '@/lib/event-log-store';
+import {
+  savePendingCheckin,
+  markPendingCheckinComplete,
+  markPendingCheckinFailed,
+  incrementPendingCheckinAttempt,
+} from '@/lib/pending-checkin-store';
+import { updateCheckinRecord } from '@/lib/checkin-store';
 
-// Allow up to 60 seconds for Cloudbeds API calls (postReservation + payment + room assign + check-in)
-export const maxDuration = 60;
+// Allow up to 300 seconds for Cloudbeds API calls (postReservation + payment + room assign + check-in).
+// The check-in flow makes many sequential Cloudbeds calls (getRooms paginated, getRatePlans, postReservation,
+// invoice polling up to 14 rounds, postPayment, postRoomAssign multiple attempts, putReservation checked_in).
+// 60s was insufficient and caused silent failures where the function was killed mid-execution, leaving the
+// guest with no Cloudbeds reservation. Vercel Pro supports up to 300s for serverless functions.
+export const maxDuration = 300;
 
 /** Kiosk/API request fields stored on failures so the admin error log shows what was submitted. */
 function pickCheckInRequestForLog(body: Record<string, unknown>) {
@@ -66,6 +77,9 @@ export async function POST(request: NextRequest) {
   let guestLabel = 'unknown';
   let roomLabel = 'unknown';
   let submittedRequestLog: Record<string, unknown> | null = null;
+  // pendingId is set as soon as we persist the pending record — used in catch to mark failed.
+  let pendingId: string | null = null;
+
   try {
     const body = await request.json();
     submittedRequestLog = pickCheckInRequestForLog(body as Record<string, unknown>);
@@ -84,6 +98,10 @@ export async function POST(request: NextRequest) {
       checkOutDate: bodyCheckOut,
       forceUnassigned,
       debug: enableDebug,
+      // Passed by the retry worker so it can link back to the pending record
+      pendingCheckinId: bodyPendingId,
+      // Passed so we can patch the kiosk record on success
+      checkinRecordId: bodyCheckinRecordId,
     } = body;
 
     if (firstName || lastName) guestLabel = `${firstName ?? ''} ${lastName ?? ''}`.trim();
@@ -226,6 +244,45 @@ export async function POST(request: NextRequest) {
       allowOverbooking: body.allowOverbooking === true,
       debugLog,
     };
+
+    // -----------------------------------------------------------------
+    // Persist a "pending" record BEFORE calling Cloudbeds.
+    // This ensures that even if the function is killed by a timeout, we
+    // have a durable record of the check-in attempt that the retry cron
+    // can pick up and complete automatically.
+    // -----------------------------------------------------------------
+    if (bodyPendingId) {
+      // This call was made by the retry worker — reuse the existing pending record.
+      pendingId = String(bodyPendingId);
+      await incrementPendingCheckinAttempt(pendingId).catch(() => {});
+    } else {
+      pendingId = await savePendingCheckin(
+        {
+          firstName,
+          lastName,
+          phoneNumber,
+          roomName: roomName ?? '',
+          roomNameHint,
+          clcNumber: validatedClcNumber,
+          classType,
+          email,
+          checkInDate: bodyCheckIn,
+          checkOutDate: bodyCheckOut,
+          forceUnassigned: !!forceUnassigned,
+          allowOverbooking: body.allowOverbooking === true,
+        },
+        {
+          checkinRecordId: bodyCheckinRecordId ?? undefined,
+          source: 'kiosk',
+        }
+      ).catch((err) => {
+        // Non-fatal: if we can't save the pending record, proceed anyway —
+        // worst case we lose the retry safety net but the check-in itself still runs.
+        console.error('[cloudbeds-checkin] Failed to save pending record:', err?.message);
+        return null;
+      });
+    }
+
     try {
       const result = await performCloudbedsCheckIn(checkInParams);
       const response: Record<string, unknown> = {
@@ -234,9 +291,37 @@ export async function POST(request: NextRequest) {
         reservationID: result.reservationID,
         roomName: result.roomName,
         message: result.message,
+        pendingCheckinId: pendingId,
       };
       if (result.reservationStatus) response.reservationStatus = result.reservationStatus;
       if (debugLog && debugLog.length > 0) response.debugTrail = debugLog;
+
+      // Mark the pending record as completed and patch the kiosk record.
+      if (pendingId) {
+        markPendingCheckinComplete(pendingId, result.reservationID, result.guestID).catch(() => {});
+      }
+      // Patch the Firestore kiosk record with Cloudbeds IDs — use a real await with error
+      // handling so the IDs are reliably persisted (previously was a fire-and-forget .catch(() => {})).
+      const recordIdToPatch = bodyCheckinRecordId ?? null;
+      if (recordIdToPatch && result.reservationID) {
+        try {
+          await updateCheckinRecord(String(recordIdToPatch), {
+            cloudbedsReservationID: result.reservationID,
+            cloudbedsGuestID: result.guestID,
+            ...(result.reservationStatus ? { reservationStatus: result.reservationStatus } as any : {}),
+          });
+        } catch (patchErr: any) {
+          // Log but don't fail the response — the pending record has the IDs so retry can re-patch.
+          console.error('[cloudbeds-checkin] Failed to patch kiosk record with Cloudbeds IDs:', patchErr?.message);
+          void saveEventLog({
+            level: 'error',
+            source: 'api:cloudbeds-checkin',
+            message: `Failed to patch kiosk record ${recordIdToPatch} with Cloudbeds IDs: ${patchErr?.message}`,
+            detail: { recordIdToPatch, reservationID: result.reservationID },
+          }).catch(() => {});
+        }
+      }
+
       return NextResponse.json(response);
     } catch (createError: any) {
       if (createError?.message === 'Cloudbeds not configured') {
@@ -257,10 +342,17 @@ export async function POST(request: NextRequest) {
       debugTrail: debugLog,
       submittedRequest: submittedRequestLog,
     });
+
+    // Mark the pending record as failed so the retry cron can pick it up.
+    if (pendingId) {
+      markPendingCheckinFailed(pendingId, errMsg, 1).catch(() => {});
+    }
+
     const errResponse: Record<string, unknown> = {
       success: false,
       error: errMsg,
       details: error.toString(),
+      pendingCheckinId: pendingId,
     };
     if (debugLog && debugLog.length > 0) errResponse.debugTrail = debugLog;
     return NextResponse.json(errResponse, { status: 500 });
@@ -272,4 +364,3 @@ function getAppBaseUrl(request: NextRequest): string {
   const url = new URL(request.url);
   return `${url.protocol}//${url.host}`;
 }
-

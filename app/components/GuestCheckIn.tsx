@@ -267,6 +267,9 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
           checkInDate: checkInYmd,
           checkOutDate: checkOutYmd,
           allowOverbooking: true,
+          // Pass the server record ID so the API can reliably patch Cloudbeds IDs back
+          // onto the Firestore record (previously was best-effort fire-and-forget PATCH).
+          ...(serverRecordId ? { checkinRecordId: serverRecordId } : {}),
           ...(placeholderReservationID ? { placeholderReservationID } : {}),
         });
 
@@ -307,11 +310,15 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
                 continue;
               }
 
-              console.error('[CHECK-IN] Cloudbeds failure logged to admin, not shown to guest:', errMsg);
+              // All client retries exhausted. The server has saved a pending record that the
+              // cron job will pick up every 5 minutes and retry automatically.
+              console.error('[CHECK-IN] Cloudbeds failure — pending record saved for auto-retry:', errMsg);
               postKioskEvent('kiosk:check-in', decodeCloudbedsUserMessage(errMsg), {
                 ...submittedFields,
                 cloudbedsFailure: true,
                 attempts: cloudbedsAttempt,
+                pendingCheckinId: cloudbedsResult.pendingCheckinId,
+                autoRetryQueued: true,
               });
             } else {
               cloudbedsSucceeded = true;
@@ -319,6 +326,7 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
               const guestID = cloudbedsResult.guestID as string | undefined;
               const reservationID = cloudbedsResult.reservationID as string | undefined;
               const reservationStatus = cloudbedsResult.reservationStatus as string | undefined;
+              // Update localStorage with Cloudbeds IDs
               try {
                 const stored: GuestData[] = JSON.parse(localStorage.getItem('checkedInGuests') || '[]');
                 const idx = stored.findLastIndex((g) => g.checkInTime === checkInTime);
@@ -327,7 +335,10 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
                   localStorage.setItem('checkedInGuests', JSON.stringify(stored));
                 }
               } catch { /* non-fatal */ }
-              if (serverRecordId) {
+              // The server-side route already patches the kiosk record when checkinRecordId is
+              // passed. This client-side PATCH is a belt-and-suspenders fallback only for the
+              // case where the server patch failed (e.g. Firestore transient error).
+              if (serverRecordId && reservationID) {
                 fetch('/api/checkin-records', {
                   method: 'PATCH',
                   headers: { 'Content-Type': 'application/json' },
@@ -337,7 +348,9 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
                     cloudbedsGuestID: guestID,
                     ...(reservationStatus ? { reservationStatus } : {}),
                   }),
-                }).catch(() => {});
+                }).catch((patchErr) => {
+                  console.error('[CHECK-IN] Belt-and-suspenders PATCH failed:', patchErr?.message);
+                });
               }
             }
           } catch (cloudbedsErr: any) {
