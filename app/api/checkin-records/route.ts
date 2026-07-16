@@ -7,6 +7,7 @@ import {
   findByReservationID,
   findByGuestName,
   findByGuestKey,
+  findActiveByName,
   upsertCheckinRecord,
   deleteCheckinRecord,
   deleteByReservationID,
@@ -32,15 +33,19 @@ function bustRecordsCache() {
 }
 
 /**
- * GET /api/checkin-records?from=YYYY-MM-DD&to=YYYY-MM-DD&limit=N
- *
- * Returns check-in records whose checkInTime falls within [from, to].
- * Both date params are optional; when omitted, returns the most-recent records.
- * `limit` is a safety cap for range exports (default 50 000); live polls default to 500.
+ * GET /api/checkin-records
+ *  - ?from=YYYY-MM-DD&to=YYYY-MM-DD&limit=N  → list records
+ *  - ?action=backup                           → download all records as JSON file
+ *  - ?action=search&name=John+Smith           → search checked-in guests
  */
 export async function GET(request: NextRequest) {
+  const { searchParams } = new URL(request.url);
+  const action = searchParams.get('action');
+
+  if (action === 'backup') return handleBackup();
+  if (action === 'search') return handleSearch(request);
+
   try {
-    const { searchParams } = new URL(request.url);
     const from = searchParams.get('from') ?? '';
     const to = searchParams.get('to') ?? '';
     // When a date range is provided (export scenario), paginate up to 50 000
@@ -89,11 +94,13 @@ export async function GET(request: NextRequest) {
 
 /**
  * POST /api/checkin-records
- * Body: Omit<CheckinRecord, 'id' | 'createdAt'>
- *
- * Creates a new check-in record. Returns { success, id }.
+ *  - ?action=sync  → bulk upsert records from kiosk localStorage
+ *  - (no action)   → create a single new check-in record
  */
 export async function POST(request: NextRequest) {
+  const action = new URL(request.url).searchParams.get('action');
+  if (action === 'sync') return handleSync(request);
+
   try {
     const body = await request.json();
     if (!body.firstName && !body.lastName) {
@@ -351,4 +358,235 @@ export async function DELETE(request: NextRequest) {
       { status: 500 }
     );
   }
+}
+
+// ─── ?action=backup ──────────────────────────────────────────────────────────
+
+async function handleBackup() {
+  try {
+    const records = await getCheckinRecords({ limit: 1000 });
+    const now = new Date();
+    const stamp = now.toISOString().replace(/\.\d{3}Z$/, '').replace(/:/g, '-');
+    const filename = `checkin-records-backup-${stamp}.json`;
+    const payload = JSON.stringify({ exportedAt: now.toISOString(), count: records.length, records }, null, 2);
+    return new NextResponse(payload, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Disposition': `attachment; filename="${filename}"`,
+        'Cache-Control': 'no-store',
+      },
+    });
+  } catch (err: any) {
+    return NextResponse.json({ success: false, error: err?.message ?? 'Server error' }, { status: 500 });
+  }
+}
+
+// ─── ?action=sync ────────────────────────────────────────────────────────────
+
+async function handleSync(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const records: any[] = Array.isArray(body.records) ? body.records : [];
+    if (records.length === 0) return NextResponse.json({ success: true, results: [] });
+    const batch = records.slice(0, 200);
+    const results = await Promise.all(
+      batch.map(async (r) => {
+        try {
+          return await upsertCheckinRecord({
+            firstName: String(r.firstName ?? '').trim(),
+            lastName: String(r.lastName ?? '').trim(),
+            clcNumber: String(r.clcNumber ?? ''),
+            phoneNumber: String(r.phoneNumber ?? ''),
+            class: String(r.class ?? 'TYE'),
+            roomNumber: String(r.roomNumber ?? ''),
+            checkInTime: r.checkInTime ? String(r.checkInTime) : '',
+            ...(r.checkOutTime ? { checkOutTime: String(r.checkOutTime) } : {}),
+            ...(r.cloudbedsReservationID ? { cloudbedsReservationID: String(r.cloudbedsReservationID) } : {}),
+            ...(r.cloudbedsGuestID ? { cloudbedsGuestID: String(r.cloudbedsGuestID) } : {}),
+            source: r.source ? String(r.source) : 'kiosk-sync',
+          });
+        } catch (err: any) {
+          return { id: null, created: false, error: err?.message };
+        }
+      })
+    );
+    const created = results.filter((r) => r.created).length;
+    const updated = results.filter((r) => !r.created && r.id).length;
+    return NextResponse.json({ success: true, results, created, updated });
+  } catch (err: any) {
+    return NextResponse.json({ success: false, error: err?.message ?? 'Server error' }, { status: 500 });
+  }
+}
+
+// ─── ?action=search ──────────────────────────────────────────────────────────
+
+function normalize(s: string): string { return s.trim().toLowerCase(); }
+
+function uniqueByReservation(rows: any[]): any[] {
+  const out: any[] = [];
+  const seen = new Set<string>();
+  for (const r of rows) {
+    const id = String(r?.reservationID ?? '');
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(r);
+  }
+  return out;
+}
+
+function isoMs(v: unknown): number {
+  const t = String(v ?? '').trim();
+  if (!t) return 0;
+  const d = new Date(t);
+  return Number.isNaN(d.getTime()) ? 0 : d.getTime();
+}
+
+function parseStayStartMs(r: any): number {
+  const raw = r.startDate ?? r.checkInDate ?? '';
+  const t = String(raw).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(t)) {
+    const d = new Date(`${t.slice(0, 10)}T12:00:00Z`);
+    return Number.isNaN(d.getTime()) ? 0 : d.getTime();
+  }
+  return isoMs(raw);
+}
+
+function guestDedupeKey(r: any): string {
+  const gid = String(r.guestID ?? r.guestList?.[0]?.guestID ?? r.guestList?.[0]?.guestId ?? '').trim();
+  if (gid) return `gid:${gid}`;
+  const gn = normalize(String(r.guestName ?? '').trim());
+  if (gn) return `name:${gn}`;
+  return `res:${String(r.reservationID ?? '')}`;
+}
+
+function isMoreRecentReservation(a: any, b: any): boolean {
+  const sa = parseStayStartMs(a);
+  const sb = parseStayStartMs(b);
+  if (sa !== sb) return sa > sb;
+  const ma = isoMs(a.dateModified ?? a.modified ?? a.lastModified) || isoMs(a.dateCreated ?? a.createdDate ?? a.created);
+  const mb = isoMs(b.dateModified ?? b.modified ?? b.lastModified) || isoMs(b.dateCreated ?? b.createdDate ?? b.created);
+  if (ma !== mb) return ma > mb;
+  const ra = parseInt(String(a.reservationID ?? '0'), 10) || 0;
+  const rb = parseInt(String(b.reservationID ?? '0'), 10) || 0;
+  return ra > rb;
+}
+
+function keepMostRecentPerGuest(rows: any[]): any[] {
+  const byKey = new Map<string, any>();
+  for (const r of rows) {
+    const key = guestDedupeKey(r);
+    const prev = byKey.get(key);
+    if (!prev || isMoreRecentReservation(r, prev)) byKey.set(key, r);
+  }
+  return Array.from(byKey.values());
+}
+
+function reservationMatchesQuery(r: any, query: string): boolean {
+  const q = normalize(query);
+  if (q.length < 2) return false;
+  const hay = String(r?.guestName ?? '').toLowerCase().trim();
+  if (!hay) return false;
+  if (hay.includes(q)) return true;
+  const tokens = q.split(/\s+/).filter((t) => t.length >= 2);
+  if (tokens.length <= 1) return false;
+  return tokens.every((t) => hay.includes(t));
+}
+
+function extractRoomName(r: any): string {
+  if (r.roomName) return String(r.roomName);
+  const rooms = Array.isArray(r.rooms) ? r.rooms : [];
+  const inHouse = rooms.find((rm: any) => rm?.roomStatus === 'in_house' && rm?.roomName);
+  if (inHouse?.roomName) return String(inHouse.roomName);
+  const named = rooms.find((rm: any) => rm?.roomName);
+  return named?.roomName ? String(named.roomName) : '';
+}
+
+function extractDisplayName(r: any): { firstName: string; lastName: string; displayName: string } {
+  const gn = String(r.guestName ?? '').trim();
+  const parts = gn.split(/\s+/).filter(Boolean);
+  const firstName = parts[0] ?? '';
+  const lastName = parts.slice(1).join(' ');
+  const displayName = gn || [firstName, lastName].filter(Boolean).join(' ').trim() || 'Guest';
+  return { firstName, lastName, displayName };
+}
+
+async function fetchCheckedInFromCloudbeds(apiBase: string, propertyID: string, headers: HeadersInit, filters: { firstName?: string; lastName?: string }): Promise<any[]> {
+  const params = new URLSearchParams({ propertyID, status: 'checked_in', pageNumber: '1', pageSize: '100', includeAllRooms: 'true', sortByRecent: 'true' });
+  if (filters.firstName) params.set('firstName', filters.firstName);
+  if (filters.lastName) params.set('lastName', filters.lastName);
+  const res = await fetch(`${apiBase}/getReservations?${params}`, { method: 'GET', headers });
+  if (!res.ok) return [];
+  const json = await res.json();
+  return Array.isArray(json.data) ? json.data : [];
+}
+
+async function handleSearch(request: NextRequest) {
+  const { searchParams } = new URL(request.url);
+  const name = searchParams.get('name')?.trim() ?? '';
+  if (name.length < 2) return NextResponse.json({ success: true, guests: [] });
+
+  const CLOUDBEDS_API_KEY = process.env.CLOUDBEDS_API_KEY;
+  const CLOUDBEDS_PROPERTY_ID = process.env.CLOUDBEDS_PROPERTY_ID;
+  const CLOUDBEDS_API_URL = process.env.CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.2';
+  const baseUrl = CLOUDBEDS_API_URL.replace(/\/v1\.\d+\/?$/, '');
+  const apiBase = `${baseUrl.replace(/\/$/, '')}/v1.3`;
+
+  if (!CLOUDBEDS_API_KEY || !CLOUDBEDS_PROPERTY_ID) {
+    try {
+      const localRecords = await findActiveByName(name);
+      const localGuests = localRecords.map((r) => ({
+        firstName: r.firstName, lastName: r.lastName,
+        displayName: [r.firstName, r.lastName].filter(Boolean).join(' ') || 'Guest',
+        roomNumber: r.roomNumber ?? '', cloudbedsReservationID: r.cloudbedsReservationID ?? '',
+        cloudbedsGuestID: r.cloudbedsGuestID ?? '',
+        checkInDate: r.checkInDateYmd ?? r.checkInTime?.slice(0, 10) ?? '',
+        checkOutDate: '', localRecordID: r.id, source: 'local' as const,
+      }));
+      return NextResponse.json({ success: true, guests: localGuests, mockMode: true });
+    } catch { return NextResponse.json({ success: true, guests: [], mockMode: true }); }
+  }
+
+  const headers: HeadersInit = { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/json' };
+  const parts = name.split(/\s+/).filter(Boolean);
+
+  const [cloudbedsResult, localResult] = await Promise.allSettled([
+    (async (): Promise<any[]> => {
+      let rawList: any[] = [];
+      if (parts.length >= 2) {
+        rawList = await fetchCheckedInFromCloudbeds(apiBase, CLOUDBEDS_PROPERTY_ID, headers, { firstName: parts[0], lastName: parts.slice(1).join(' ') });
+      } else {
+        const token = parts[0];
+        const [asFirst, asLast] = await Promise.all([
+          fetchCheckedInFromCloudbeds(apiBase, CLOUDBEDS_PROPERTY_ID, headers, { firstName: token }),
+          fetchCheckedInFromCloudbeds(apiBase, CLOUDBEDS_PROPERTY_ID, headers, { lastName: token }),
+        ]);
+        rawList = uniqueByReservation([...asFirst, ...asLast]);
+      }
+      return rawList.filter((r) => reservationMatchesQuery(r, name));
+    })(),
+    findActiveByName(name),
+  ]);
+
+  const cloudbedsMatched = cloudbedsResult.status === 'fulfilled' ? cloudbedsResult.value : [];
+  const firestoreRecords = localResult.status === 'fulfilled' ? localResult.value : [];
+
+  const cloudbedsGuests = keepMostRecentPerGuest(cloudbedsMatched).map((r) => {
+    const { firstName, lastName, displayName } = extractDisplayName(r);
+    return { firstName, lastName, displayName, roomNumber: extractRoomName(r), cloudbedsReservationID: String(r.reservationID ?? ''), cloudbedsGuestID: String(r.guestID ?? ''), checkInDate: r.startDate ?? r.checkInDate ?? '', checkOutDate: r.endDate ?? r.checkOutDate ?? '', source: 'cloudbeds' as const };
+  });
+
+  const cloudbedsReservationIDs = new Set(cloudbedsGuests.map((g) => g.cloudbedsReservationID).filter(Boolean));
+  const localGuests = firestoreRecords
+    .filter((r) => !(r.cloudbedsReservationID && cloudbedsReservationIDs.has(r.cloudbedsReservationID)))
+    .map((r) => ({
+      firstName: r.firstName, lastName: r.lastName,
+      displayName: [r.firstName, r.lastName].filter(Boolean).join(' ') || 'Guest',
+      roomNumber: r.roomNumber ?? '', cloudbedsReservationID: r.cloudbedsReservationID ?? '',
+      cloudbedsGuestID: r.cloudbedsGuestID ?? '',
+      checkInDate: r.checkInDateYmd ?? r.checkInTime?.slice(0, 10) ?? '',
+      checkOutDate: '', localRecordID: r.id, source: 'local' as const,
+    }));
+
+  return NextResponse.json({ success: true, guests: [...cloudbedsGuests, ...localGuests] });
 }

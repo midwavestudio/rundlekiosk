@@ -411,7 +411,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
     let cancelled = false;
     const loadRoomDirectory = async () => {
       try {
-        const res = await fetch('/api/admin/all-rooms');
+        const res = await fetch('/api/admin?action=all-rooms');
         const data = await res.json();
         if (!res.ok || !data?.success || !Array.isArray(data.rooms) || cancelled) return;
         const next: Record<string, string> = {};
@@ -1072,7 +1072,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
     setCorrectingRoom(true);
     setCorrectRoomResult(null);
     try {
-      const res = await fetch('/api/admin/reassign-room', {
+      const res = await fetch('/api/admin?action=reassign-room', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

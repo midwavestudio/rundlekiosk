@@ -111,7 +111,7 @@ function buildDateQuery(forDate: string): string {
   if (!forDate.trim()) return '';
   const params = new URLSearchParams();
   params.append('date', forDate);
-  return `?${params.toString()}`;
+  return `&${params.toString()}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -154,7 +154,7 @@ export default function TyePlaceholdersTab() {
     try {
       // POST runs a Cloudbeds sync first so deleted / cancelled reservations clear stale checkmarks.
       const res = await fetch(
-        `/api/admin/sync-tye-placeholders${buildDateQuery(selectedBlockDate)}`,
+        `/api/admin?action=sync-tye-placeholders${buildDateQuery(selectedBlockDate)}`,
         { method: 'POST' }
       );
       const data = await res.json();
@@ -361,7 +361,7 @@ export default function TyePlaceholdersTab() {
         return { roomID: id, roomName: room?.roomName ?? id };
       });
 
-      const res = await fetch('/api/admin/create-tye-placeholders', {
+      const res = await fetch('/api/admin?action=create-tye-placeholders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -445,7 +445,7 @@ export default function TyePlaceholdersTab() {
     setBlockFailures([]);
     try {
       const res = await fetch(
-        `/api/admin/sync-tye-placeholders${buildDateQuery(selectedBlockDate)}`,
+        `/api/admin?action=sync-tye-placeholders${buildDateQuery(selectedBlockDate)}`,
         { method: 'POST' }
       );
       const data = await res.json();
@@ -488,7 +488,7 @@ export default function TyePlaceholdersTab() {
     setError('');
     setBlockFailures([]);
     try {
-      const res = await fetch('/api/admin/cancel-tye-placeholder', {
+      const res = await fetch('/api/admin?action=cancel-tye-placeholder', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reservationID: p.reservationID }),

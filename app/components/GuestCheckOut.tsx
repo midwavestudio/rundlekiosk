@@ -190,7 +190,7 @@ export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutP
       setSearchError('');
       try {
         const res = await fetch(
-          `/api/search-checked-in?name=${encodeURIComponent(q)}`
+          `/api/checkin-records?action=search&name=${encodeURIComponent(q)}`
         );
         const data = await res.json();
         if (data.success) {

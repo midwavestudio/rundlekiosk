@@ -52,7 +52,7 @@ export default function FeedbackTab({ onUnreadCountChange }: FeedbackTabProps) {
     setLoading(true);
     setError('');
     try {
-      const res = await fetch('/api/feedback');
+      const res = await fetch('/api/event-log?type=feedback');
       if (!res.ok) throw new Error('Failed to load messages.');
       const data = await res.json();
       setMessages(data.messages ?? []);
@@ -88,7 +88,7 @@ export default function FeedbackTab({ onUnreadCountChange }: FeedbackTabProps) {
   async function updateMessage(id: string, status: FeedbackMessage['status'], notes?: string) {
     setSaving(id);
     try {
-      const res = await fetch('/api/feedback', {
+      const res = await fetch('/api/event-log?type=feedback', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id, status, notes }),
@@ -108,7 +108,7 @@ export default function FeedbackTab({ onUnreadCountChange }: FeedbackTabProps) {
     if (!confirm('Delete this message permanently? This cannot be undone.')) return;
     setSaving(id);
     try {
-      const res = await fetch(`/api/feedback?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const res = await fetch(`/api/event-log?type=feedback&id=${encodeURIComponent(id)}`, { method: 'DELETE' });
       if (!res.ok) throw new Error();
       setMessages((prev) => prev.filter((m) => m.id !== id));
       setReadIds((prev) => removeFeedbackReadId(id, prev));

@@ -28,7 +28,7 @@ export default function FeedbackModal({ onClose }: FeedbackModalProps) {
 
     setSubmitting(true);
     try {
-      const res = await fetch('/api/feedback', {
+      const res = await fetch('/api/event-log?type=feedback', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: message.trim(), name: name.trim() }),

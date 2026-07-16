@@ -53,7 +53,7 @@ export default function RecoverPage() {
     setStatus('syncing');
 
     try {
-      const res = await fetch('/api/checkin-records/sync', {
+      const res = await fetch('/api/checkin-records?action=sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ records: all }),

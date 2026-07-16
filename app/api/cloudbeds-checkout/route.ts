@@ -384,6 +384,9 @@ async function stampCheckOutTime(
 }
 
 export async function POST(request: NextRequest) {
+  const action = new URL(request.url).searchParams.get('action');
+  if (action === 'unassign-room') return handleUnassignRoom(request);
+
   let submittedRequestLog: Record<string, unknown> | null = null;
   /** Kiosk local-name fallback: Cloudbeds failure is expected — avoid duplicate admin error logs. */
   let localFallbackCheckout = false;
@@ -746,5 +749,98 @@ export async function POST(request: NextRequest) {
       { success: false, error: error.message || 'Failed to check out from Cloudbeds' },
       { status: 500 }
     );
+  }
+}
+
+// ─── POST ?action=unassign-room ───────────────────────────────────────────────
+
+function apiV13BaseCheckout(): string {
+  const raw = process.env.CLOUDBEDS_API_URL || 'https://api.cloudbeds.com/api/v1.2';
+  return `${raw.replace(/\/v1\.\d+\/?$/, '').replace(/\/$/, '')}/v1.3`;
+}
+
+function extractReservationRoomIDForUnassign(reservation: any): string | null {
+  if (Array.isArray(reservation?.assigned)) {
+    for (const r of reservation.assigned) {
+      const id = r?.reservationRoomID ?? r?.reservationRoomId;
+      if (id != null && String(id).trim() !== '') return String(id);
+    }
+  }
+  if (Array.isArray(reservation?.rooms)) {
+    for (const r of reservation.rooms) {
+      const id = r?.reservationRoomID ?? r?.reservationRoomId;
+      if (id != null && String(id).trim() !== '') return String(id);
+    }
+  }
+  const gl = reservation?.guestList;
+  if (gl && typeof gl === 'object' && !Array.isArray(gl)) {
+    for (const entry of Object.values(gl) as any[]) {
+      const id = (entry as any)?.reservationRoomID ?? (entry as any)?.reservationRoomId;
+      if (id != null && String(id).trim() !== '') return String(id);
+      if (Array.isArray((entry as any)?.assignedRooms)) {
+        for (const r of (entry as any).assignedRooms) {
+          const rid = r?.reservationRoomID ?? r?.reservationRoomId;
+          if (rid != null && String(rid).trim() !== '') return String(rid);
+        }
+      }
+    }
+  }
+  return null;
+}
+
+async function handleUnassignRoom(request: NextRequest) {
+  const log: any[] = [];
+  try {
+    const CLOUDBEDS_API_KEY = process.env.CLOUDBEDS_API_KEY;
+    const CLOUDBEDS_PROPERTY_ID = process.env.CLOUDBEDS_PROPERTY_ID;
+    if (!CLOUDBEDS_API_KEY || !CLOUDBEDS_PROPERTY_ID) {
+      return NextResponse.json({ success: true, message: 'Room unassigned (mock mode — no credentials)', mockMode: true });
+    }
+    const body = await request.json();
+    const { reservationID, reservationRoomID: bodyReservationRoomID, subReservationID: bodySubReservationID } = body as { reservationID?: string; reservationRoomID?: string; subReservationID?: string };
+    if (!reservationID) return NextResponse.json({ success: false, error: 'reservationID is required' }, { status: 400 });
+
+    const apiBase = apiV13BaseCheckout();
+    const authHeaders = { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' };
+
+    let reservationRoomID = bodyReservationRoomID?.trim() || null;
+    let subReservationID = bodySubReservationID?.trim() || null;
+
+    if (!reservationRoomID) {
+      const url = `${apiBase}/getReservation?propertyID=${encodeURIComponent(CLOUDBEDS_PROPERTY_ID)}&reservationID=${encodeURIComponent(reservationID)}&includeAllRooms=true`;
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/json' } });
+      const resData = res.ok ? await res.json().catch(() => null) : null;
+      log.push({ step: 'getReservation', success: resData?.success === true });
+      const reservationRecord = unwrapReservationFromGetReservation(resData) ?? resData?.data ?? null;
+      reservationRoomID = extractReservationRoomIDForUnassign(reservationRecord);
+      if (!subReservationID) {
+        const assigned = reservationRecord?.assigned;
+        if (Array.isArray(assigned) && assigned[0]?.subReservationID) subReservationID = String(assigned[0].subReservationID);
+        else if (Array.isArray(reservationRecord?.rooms) && reservationRecord.rooms[0]?.subReservationID) subReservationID = String(reservationRecord.rooms[0].subReservationID);
+      }
+    }
+
+    if (!reservationRoomID) {
+      return NextResponse.json({ success: false, error: 'Could not find a room line ID (reservationRoomID). The room may already be unassigned.', debugLog: log }, { status: 422 });
+    }
+
+    const confirmParams = new URLSearchParams({ propertyID: CLOUDBEDS_PROPERTY_ID, reservationID, status: 'confirmed' });
+    const confirmRes = await fetch(`${apiBase}/putReservation`, { method: 'PUT', headers: authHeaders, body: confirmParams.toString() });
+    const confirmData: any = await confirmRes.json().catch(() => ({}));
+    log.push({ step: 'reset_to_confirmed', ok: confirmRes.ok && confirmData.success === true });
+
+    const params = new URLSearchParams({ propertyID: CLOUDBEDS_PROPERTY_ID, reservationID, reservationRoomID, newRoomID: '' });
+    if (subReservationID && subReservationID !== reservationID) params.append('subReservationID', subReservationID);
+    const res = await fetch(`${apiBase}/postRoomAssign`, { method: 'POST', headers: authHeaders, body: params.toString() });
+    const raw = await res.text();
+    let data: any = {};
+    try { data = JSON.parse(raw); } catch { data = {}; }
+    const ok = res.ok && data.success === true;
+    log.push({ step: 'postRoomAssign_unassign', ok, status: res.status });
+    if (!ok) return NextResponse.json({ success: false, error: data?.message ?? 'Failed to unassign room', debugLog: log }, { status: 422 });
+
+    return NextResponse.json({ success: true, reservationID, reservationRoomID, message: 'Room successfully unassigned.', debugLog: log });
+  } catch (error: any) {
+    return NextResponse.json({ success: false, error: error.message || 'Failed to unassign room', debugLog: log }, { status: 500 });
   }
 }

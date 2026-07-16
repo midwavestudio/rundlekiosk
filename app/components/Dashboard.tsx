@@ -76,11 +76,11 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
   const [feedbackUnreadCount, setFeedbackUnreadCount] = useState(0);
 
   useEffect(() => {
-    fetch('/api/admin/firebase-status')
+    fetch('/api/admin?action=firebase-status')
       .then((r) => r.json())
       .then((data: FirebaseStatus) => setFirestoreStatus(data))
       .catch(() =>
-        setFirestoreStatus({ connected: false, error: 'Could not reach /api/admin/firebase-status', phase: undefined })
+        setFirestoreStatus({ connected: false, error: 'Could not reach /api/admin?action=firebase-status', phase: undefined })
       );
   }, []);
 
@@ -122,7 +122,7 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
     const refreshFeedbackBadge = async () => {
       if (document.visibilityState !== 'visible') return;
       try {
-        const res = await fetch('/api/feedback');
+        const res = await fetch('/api/event-log?type=feedback');
         if (!res.ok || cancelled) return;
         const data = await res.json();
         const messages: FeedbackEntry[] = Array.isArray(data.messages) ? data.messages : [];
@@ -384,7 +384,7 @@ function DashboardTab({ firestoreStatus }: { firestoreStatus: FirebaseStatus | n
     let cancelled = false;
     const loadStats = async () => {
       try {
-        const res = await fetch('/api/admin/dashboard-stats');
+        const res = await fetch('/api/admin?action=dashboard-stats');
         if (!res.ok || cancelled) return;
         const data = await res.json();
         if (!data.success || !data.stats || cancelled) return;
@@ -551,7 +551,7 @@ function BackfillDatesButton() {
     setState('loading');
     setResult(null);
     try {
-      const res = await fetch('/api/admin/backfill-checkin-dates', { method: 'POST' });
+      const res = await fetch('/api/admin?action=backfill-checkin-dates', { method: 'POST' });
       const data = await res.json();
       setResult(data);
       setState(data.success ? 'done' : 'error');

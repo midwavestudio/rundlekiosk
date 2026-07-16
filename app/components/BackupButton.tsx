@@ -24,7 +24,7 @@ export default function BackupButton() {
     setErrorMsg('');
 
     try {
-      const res = await fetch('/api/checkin-records/backup');
+      const res = await fetch('/api/checkin-records?action=backup');
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error ?? `Server returned ${res.status}`);
