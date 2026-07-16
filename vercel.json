@@ -6,11 +6,5 @@
     "app/api/bulk-checkin/route.ts": { "maxDuration": 300 },
     "app/api/cloudbeds-checkout/route.ts": { "maxDuration": 60 },
     "app/api/retry-cloudbeds-checkins/route.ts": { "maxDuration": 300 }
-  },
-  "crons": [
-    {
-      "path": "/api/retry-cloudbeds-checkins",
-      "schedule": "*/5 * * * *"
-    }
-  ]
+  }
 }
