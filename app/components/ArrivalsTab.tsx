@@ -974,7 +974,19 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
 
       // Use the room number from the record. It may be a room name or ID.
       const roomName = row.rawData.roomNumber || row.roomNumber || '';
-      const forceUnassigned = !roomName || roomName.toLowerCase() === 'unassigned';
+
+      // Determine if this is a past check-in (2+ day gap, same logic as server).
+      const todayYmd = localYmd(new Date());
+      const dayAfterCheckIn = (() => {
+        const d = new Date(checkInDateYmd + 'T12:00:00');
+        d.setDate(d.getDate() + 1);
+        return localYmd(d);
+      })();
+      const isPastCheckIn = dayAfterCheckIn < todayYmd;
+
+      // For past check-ins always force unassigned — Cloudbeds rejects past-dated room-specific
+      // bookings, so skip the room-matching path entirely and go straight to unassigned.
+      const forceUnassigned = isPastCheckIn || !roomName || roomName.toLowerCase() === 'unassigned';
 
       const body: Record<string, unknown> = {
         firstName: row.firstName,
@@ -984,9 +996,6 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
         classType: row.class === '-' ? 'TYE' : row.class || 'TYE',
         checkInDate: checkInDateYmd,
         checkOutDate: checkOutDateYmd,
-        // Always allow overbooking so the escalation path fires when the room
-        // is occupied: book any available room then immediately unassign it,
-        // leaving the reservation as confirmed + paid + unassigned.
         allowOverbooking: true,
         ...(row.rawData._serverId ? { checkinRecordId: row.rawData._serverId } : {}),
         ...(forceUnassigned
