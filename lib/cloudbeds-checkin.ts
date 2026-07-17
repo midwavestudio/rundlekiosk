@@ -1769,9 +1769,64 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     }
 
     log('3_escalate_overbooking_failed', {
-      note: 'All escalation paths exhausted — could not create reservation with allowOverbooking=1',
+      note: 'Specific-room escalation paths exhausted — trying any available room type as last resort',
       roomTypeID: roomTypeIDStr,
       candidatesAttempted: candidateRooms.length,
+    });
+
+    // Last-resort: try every room type in the property with allowOverbooking=1 and no physical
+    // room ID. This is the same strategy as the forceUnassigned path and succeeds whenever
+    // Cloudbeds has at least one room type with remaining virtual inventory.
+    const lastResortTypeIDs: string[] = [];
+    const seenLastResort = new Set<string>();
+    try {
+      // Use today's available rooms so the type list is always populated.
+      const allAvailRooms = await fetchAllRoomsPagesMerged(apiV13, CLOUDBEDS_PROPERTY_ID, CLOUDBEDS_API_KEY, {
+        startDate: bookingStartDate,
+        endDate: bookingEndDate,
+      });
+      for (const r of allAvailRooms) {
+        const tid = String(r?.roomTypeID ?? r?.roomType_id ?? '').trim();
+        if (tid && !seenLastResort.has(tid)) { seenLastResort.add(tid); lastResortTypeIDs.push(tid); }
+      }
+      if (lastResortTypeIDs.length === 0) {
+        // No available rooms — fall back to all room types in the full inventory.
+        const allRooms = await fetchAllRoomsPagesMerged(apiV13, CLOUDBEDS_PROPERTY_ID, CLOUDBEDS_API_KEY);
+        for (const r of allRooms) {
+          const tid = String(r?.roomTypeID ?? r?.roomType_id ?? '').trim();
+          if (tid && !seenLastResort.has(tid)) { seenLastResort.add(tid); lastResortTypeIDs.push(tid); }
+        }
+      }
+    } catch (e: any) {
+      log('3_last_resort_rooms_error', undefined, undefined, e?.message);
+    }
+
+    log('3_last_resort_type_only_start', {
+      note: 'Attempting type-only unassigned booking across all room types',
+      typeIDs: lastResortTypeIDs,
+      startDate: bookingStartDate,
+      endDate: bookingEndDate,
+    });
+
+    for (const typeID of lastResortTypeIDs) {
+      if (!typeID) continue;
+      const pLast = buildEscalateParams(typeID, undefined);
+      const rLast = await tryPostReservation(pLast, `3_last_resort_type_${typeID}`);
+      if (rLast.ok) {
+        reservationData = rLast.parsed;
+        confirmedPayOnly = true;
+        physicalRoomPinnedInCreate = false;
+        log('3_last_resort_succeeded', {
+          note: 'Created unassigned reservation via last-resort type-only path',
+          typeID,
+        });
+        return true;
+      }
+    }
+
+    log('3_last_resort_failed', {
+      note: 'All escalation and last-resort paths exhausted — could not create any reservation',
+      typesAttempted: lastResortTypeIDs.length,
     });
     return false;
   };
