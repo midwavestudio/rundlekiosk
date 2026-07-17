@@ -101,9 +101,10 @@ export async function POST(request: NextRequest) {
     case 'cancel-tye-placeholder':  return handleCancelTyePlaceholder(request);
     case 'reassign-room':           return handleReassignRoom(request);
     case 'backfill-checkin-dates':  return handleBackfillCheckinDates();
+    case 'retry-checkins':          return handleRetryCheckins();
     default:
       return NextResponse.json(
-        { success: false, error: 'Unknown action. Use ?action=sync-tye-placeholders|create-tye-placeholders|cancel-tye-placeholder|reassign-room|backfill-checkin-dates' },
+        { success: false, error: 'Unknown action. Use ?action=sync-tye-placeholders|create-tye-placeholders|cancel-tye-placeholder|reassign-room|backfill-checkin-dates|retry-checkins' },
         { status: 400 }
       );
   }
@@ -887,5 +888,30 @@ async function handleBackfillCheckinDates() {
     return NextResponse.json({ success: true, updated, skipped, errors });
   } catch (err: any) {
     return NextResponse.json({ success: false, error: err?.message ?? 'Backfill failed', updated, skipped, errors }, { status: 500 });
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// retry-checkins — proxy to /api/retry-cloudbeds-checkins with server secret
+// ════════════════════════════════════════════════════════════════════════════
+
+async function handleRetryCheckins() {
+  const cronSecret = process.env.CRON_SECRET;
+  const baseUrl = process.env.NEXTAUTH_URL || process.env.VERCEL_URL
+    ? `https://${process.env.VERCEL_URL}`
+    : 'http://localhost:3000';
+
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (cronSecret) headers['Authorization'] = `Bearer ${cronSecret}`;
+
+  try {
+    const res = await fetch(`${baseUrl}/api/retry-cloudbeds-checkins`, {
+      method: 'POST',
+      headers,
+    });
+    const data = await res.json();
+    return NextResponse.json(data, { status: res.ok ? 200 : 500 });
+  } catch (err: any) {
+    return NextResponse.json({ error: err?.message ?? 'Failed to call retry endpoint' }, { status: 500 });
   }
 }

@@ -472,6 +472,15 @@ function DashboardTab({ firestoreStatus }: { firestoreStatus: FirebaseStatus | n
           </p>
           <BackfillDatesButton />
         </div>
+        <div style={{ padding: '14px 20px 18px', borderTop: `1px solid ${ADMIN_BORDER}` }}>
+          <p style={{ margin: '0 0 4px', fontSize: '13px', fontWeight: 600, color: ADMIN_TEXT_MUTED }}>
+            Retry Failed Cloudbeds Check-ins
+          </p>
+          <p style={{ margin: '0 0 12px', fontSize: '12px', color: ADMIN_TEXT_FAINT, lineHeight: '1.5' }}>
+            Re-processes any check-ins that failed to create a reservation in Cloudbeds. Safe to run anytime — already-completed check-ins are skipped.
+          </p>
+          <RetryCheckinsButton />
+        </div>
       </div>
     </div>
   );
@@ -536,6 +545,65 @@ function StatusRow({ label, status, warning, error }: { label: string; status: s
         <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: dot, display: 'inline-block' }} />
         {status}
       </span>
+    </div>
+  );
+}
+
+// ─── Retry failed check-ins button ────────────────────────────────────────────
+
+function RetryCheckinsButton() {
+  const [state, setState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
+  const [result, setResult] = useState<{ processed?: number; succeeded?: number; failed?: number; skipped?: number; error?: string } | null>(null);
+
+  const run = async () => {
+    if (state === 'loading') return;
+    setState('loading');
+    setResult(null);
+    try {
+      const res = await fetch('/api/admin?action=retry-checkins', { method: 'POST' });
+      const data = await res.json();
+      setResult(data);
+      setState(data.error ? 'error' : 'done');
+    } catch (err: any) {
+      setResult({ error: err?.message ?? 'Network error' });
+      setState('error');
+    }
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      <button
+        onClick={run}
+        disabled={state === 'loading'}
+        style={{
+          padding: '9px 18px',
+          background: state === 'done' ? '#16a34a' : state === 'error' ? '#dc2626' : '#2563eb',
+          color: 'white',
+          border: 'none',
+          borderRadius: '8px',
+          fontSize: '13px',
+          fontWeight: 600,
+          cursor: state === 'loading' ? 'not-allowed' : 'pointer',
+          opacity: state === 'loading' ? 0.7 : 1,
+          alignSelf: 'flex-start',
+        }}
+      >
+        {state === 'loading' ? 'Retrying...' : state === 'done' ? 'Done \u2713' : state === 'error' ? 'Failed \u2014 Retry' : 'Retry Failed Check-ins'}
+      </button>
+      {result && (
+        <div style={{
+          fontSize: '12px',
+          padding: '8px 12px',
+          borderRadius: '6px',
+          background: state === 'done' ? 'rgba(22,163,74,0.1)' : 'rgba(220,38,38,0.1)',
+          border: `1px solid ${state === 'done' ? 'rgba(22,163,74,0.3)' : 'rgba(220,38,38,0.3)'}`,
+          color: state === 'done' ? '#16a34a' : '#dc2626',
+        }}>
+          {state === 'done'
+            ? `Processed ${result.processed ?? 0} — ${result.succeeded ?? 0} succeeded, ${result.failed ?? 0} failed, ${result.skipped ?? 0} skipped.`
+            : `Error: ${result.error ?? 'Unknown error'}`}
+        </div>
+      )}
     </div>
   );
 }
