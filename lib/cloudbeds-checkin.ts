@@ -1103,6 +1103,23 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   // checkInDate is still behind serverUtcToday (i.e. a genuine 2+ day gap).
   const isPastCheckInDate = addOneCalendarDayYmd(checkInDate) < serverUtcToday;
   const useOverbooking = allowOverbookingParam === true || isPastCheckInDate;
+
+  // Cloudbeds refuses postReservation with any past startDate — even with allowOverbooking=1.
+  // For admin re-creates of past check-ins, substitute today's dates for the entire booking
+  // call chain so Cloudbeds accepts the request. The reservation will be unassigned/confirmed
+  // and staff can back-date it in Cloudbeds if needed.
+  const bookingStartDate = isPastCheckInDate ? serverUtcToday : checkInDate;
+  const bookingEndDate   = isPastCheckInDate ? addOneCalendarDayYmd(serverUtcToday) : checkOutDate;
+
+  if (isPastCheckInDate) {
+    log('0_past_date_booking_override', {
+      originalCheckIn: checkInDate,
+      originalCheckOut: checkOutDate,
+      bookingStartDate,
+      bookingEndDate,
+      note: 'Past check-in date — using today for all postReservation calls; reservation will be unassigned/confirmed',
+    });
+  }
   if (useOverbooking) {
     log('0_allowOverbooking', {
       checkInDate,
@@ -1130,8 +1147,8 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
 
     try {
       const stayRooms = await fetchAllRoomsPagesMerged(apiV13, CLOUDBEDS_PROPERTY_ID, CLOUDBEDS_API_KEY, {
-        startDate: checkInDate,
-        endDate: checkOutDate,
+        startDate: bookingStartDate,
+        endDate: bookingEndDate,
       });
       for (const room of stayRooms) {
         pushType(room?.roomTypeID ?? room?.roomType_id);
@@ -1153,8 +1170,8 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
         CLOUDBEDS_API_URL,
         CLOUDBEDS_PROPERTY_ID,
         CLOUDBEDS_API_KEY,
-        checkInDate,
-        checkOutDate
+        bookingStartDate,
+        bookingEndDate
       );
     } catch {
       stayRates = [];
@@ -1163,8 +1180,8 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     const buildUnassignedParams = (roomTypeID: string, roomRateID: string | null): URLSearchParams => {
       const p = new URLSearchParams();
       p.append('propertyID', CLOUDBEDS_PROPERTY_ID);
-      p.append('startDate', checkInDate);
-      p.append('endDate', checkOutDate);
+      p.append('startDate', bookingStartDate);
+      p.append('endDate', bookingEndDate);
       p.append('guestFirstName', guestFirstName);
       p.append('guestLastName', guestLastName);
       p.append('guestCountry', 'US');
@@ -1205,8 +1222,8 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       log('0_forceUnassigned_postReservation_request', {
         roomTypeID,
         roomRateID: roomRateID ?? undefined,
-        startDate: checkInDate,
-        endDate: checkOutDate,
+        startDate: bookingStartDate,
+        endDate: bookingEndDate,
       });
 
       const resp = await fetch(`${apiV13}/postReservation`, {
@@ -1316,10 +1333,10 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   // Same room for the stay window — paginated dated getRooms (inventory for check-in → check-out nights).
   let roomIdForStayPeriod: string | null = null;
   try {
-    log('1b_getRooms_stay_dates_request', { startDate: checkInDate, endDate: checkOutDate });
+    log('1b_getRooms_stay_dates_request', { startDate: bookingStartDate, endDate: bookingEndDate });
     const stayRooms = await fetchAllRoomsPagesMerged(apiV13, CLOUDBEDS_PROPERTY_ID, CLOUDBEDS_API_KEY, {
-      startDate: checkInDate,
-      endDate: checkOutDate,
+      startDate: bookingStartDate,
+      endDate: bookingEndDate,
     });
     let stayRoom = findRoomByKey(stayRooms, roomKey);
     if (!stayRoom && hint) {
@@ -1348,21 +1365,17 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       CLOUDBEDS_API_URL,
       CLOUDBEDS_PROPERTY_ID,
       CLOUDBEDS_API_KEY,
-      checkInDate,
-      checkOutDate
+      bookingStartDate,
+      bookingEndDate
     );
     stayRatesForFallback = stayRates;
     let { allRatesForRoomType, tyeRate } = findTyeRateForRoomType(stayRates, roomTypeID);
 
     if (!tyeRate && wantTye) {
-      // Use checkInDate as the base anchor. If the check-in date is genuinely in the past
-      // (2+ day gap, i.e. admin backdating) fall back to the current server UTC date to find
-      // an active TYE rate plan. Using server UTC directly was a bug for evening kiosk check-ins:
-      // at 10 PM local CDT the Vercel server (UTC) is already on the next UTC day, so the anchor
-      // would land on "tomorrow", fetching rates for a different night than the stay window.
-      const anchorStart = isPastCheckInDate ? serverUtcToday : checkInDate;
-      const anchorEnd = isPastCheckInDate ? addOneCalendarDayYmd(serverUtcToday) : checkOutDate;
-      const sameWindowAsStay = anchorStart === checkInDate && anchorEnd === checkOutDate;
+      // bookingStartDate is already today when isPastCheckInDate — the anchor is the same window.
+      const anchorStart = bookingStartDate;
+      const anchorEnd = bookingEndDate;
+      const sameWindowAsStay = anchorStart === bookingStartDate && anchorEnd === bookingEndDate;
       if (!sameWindowAsStay) {
         log('2_getRatePlans_tye_anchor_window', {
           stayWindow: { checkInDate, checkOutDate },
@@ -1502,8 +1515,8 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     const { attachPhysicalRoom, dateOverride, roomIdOnly, allowOverbooking } = opts;
     const reservationParams = new URLSearchParams();
     reservationParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
-    reservationParams.append('startDate', dateOverride?.startDate ?? checkInDate);
-    reservationParams.append('endDate', dateOverride?.endDate ?? checkOutDate);
+    reservationParams.append('startDate', dateOverride?.startDate ?? bookingStartDate);
+    reservationParams.append('endDate', dateOverride?.endDate ?? bookingEndDate);
     reservationParams.append('guestFirstName', guestFirstName);
     reservationParams.append('guestLastName', guestLastName);
     reservationParams.append('guestCountry', 'US');
@@ -1561,8 +1574,8 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
         roomTypeID: roomIdOnly ? undefined : roomTypeIDStr,
         roomID: (attachPhysicalRoom || roomIdOnly) && roomIdForCreate != null ? String(roomIdForCreate) : undefined,
         roomRateID: roomIdOnly ? undefined : (roomRateIDStr || undefined),
-        startDate: dateOverride?.startDate ?? checkInDate,
-        endDate: dateOverride?.endDate ?? checkOutDate,
+        startDate: dateOverride?.startDate ?? bookingStartDate,
+        endDate: dateOverride?.endDate ?? bookingEndDate,
         guestFirstName: guestFirstName,
         guestLastName: guestLastName,
         attachPhysicalRoom,
@@ -1610,27 +1623,21 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
         ? String(email).trim()
         : buildGuestSyntheticEmail(guestFirstName, guestLastName);
 
-    // For past check-in dates, Cloudbeds rejects postReservation regardless of allowOverbooking.
-    // Use today's date as the booking window so the escalation call is accepted.
-    // The reservation will be created for today → staff can correct the dates in Cloudbeds.
-    const escalateStartDate = isPastCheckInDate ? serverUtcToday : checkInDate;
-    const escalateEndDate   = isPastCheckInDate ? addOneCalendarDayYmd(serverUtcToday) : checkOutDate;
-
     log('3_escalate_overbooking_unassigned', {
       note: 'postReservation failed — attempting escalation paths to create unassigned reservation',
       failedMessage: failedData?.message ?? '(none)',
       roomTypeID: roomTypeIDStr,
       roomTypeIDFallback: !roomTypeIDStr ? 'none available' : undefined,
+      bookingDates: { bookingStartDate, bookingEndDate },
       originalDates: { checkInDate, checkOutDate },
-      escalateDates: { escalateStartDate, escalateEndDate },
       isPastCheckInDate,
     });
 
     const buildEscalateParams = (overrideTypeID?: string, overrideRoomID?: string): URLSearchParams => {
       const p = new URLSearchParams();
       p.append('propertyID', CLOUDBEDS_PROPERTY_ID);
-      p.append('startDate', escalateStartDate);
-      p.append('endDate', escalateEndDate);
+      p.append('startDate', bookingStartDate);
+      p.append('endDate', bookingEndDate);
       p.append('guestFirstName', guestFirstName);
       p.append('guestLastName', guestLastName);
       p.append('guestCountry', 'US');
@@ -1657,7 +1664,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     };
 
     const tryPostReservation = async (params: URLSearchParams, stepLabel: string): Promise<{ ok: boolean; parsed: any }> => {
-      log(`${stepLabel}_request`, { roomTypeID: params.get('rooms[0][roomTypeID]'), roomID: params.get('rooms[0][roomID]') ?? '(none)', startDate: escalateStartDate, endDate: escalateEndDate });
+      log(`${stepLabel}_request`, { roomTypeID: params.get('rooms[0][roomTypeID]'), roomID: params.get('rooms[0][roomID]') ?? '(none)', startDate: bookingStartDate, endDate: bookingEndDate });
       try {
         const resp = await fetch(`${apiV13}/postReservation`, {
           method: 'POST',
@@ -1704,8 +1711,8 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     let alternativeRooms: any[] = [];
     try {
       alternativeRooms = await fetchAllRoomsPagesMerged(apiV13, CLOUDBEDS_PROPERTY_ID, CLOUDBEDS_API_KEY, {
-        startDate: escalateStartDate,
-        endDate: escalateEndDate,
+        startDate: bookingStartDate,
+        endDate: bookingEndDate,
       });
     } catch (e: any) {
       log('3_escalate_path2_rooms_error', undefined, undefined, e?.message);
