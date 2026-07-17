@@ -1104,22 +1104,29 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   const isPastCheckInDate = addOneCalendarDayYmd(checkInDate) < serverUtcToday;
   const useOverbooking = allowOverbookingParam === true || isPastCheckInDate;
 
-  // Cloudbeds refuses postReservation with any past startDate — even with allowOverbooking=1.
-  // For admin re-creates of past check-ins, substitute today's dates for the entire booking
-  // call chain so Cloudbeds accepts the request. The reservation will be unassigned/confirmed
-  // and staff can back-date it in Cloudbeds if needed.
-  const bookingStartDate = isPastCheckInDate ? serverUtcToday : checkInDate;
-  const bookingEndDate   = isPastCheckInDate ? addOneCalendarDayYmd(serverUtcToday) : checkOutDate;
+  // For past check-in dates we first try the real original date (Cloudbeds sometimes accepts
+  // 1-2 day old dates with allowOverbooking=1, which gives the reservation the correct date).
+  // If Cloudbeds rejects with a "could not accommodate" / back-date error we fall back to
+  // today's dates so the reservation is at least created (unassigned) and staff can fix it.
+  // bookingStartDate / bookingEndDate start as the real dates and are overridden to today
+  // only after a confirmed rejection from the API.
+  let bookingStartDate = checkInDate;
+  let bookingEndDate   = checkOutDate;
 
-  if (isPastCheckInDate) {
-    log('0_past_date_booking_override', {
+  // Helper: repoint the booking window to today when Cloudbeds refuses a past date.
+  const switchToTodayBookingDates = () => {
+    if (bookingStartDate === serverUtcToday) return; // already switched
+    log('0_past_date_fallback_to_today', {
       originalCheckIn: checkInDate,
       originalCheckOut: checkOutDate,
-      bookingStartDate,
-      bookingEndDate,
-      note: 'Past check-in date — using today for all postReservation calls; reservation will be unassigned/confirmed',
+      bookingStartDate: serverUtcToday,
+      bookingEndDate: addOneCalendarDayYmd(serverUtcToday),
+      note: 'Cloudbeds rejected past startDate — retrying with today to ensure reservation is created',
     });
-  }
+    bookingStartDate = serverUtcToday;
+    bookingEndDate   = addOneCalendarDayYmd(serverUtcToday);
+  };
+
   if (useOverbooking) {
     log('0_allowOverbooking', {
       checkInDate,
@@ -1206,47 +1213,72 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       return p;
     };
 
-    let respParsed: any = {};
-    let createdReservation = false;
-    for (const roomTypeID of candidateRoomTypeIDs.length > 0 ? candidateRoomTypeIDs : ['']) {
-      let roomRateID: string | null = null;
-      if (wantTye) {
-        const { tyeRate } = findTyeRateForRoomType(stayRates, roomTypeID);
-        roomRateID = tyeRate
-          ? String(tyeRate.rateID ?? tyeRate.rate_id ?? tyeRate.id ?? tyeRate.ratePlanID ?? 227753)
-          : '227753';
+    // tryRoomTypes: attempt postReservation for each candidate room type.
+    // Returns { created, respParsed, rejectedByPastDate }.
+    const tryRoomTypes = async (label: string) => {
+      let respParsed: any = {};
+      let created = false;
+      let rejectedByPastDate = false;
+      for (const roomTypeID of candidateRoomTypeIDs.length > 0 ? candidateRoomTypeIDs : ['']) {
+        let roomRateID: string | null = null;
+        if (wantTye) {
+          const { tyeRate } = findTyeRateForRoomType(stayRates, roomTypeID);
+          roomRateID = tyeRate
+            ? String(tyeRate.rateID ?? tyeRate.rate_id ?? tyeRate.id ?? tyeRate.ratePlanID ?? 227753)
+            : '227753';
+        }
+        if (!roomTypeID) continue;
+        const unassignedParams = buildUnassignedParams(roomTypeID, roomRateID);
+
+        log(`0_forceUnassigned_postReservation_request_${label}`, {
+          roomTypeID,
+          roomRateID: roomRateID ?? undefined,
+          startDate: bookingStartDate,
+          endDate: bookingEndDate,
+        });
+
+        const resp = await fetch(`${apiV13}/postReservation`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: unassignedParams.toString(),
+        });
+        const respText = await resp.text();
+        try {
+          respParsed = JSON.parse(respText);
+        } catch {
+          respParsed = { success: false, message: respText };
+        }
+        log(`0_forceUnassigned_postReservation_response_${label}`, {
+          status: resp.status,
+          roomTypeID,
+          body: respParsed,
+        });
+
+        if (resp.ok && respParsed.success === true) {
+          created = true;
+          break;
+        }
+        const msg = String(respParsed?.message ?? '').toLowerCase();
+        if (msg.includes('could not accommodate') || msg.includes('past') || msg.includes('back') || msg.includes('date')) {
+          rejectedByPastDate = true;
+        }
       }
-      if (!roomTypeID) continue;
-      const unassignedParams = buildUnassignedParams(roomTypeID, roomRateID);
+      return { created, respParsed, rejectedByPastDate };
+    };
 
-      log('0_forceUnassigned_postReservation_request', {
-        roomTypeID,
-        roomRateID: roomRateID ?? undefined,
-        startDate: bookingStartDate,
-        endDate: bookingEndDate,
-      });
+    // First attempt: try with the original (possibly past) check-in date.
+    let { created: createdReservation, respParsed, rejectedByPastDate } = await tryRoomTypes('attempt1');
 
-      const resp = await fetch(`${apiV13}/postReservation`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: unassignedParams.toString(),
-      });
-      const respText = await resp.text();
+    // If Cloudbeds rejected due to the past date, switch to today and retry once.
+    if (!createdReservation && isPastCheckInDate && rejectedByPastDate) {
+      switchToTodayBookingDates();
+      // Re-fetch rates for today's window since the original stayRates used the past date.
       try {
-        respParsed = JSON.parse(respText);
-      } catch {
-        respParsed = { success: false, message: respText };
-      }
-      log('0_forceUnassigned_postReservation_response', {
-        status: resp.status,
-        roomTypeID,
-        body: respParsed,
-      });
-
-      if (resp.ok && respParsed.success === true) {
-        createdReservation = true;
-        break;
-      }
+        stayRates = await fetchCloudbedsRatePlansRows(
+          CLOUDBEDS_API_URL, CLOUDBEDS_PROPERTY_ID, CLOUDBEDS_API_KEY, bookingStartDate, bookingEndDate
+        );
+      } catch { /* keep existing stayRates */ }
+      ({ created: createdReservation, respParsed } = await tryRoomTypes('attempt2_today'));
     }
 
     if (!createdReservation) {
@@ -1894,19 +1926,24 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
         reservationID: recoveredPayload.reservationID ?? recoveredPayload.data?.reservationID,
         note: 'postReservation failed but same guest+stay+room reservation exists — reusing for retry',
       });
-    } else if (await escalateAfterFailedPostReservation(first.data)) {
-      // The initial booking was rejected — we succeeded via an overbooking/fallback path.
-      // The guest's physical room is occupied by another guest, so the reservation must stay
-      // in confirmed (unassigned) status. Staff will assign the room in Cloudbeds.
-      // Do NOT check the guest in, regardless of physicalRoomPinnedInCreate.
-      confirmedPayOnly = true;
-      log('3_escalation_confirmed_pay_only', {
-        note: 'Initial postReservation failed; escalation succeeded — locking to confirmedPayOnly to prevent check-in of occupied room',
-        physicalRoomPinnedInCreate,
-      });
     } else {
-      const msg = first.data?.message || first.text || 'Failed to create reservation in Cloudbeds';
-      throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
+      // Switch booking window to today before escalation if the original date is in the past —
+      // escalation also calls postReservation and Cloudbeds rejects any past startDate.
+      if (isPastCheckInDate) switchToTodayBookingDates();
+      if (await escalateAfterFailedPostReservation(first.data)) {
+        // The initial booking was rejected — we succeeded via an overbooking/fallback path.
+        // The guest's physical room is occupied by another guest, so the reservation must stay
+        // in confirmed (unassigned) status. Staff will assign the room in Cloudbeds.
+        // Do NOT check the guest in, regardless of physicalRoomPinnedInCreate.
+        confirmedPayOnly = true;
+        log('3_escalation_confirmed_pay_only', {
+          note: 'Initial postReservation failed; escalation succeeded — locking to confirmedPayOnly to prevent check-in of occupied room',
+          physicalRoomPinnedInCreate,
+        });
+      } else {
+        const msg = first.data?.message || first.text || 'Failed to create reservation in Cloudbeds';
+        throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
+      }
     }
   } else {
     // first.ok is false and canAttachPhysicalRoomToReservation is false (no room ID available).
@@ -1917,6 +1954,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
         'Room ' + JSON.stringify(selectedRoomName ?? roomName) + ' is not available for ' + checkInDate + ' (Cloudbeds could not book that specific room).';
       throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
     }
+    if (isPastCheckInDate) switchToTodayBookingDates();
     if (await escalateAfterFailedPostReservation(first.data)) {
       // Same as above — escalation succeeded after initial failure, stay confirmed.
       confirmedPayOnly = true;
