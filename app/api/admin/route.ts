@@ -892,26 +892,76 @@ async function handleBackfillCheckinDates() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// retry-checkins — proxy to /api/retry-cloudbeds-checkins with server secret
+// retry-checkins — directly process pending check-ins (no internal HTTP roundtrip)
 // ════════════════════════════════════════════════════════════════════════════
 
 async function handleRetryCheckins() {
-  const cronSecret = process.env.CRON_SECRET;
-  const baseUrl = process.env.NEXTAUTH_URL || process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : 'http://localhost:3000';
+  const {
+    getPendingCheckins,
+    markPendingCheckinComplete,
+    markPendingCheckinFailed,
+    incrementPendingCheckinAttempt,
+  } = await import('@/lib/pending-checkin-store');
+  const { performCloudbedsCheckIn } = await import('@/lib/cloudbeds-checkin');
+  const { updateCheckinRecord } = await import('@/lib/checkin-store');
+  const { saveEventLog } = await import('@/lib/event-log-store');
 
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (cronSecret) headers['Authorization'] = `Bearer ${cronSecret}`;
-
+  const MAX_ATTEMPTS = 5;
+  let pending: Awaited<ReturnType<typeof getPendingCheckins>> = [];
   try {
-    const res = await fetch(`${baseUrl}/api/retry-cloudbeds-checkins`, {
-      method: 'POST',
-      headers,
-    });
-    const data = await res.json();
-    return NextResponse.json(data, { status: res.ok ? 200 : 500 });
+    pending = await getPendingCheckins({ maxAge: 48 * 60 * 60 * 1000 });
   } catch (err: any) {
-    return NextResponse.json({ error: err?.message ?? 'Failed to call retry endpoint' }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to fetch pending check-ins: ' + (err?.message ?? String(err)) }, { status: 500 });
   }
+
+  const results: Array<{ guest: string; room: string; status: string; message: string; reservationID?: string }> = [];
+
+  for (const item of pending) {
+    const guest = `${item.checkInParams.firstName ?? ''} ${item.checkInParams.lastName ?? ''}`.trim();
+    const room = item.checkInParams.roomName ?? 'unknown';
+
+    if (item.attempts >= MAX_ATTEMPTS) {
+      results.push({ guest, room, status: 'skipped', message: `Max attempts (${MAX_ATTEMPTS}) reached` });
+      continue;
+    }
+    if (
+      item.status === 'processing' &&
+      item.lastAttemptAt &&
+      Date.now() - new Date(item.lastAttemptAt).getTime() < 90_000
+    ) {
+      results.push({ guest, room, status: 'skipped', message: 'Currently processing' });
+      continue;
+    }
+
+    try {
+      await incrementPendingCheckinAttempt(item.id).catch(() => {});
+      const result = await performCloudbedsCheckIn({ ...item.checkInParams, debugLog: [] });
+      await markPendingCheckinComplete(item.id, result.reservationID, result.guestID).catch(() => {});
+      if (item.checkinRecordId && result.reservationID) {
+        await updateCheckinRecord(item.checkinRecordId, {
+          cloudbedsReservationID: result.reservationID,
+          cloudbedsGuestID: result.guestID,
+          ...(result.reservationStatus ? { reservationStatus: result.reservationStatus } as any : {}),
+        }).catch(() => {});
+      }
+      void saveEventLog({ level: 'info', source: 'api:admin:retry-checkins', message: `Retry succeeded for ${guest} — reservation ${result.reservationID}`, detail: { pendingId: item.id, reservationID: result.reservationID } }).catch(() => {});
+      results.push({ guest, room, status: 'succeeded', message: result.message, reservationID: result.reservationID });
+    } catch (err: any) {
+      const errMsg = err?.message ?? 'Unknown error';
+      const newAttempts = (item.attempts ?? 0) + 1;
+      if (newAttempts >= MAX_ATTEMPTS) {
+        await markPendingCheckinFailed(item.id, errMsg, newAttempts).catch(() => {});
+      }
+      void saveEventLog({ level: 'error', source: 'api:admin:retry-checkins', message: `Retry failed for ${guest}: ${errMsg}`, detail: { pendingId: item.id, attempts: newAttempts } }).catch(() => {});
+      results.push({ guest, room, status: 'failed', message: errMsg });
+    }
+  }
+
+  return NextResponse.json({
+    processed: pending.length,
+    succeeded: results.filter(r => r.status === 'succeeded').length,
+    failed: results.filter(r => r.status === 'failed').length,
+    skipped: results.filter(r => r.status === 'skipped').length,
+    results,
+  });
 }

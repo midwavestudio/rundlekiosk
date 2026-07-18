@@ -52,7 +52,7 @@ async function handleRetry(request: NextRequest): Promise<NextResponse> {
 
   let pending: PendingCheckin[] = [];
   try {
-    pending = await getPendingCheckins({ maxAge: 4 * 60 * 60 * 1000 });
+    pending = await getPendingCheckins({ maxAge: 48 * 60 * 60 * 1000 });
   } catch (err: any) {
     console.error('[retry-cloudbeds-checkins] Failed to fetch pending check-ins:', err?.message);
     return NextResponse.json({ error: 'Failed to fetch pending check-ins', details: err?.message }, { status: 500 });

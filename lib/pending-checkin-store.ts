@@ -238,7 +238,7 @@ export async function incrementPendingCheckinAttempt(
 export async function getPendingCheckins(opts: { maxAge?: number } = {}): Promise<PendingCheckin[]> {
   const cutoff = opts.maxAge
     ? new Date(Date.now() - opts.maxAge).toISOString()
-    : new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString(); // default: last 4 hours
+    : new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(); // default: last 48 hours
 
   const db = getDb();
   if (db) {

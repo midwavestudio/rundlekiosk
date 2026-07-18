@@ -1314,17 +1314,25 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   }
 
   if (!selectedRoom) {
-    log('2_room_match', { roomKey, hint: hint || undefined, found: false, error: `Room ${roomName} not found` });
-    throw new Error(`Room ${roomName} not found`);
+    // Room name didn't match any room in the full property list.
+    // Rather than aborting, fall through with no physical room ID so the booking still runs:
+    // postReservation will use only the rate/type if those were resolved, and if that also
+    // fails the full escalation + last-resort unassigned chain will fire.
+    log('2_room_match', {
+      roomKey,
+      hint: hint || undefined,
+      found: false,
+      note: 'Room not found in Cloudbeds — continuing without physical room ID; escalation will create unassigned reservation',
+    });
+  } else {
+    roomTypeName = selectedRoom.roomTypeName || selectedRoom.roomType || 'Standard Room';
+    roomTypeID = selectedRoom.roomTypeID || selectedRoom.roomType_id;
+    actualRoomID = selectedRoom.roomID || selectedRoom.id;
+    selectedRoomName = selectedRoom.roomName ?? selectedRoom.name ?? null;
   }
-
-  roomTypeName = selectedRoom.roomTypeName || selectedRoom.roomType || 'Standard Room';
-  roomTypeID = selectedRoom.roomTypeID || selectedRoom.roomType_id;
-  actualRoomID = selectedRoom.roomID || selectedRoom.id;
-  selectedRoomName = selectedRoom.roomName ?? selectedRoom.name ?? null;
   log('2_room_match', {
     roomKey,
-    found: true,
+    found: !!selectedRoom,
     actualRoomID,
     selectedRoomName,
     roomTypeID,
