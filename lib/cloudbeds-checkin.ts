@@ -1362,6 +1362,8 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     }
 
     // Pass 1 — room types that have a real TYE rateID (bookable first).
+    // For TYE bookings we ONLY try types that expose a TYE rate from getRatePlans.
+    // Using a type with no TYE rate would land on Base — that is the bug being fixed.
     for (const { roomTypeID, roomRateID } of typesWithTyeRate) {
       const { ok, parsed } = await tryUnassignedType(roomTypeID, roomRateID, 'pass1_with_tye_rate');
       respParsed = parsed;
@@ -1373,49 +1375,29 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       }
     }
 
-    // Pass 2 — create without a rate so Cloudbeds accepts the booking (may land on Base).
-    // We switch to TYE via putReservation after create when we have a rateID for that type.
-    if (!createdReservation) {
-      log('0_forceUnassigned_pass2_no_rate', {
-        note: 'Pass 1 failed or no TYE rateID — creating without rate, then applying TYE via putReservation',
-      });
-      for (const roomTypeID of pass1Types) {
-        if (!roomTypeID) continue;
-        const { ok, parsed } = await tryUnassignedType(roomTypeID, null, 'pass2_no_rate');
-        respParsed = parsed;
-        if (ok) {
-          createdReservation = true;
-          createdWithRoomTypeID = roomTypeID;
-          createdNeedsTyeApply = wantTye;
-          break;
-        }
-      }
-    }
-
-    // Pass 3 — full undated room-type list, still without forcing a plan ID as roomRateID.
-    if (!createdReservation) {
-      log('0_forceUnassigned_pass3_all_types', {
-        note: 'Passes 1-2 failed — trying all room types from full undated inventory',
+    // Pass 2 (TYE) — if the dated room list had no TYE-rate types, or all rejected, try the
+    // full undated room-type list but ONLY with types that have a TYE rateID.
+    // Never fall back to no-rate for TYE — that silently creates a Base reservation.
+    if (!createdReservation && wantTye) {
+      log('0_forceUnassigned_pass2_tye_all_types', {
+        note: 'Pass 1 failed — extending to all room types in property, TYE rate only',
       });
       try {
         const allRooms = await fetchAllRoomsPagesMerged(apiV13, CLOUDBEDS_PROPERTY_ID, CLOUDBEDS_API_KEY);
-        const allTypeIDs: string[] = [];
         const seenAll = new Set<string>(candidateRoomTypeIDs);
+        const extraTyeTypes: Array<{ roomTypeID: string; roomRateID: string; bookable: boolean }> = [];
         for (const r of allRooms) {
           const tid = String(r?.roomTypeID ?? r?.roomType_id ?? '').trim();
-          if (tid && !seenAll.has(tid)) { seenAll.add(tid); allTypeIDs.push(tid); }
+          if (!tid || seenAll.has(tid)) continue;
+          seenAll.add(tid);
+          const { tyeRate } = findTyeRateForRoomType(stayRates, tid);
+          const rateID = extractRateIDFromRateRow(tyeRate);
+          if (!rateID) continue;
+          extraTyeTypes.push({ roomTypeID: tid, roomRateID: rateID, bookable: isRateRowBookable(tyeRate) });
         }
-        // Prefer types that have a TYE rateID, then the rest without rate.
-        const withRate: Array<{ roomTypeID: string; roomRateID: string }> = [];
-        const withoutRate: string[] = [];
-        for (const roomTypeID of allTypeIDs) {
-          if (!roomTypeID) continue;
-          const rateID = wantTye ? resolveTyeRateID(stayRates, roomTypeID) : null;
-          if (rateID) withRate.push({ roomTypeID, roomRateID: rateID });
-          else withoutRate.push(roomTypeID);
-        }
-        for (const { roomTypeID, roomRateID } of withRate) {
-          const { ok, parsed } = await tryUnassignedType(roomTypeID, roomRateID, 'pass3_with_tye_rate');
+        extraTyeTypes.sort((a, b) => Number(b.bookable) - Number(a.bookable));
+        for (const { roomTypeID, roomRateID } of extraTyeTypes) {
+          const { ok, parsed } = await tryUnassignedType(roomTypeID, roomRateID, 'pass2_tye_all_types');
           respParsed = parsed;
           if (ok) {
             createdReservation = true;
@@ -1424,24 +1406,45 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
             break;
           }
         }
-        if (!createdReservation) {
-          for (const roomTypeID of withoutRate) {
-            const { ok, parsed } = await tryUnassignedType(roomTypeID, null, 'pass3_no_rate');
-            respParsed = parsed;
-            if (ok) {
-              createdReservation = true;
-              createdWithRoomTypeID = roomTypeID;
-              createdNeedsTyeApply = wantTye;
-              break;
-            }
-          }
-        }
       } catch (e: any) {
-        log('0_forceUnassigned_pass3_error', undefined, undefined, e?.message);
+        log('0_forceUnassigned_pass2_error', undefined, undefined, e?.message);
+      }
+    }
+
+    // Pass 2 (non-TYE only) — create without a rate when classType is not TYE.
+    if (!createdReservation && !wantTye) {
+      log('0_forceUnassigned_pass2_no_rate', {
+        note: 'Pass 1 failed — retrying all available types without rate ID (non-TYE path)',
+      });
+      for (const roomTypeID of pass1Types) {
+        if (!roomTypeID) continue;
+        const { ok, parsed } = await tryUnassignedType(roomTypeID, null, 'pass2_no_rate');
+        respParsed = parsed;
+        if (ok) {
+          createdReservation = true;
+          createdWithRoomTypeID = roomTypeID;
+          createdNeedsTyeApply = false;
+          break;
+        }
       }
     }
 
     if (!createdReservation) {
+      // For TYE bookings: give a clear message so staff knows the cause.
+      if (wantTye) {
+        const tyeTypeCount = typesWithTyeRate.length;
+        throw new Error(
+          tyeTypeCount === 0
+            ? `No room types have a TYE rate plan available for ${bookingStartDate}. ` +
+              `Check that the TYE rate plan (ID ${defaultTyeRatePlanID()}) is set up in Cloudbeds ` +
+              `for the stay dates and try again.`
+            : `Could not create an unassigned TYE reservation — Cloudbeds rejected all ${tyeTypeCount} ` +
+              `room type(s) that have TYE rates. ` +
+              (typeof respParsed?.message === 'string' && respParsed.message
+                ? `Last error: ${respParsed.message}`
+                : 'Please try again or contact support.')
+        );
+      }
       throw new Error(
         typeof respParsed?.message === 'string' && respParsed.message
           ? respParsed.message

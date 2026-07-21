@@ -78,6 +78,28 @@ export default function FeedbackTab({ onUnreadCountChange }: FeedbackTabProps) {
 
   useEffect(() => { fetchMessages(); }, [fetchMessages]);
 
+  // Mark all loaded messages as read when the tab is open and messages finish loading.
+  // Shared across devices via Firestore. If a message is later marked unread, the badge
+  // reappears when the user navigates away because that id will no longer have readAt.
+  useEffect(() => {
+    if (loading || messages.length === 0) return;
+    const unreadIds = messages.filter((m) => !isMessageRead(m)).map((m) => m.id);
+    if (unreadIds.length === 0) return;
+
+    const readAt = new Date().toISOString();
+    setMessages((prev) =>
+      prev.map((m) => (unreadIds.includes(m.id) ? { ...m, readAt } : m))
+    );
+
+    void patchFeedbackRead(unreadIds, true).catch(() => {
+      setMessages((prev) =>
+        prev.map((m) => (unreadIds.includes(m.id) ? { ...m, readAt: undefined } : m))
+      );
+    });
+  // Only when a load finishes — not on every messages update (e.g. mark unread while open).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading]);
+
   useEffect(() => {
     if (!onUnreadCountChange || loading) return;
     const unread = messages.reduce((n, m) => (isMessageRead(m) ? n : n + 1), 0);
