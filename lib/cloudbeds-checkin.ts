@@ -1207,9 +1207,28 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       return p;
     };
 
+    // tryUnassignedType: attempt one postReservation for a given roomTypeID + optional rateID.
+    const tryUnassignedType = async (roomTypeID: string, roomRateID: string | null, passLabel: string): Promise<{ ok: boolean; parsed: any }> => {
+      const unassignedParams = buildUnassignedParams(roomTypeID, roomRateID);
+      log(`0_forceUnassigned_request_${passLabel}`, { roomTypeID, roomRateID: roomRateID ?? undefined, startDate: bookingStartDate, endDate: bookingEndDate });
+      const resp = await fetch(`${apiV13}/postReservation`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: unassignedParams.toString(),
+      });
+      const respText = await resp.text();
+      let parsed: any = {};
+      try { parsed = JSON.parse(respText); } catch { parsed = { success: false, message: respText }; }
+      log(`0_forceUnassigned_response_${passLabel}`, { status: resp.status, roomTypeID, body: parsed });
+      return { ok: resp.ok && parsed.success === true, parsed };
+    };
+
     let respParsed: any = {};
     let createdReservation = false;
-    for (const roomTypeID of candidateRoomTypeIDs.length > 0 ? candidateRoomTypeIDs : ['']) {
+
+    // Pass 1 — try every available room type with the resolved TYE rate (or no rate).
+    for (const roomTypeID of candidateRoomTypeIDs.length > 0 ? candidateRoomTypeIDs : []) {
+      if (!roomTypeID) continue;
       let roomRateID: string | null = null;
       if (wantTye) {
         const { tyeRate } = findTyeRateForRoomType(stayRates, roomTypeID);
@@ -1217,36 +1236,43 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
           ? String(tyeRate.rateID ?? tyeRate.rate_id ?? tyeRate.id ?? tyeRate.ratePlanID ?? 227753)
           : '227753';
       }
-      if (!roomTypeID) continue;
-      const unassignedParams = buildUnassignedParams(roomTypeID, roomRateID);
+      const { ok, parsed } = await tryUnassignedType(roomTypeID, roomRateID, 'pass1');
+      respParsed = parsed;
+      if (ok) { createdReservation = true; break; }
+    }
 
-      log('0_forceUnassigned_postReservation_request', {
-        roomTypeID,
-        roomRateID: roomRateID ?? undefined,
-        startDate: bookingStartDate,
-        endDate: bookingEndDate,
-      });
-
-      const resp = await fetch(`${apiV13}/postReservation`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: unassignedParams.toString(),
-      });
-      const respText = await resp.text();
-      try {
-        respParsed = JSON.parse(respText);
-      } catch {
-        respParsed = { success: false, message: respText };
+    // Pass 2 — retry every type WITHOUT a rate (Cloudbeds sometimes rejects a specific rateID
+    // even with allowOverbooking, but accepts the same type with no rate specified).
+    if (!createdReservation && wantTye) {
+      log('0_forceUnassigned_pass2_no_rate', { note: 'Pass 1 failed — retrying all types without rate ID' });
+      for (const roomTypeID of candidateRoomTypeIDs.length > 0 ? candidateRoomTypeIDs : []) {
+        if (!roomTypeID) continue;
+        const { ok, parsed } = await tryUnassignedType(roomTypeID, null, 'pass2_no_rate');
+        respParsed = parsed;
+        if (ok) { createdReservation = true; break; }
       }
-      log('0_forceUnassigned_postReservation_response', {
-        status: resp.status,
-        roomTypeID,
-        body: respParsed,
-      });
+    }
 
-      if (resp.ok && respParsed.success === true) {
-        createdReservation = true;
-        break;
+    // Pass 3 — if available-room list was empty, fall back to the full undated room list
+    // (covers fully-booked nights where getRooms with dates returns 0 results).
+    if (!createdReservation) {
+      log('0_forceUnassigned_pass3_all_types', { note: 'Passes 1-2 failed — trying all room types from full undated inventory' });
+      try {
+        const allRooms = await fetchAllRoomsPagesMerged(apiV13, CLOUDBEDS_PROPERTY_ID, CLOUDBEDS_API_KEY);
+        const allTypeIDs: string[] = [];
+        const seenAll = new Set<string>(candidateRoomTypeIDs);
+        for (const r of allRooms) {
+          const tid = String(r?.roomTypeID ?? r?.roomType_id ?? '').trim();
+          if (tid && !seenAll.has(tid)) { seenAll.add(tid); allTypeIDs.push(tid); }
+        }
+        for (const roomTypeID of allTypeIDs) {
+          if (!roomTypeID) continue;
+          const { ok, parsed } = await tryUnassignedType(roomTypeID, null, 'pass3_all_types');
+          respParsed = parsed;
+          if (ok) { createdReservation = true; break; }
+        }
+      } catch (e: any) {
+        log('0_forceUnassigned_pass3_error', undefined, undefined, e?.message);
       }
     }
 
@@ -1254,7 +1280,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       throw new Error(
         typeof respParsed?.message === 'string' && respParsed.message
           ? respParsed.message
-          : 'Failed to create unassigned reservation in Cloudbeds'
+          : 'Failed to create unassigned reservation in Cloudbeds after all fallback attempts'
       );
     }
 
@@ -1654,19 +1680,32 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       p.append('guestEmail', guestEmail);
       p.append('guestPhone', phoneNumber || '000-000-0000');
       p.append('paymentMethod', 'CLC');
-      const useTypeID = overrideTypeID ?? roomTypeIDStr;
-      p.append('rooms[0][roomTypeID]', useTypeID);
+      const useTypeID = (overrideTypeID ?? roomTypeIDStr) || '';
+      // Only set roomTypeID if we actually have one — sending an empty string causes Cloudbeds to reject.
+      if (useTypeID) {
+        p.append('rooms[0][roomTypeID]', useTypeID);
+        p.append('adults[0][roomTypeID]', useTypeID);
+        p.append('children[0][roomTypeID]', useTypeID);
+      }
       p.append('rooms[0][quantity]', '1');
       if (overrideRoomID) {
         p.append('rooms[0][roomID]', overrideRoomID);
         p.append('adults[0][roomID]', overrideRoomID);
         p.append('children[0][roomID]', overrideRoomID);
       }
-      if (roomRateIDStr) p.append('rooms[0][roomRateID]', roomRateIDStr);
-      p.append('adults[0][roomTypeID]', useTypeID);
-      p.append('adults[0][quantity]', '1');
-      p.append('children[0][roomTypeID]', useTypeID);
-      p.append('children[0][quantity]', '0');
+      // Only apply the resolved rate when we are using the same room type it belongs to.
+      // For overrideTypeID (last-resort / alternative type), skip the rate so Cloudbeds
+      // picks the default rate for that type rather than rejecting a mismatched rate ID.
+      const rateAppliesToThisType = !overrideTypeID || overrideTypeID === roomTypeIDStr;
+      if (roomRateIDStr && rateAppliesToThisType) p.append('rooms[0][roomRateID]', roomRateIDStr);
+      if (!useTypeID && !overrideRoomID) {
+        // No type and no room — nothing to book; skip adding adult/child lines to avoid Cloudbeds errors.
+        p.append('adults[0][quantity]', '1');
+        p.append('children[0][quantity]', '0');
+      } else {
+        p.append('adults[0][quantity]', '1');
+        p.append('children[0][quantity]', '0');
+      }
       p.append('sourceID', 's-945658-1');
       p.append('allowOverbooking', '1');
       return p;
@@ -1816,18 +1855,50 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       endDate: bookingEndDate,
     });
 
+    // Pass A — with rate (already skips mismatched rate via buildEscalateParams fix).
     for (const typeID of lastResortTypeIDs) {
       if (!typeID) continue;
       const pLast = buildEscalateParams(typeID, undefined);
-      const rLast = await tryPostReservation(pLast, `3_last_resort_type_${typeID}`);
+      const rLast = await tryPostReservation(pLast, `3_last_resort_typeA_${typeID}`);
       if (rLast.ok) {
         reservationData = rLast.parsed;
         confirmedPayOnly = true;
         physicalRoomPinnedInCreate = false;
-        log('3_last_resort_succeeded', {
-          note: 'Created unassigned reservation via last-resort type-only path',
-          typeID,
-        });
+        log('3_last_resort_succeeded', { note: 'Last-resort type-only succeeded', typeID });
+        return true;
+      }
+    }
+
+    // Pass B — strip rate entirely; some room types reject any roomRateID under allowOverbooking.
+    log('3_last_resort_passB_no_rate', { note: 'Pass A failed — retrying all types with no roomRateID' });
+    for (const typeID of lastResortTypeIDs) {
+      if (!typeID) continue;
+      // Build params without rate by temporarily clearing roomRateIDStr for this call.
+      const pNoRate = new URLSearchParams();
+      pNoRate.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+      pNoRate.append('startDate', bookingStartDate);
+      pNoRate.append('endDate', bookingEndDate);
+      pNoRate.append('guestFirstName', guestFirstName);
+      pNoRate.append('guestLastName', guestLastName);
+      pNoRate.append('guestCountry', 'US');
+      pNoRate.append('guestZip', '00000');
+      pNoRate.append('guestEmail', guestEmail);
+      pNoRate.append('guestPhone', phoneNumber || '000-000-0000');
+      pNoRate.append('paymentMethod', 'CLC');
+      pNoRate.append('rooms[0][roomTypeID]', typeID);
+      pNoRate.append('rooms[0][quantity]', '1');
+      pNoRate.append('adults[0][roomTypeID]', typeID);
+      pNoRate.append('adults[0][quantity]', '1');
+      pNoRate.append('children[0][roomTypeID]', typeID);
+      pNoRate.append('children[0][quantity]', '0');
+      pNoRate.append('sourceID', 's-945658-1');
+      pNoRate.append('allowOverbooking', '1');
+      const rNoRate = await tryPostReservation(pNoRate, `3_last_resort_typeB_${typeID}`);
+      if (rNoRate.ok) {
+        reservationData = rNoRate.parsed;
+        confirmedPayOnly = true;
+        physicalRoomPinnedInCreate = false;
+        log('3_last_resort_succeeded_no_rate', { note: 'Last-resort no-rate succeeded', typeID });
         return true;
       }
     }
