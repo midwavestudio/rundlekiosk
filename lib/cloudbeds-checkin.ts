@@ -1345,25 +1345,58 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     // bare ratePlanID like 227753 (Cloudbeds returns "could not accommodate your request").
     const pass1Types = candidateRoomTypeIDs.length > 0 ? candidateRoomTypeIDs : [];
 
+    // Resolve all TYE rateIDs from the stay-window rates, including cross-type fallback.
+    // getRatePlans sometimes lists TYE rows under a different roomTypeID than getRooms returns,
+    // so we also collect any TYE rate row regardless of roomTypeID as a cross-type rateID.
+    const tyePlanIds = getTyeRatePlanIdSet();
+    const crossTypeTyeRateID: string | null = (() => {
+      for (const rate of stayRates) {
+        const planID = String(rate.ratePlanID ?? rate.rate_plan_id ?? rate.ratePlan_id ?? '');
+        const planName = String(rate.ratePlanName ?? rate.name ?? '').toLowerCase();
+        if (!(tyePlanIds.has(planID) || tyePlanIds.has(String(Number(planID))) || planName.includes('tye'))) continue;
+        const id = extractRateIDFromRateRow(rate);
+        if (id) return id;
+      }
+      return null;
+    })();
+
+    log('0_forceUnassigned_rates', {
+      stayRatesCount: stayRates.length,
+      crossTypeTyeRateID: crossTypeTyeRateID ?? '(none)',
+      candidateTypeCount: pass1Types.length,
+    });
+
     const typesWithTyeRate: Array<{ roomTypeID: string; roomRateID: string; bookable: boolean }> = [];
     if (wantTye) {
       for (const roomTypeID of pass1Types) {
         if (!roomTypeID) continue;
+        // First try a rate that exactly matches this room type.
         const { tyeRate } = findTyeRateForRoomType(stayRates, roomTypeID);
-        const rateID = extractRateIDFromRateRow(tyeRate);
+        const exactRateID = extractRateIDFromRateRow(tyeRate);
+        // Fall back to the cross-type TYE rateID when getRatePlans lists TYE under a different type.
+        const rateID = exactRateID || crossTypeTyeRateID;
         if (!rateID) continue;
         typesWithTyeRate.push({
           roomTypeID,
           roomRateID: rateID,
-          bookable: isRateRowBookable(tyeRate),
+          // Consider bookable if exact match is bookable, or if we're using cross-type fallback.
+          bookable: exactRateID ? isRateRowBookable(tyeRate) : true,
         });
       }
+      // Sort bookable types first.
       typesWithTyeRate.sort((a, b) => Number(b.bookable) - Number(a.bookable));
     }
 
-    // Pass 1 — room types that have a real TYE rateID (bookable first).
-    // For TYE bookings we ONLY try types that expose a TYE rate from getRatePlans.
-    // Using a type with no TYE rate would land on Base — that is the bug being fixed.
+    log('0_forceUnassigned_tye_candidates', {
+      tyeCandidateCount: typesWithTyeRate.length,
+      crossTypeFallback: !typesWithTyeRate.some(t => {
+        const { tyeRate } = findTyeRateForRoomType(stayRates, t.roomTypeID);
+        return !!extractRateIDFromRateRow(tyeRate);
+      }) && !!crossTypeTyeRateID,
+    });
+
+    // Pass 1 — all candidate room types with a TYE rateID (exact or cross-type, bookable first).
+    // For TYE bookings we ONLY try types that have a TYE rateID — never fall back to Base.
     for (const { roomTypeID, roomRateID } of typesWithTyeRate) {
       const { ok, parsed } = await tryUnassignedType(roomTypeID, roomRateID, 'pass1_with_tye_rate');
       respParsed = parsed;
@@ -1375,12 +1408,12 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       }
     }
 
-    // Pass 2 (TYE) — if the dated room list had no TYE-rate types, or all rejected, try the
-    // full undated room-type list but ONLY with types that have a TYE rateID.
-    // Never fall back to no-rate for TYE — that silently creates a Base reservation.
+    // Pass 2 (TYE) — extend to ALL room types in the property (not just dated availability),
+    // still only with a TYE rateID (exact or cross-type).
     if (!createdReservation && wantTye) {
       log('0_forceUnassigned_pass2_tye_all_types', {
-        note: 'Pass 1 failed — extending to all room types in property, TYE rate only',
+        note: 'Pass 1 failed — extending to all property room types, TYE rate only',
+        crossTypeTyeRateID: crossTypeTyeRateID ?? '(none)',
       });
       try {
         const allRooms = await fetchAllRoomsPagesMerged(apiV13, CLOUDBEDS_PROPERTY_ID, CLOUDBEDS_API_KEY);
@@ -1391,9 +1424,10 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
           if (!tid || seenAll.has(tid)) continue;
           seenAll.add(tid);
           const { tyeRate } = findTyeRateForRoomType(stayRates, tid);
-          const rateID = extractRateIDFromRateRow(tyeRate);
+          const exactRateID = extractRateIDFromRateRow(tyeRate);
+          const rateID = exactRateID || crossTypeTyeRateID;
           if (!rateID) continue;
-          extraTyeTypes.push({ roomTypeID: tid, roomRateID: rateID, bookable: isRateRowBookable(tyeRate) });
+          extraTyeTypes.push({ roomTypeID: tid, roomRateID: rateID, bookable: exactRateID ? isRateRowBookable(tyeRate) : true });
         }
         extraTyeTypes.sort((a, b) => Number(b.bookable) - Number(a.bookable));
         for (const { roomTypeID, roomRateID } of extraTyeTypes) {
