@@ -665,21 +665,106 @@ function findTyeRateForRoomType(rates: any[], roomTypeID: string | number | null
 }
 
 /**
- * Resolve the roomRateID to send for a TYE booking on a given room type.
- * Prefers a date-specific rateID from getRatePlans, then the plan ID on that row,
- * then the configured TYE plan ID (never omit — Cloudbeds would apply Base).
+ * Extract a real Cloudbeds rateID from a getRatePlans row.
+ * Do NOT use ratePlanID here — postReservation's rooms[0][roomRateID] expects a rate ID,
+ * and sending a plan ID (e.g. 227753) returns "could not accommodate your request".
  */
-function resolveTyeRoomRateID(rates: any[], roomTypeID: string | number | null): string {
+function extractRateIDFromRateRow(rate: any): string {
+  return String(rate?.rateID ?? rate?.rate_id ?? rate?.id ?? '').trim();
+}
+
+function isRateRowBookable(rate: any): boolean {
+  if (!rate || rate.roomBlocked) return false;
+  const avail = rate.roomsAvailable;
+  if (avail == null) return true;
+  const n = Number(avail);
+  return !Number.isFinite(n) || n > 0;
+}
+
+/**
+ * Resolve a TYE rateID for postReservation roomRateID (never a bare plan ID).
+ * Prefers bookable rates; falls back to any TYE rateID for the room type.
+ */
+function resolveTyeRateID(rates: any[], roomTypeID: string | number | null): string | null {
   const { tyeRate } = findTyeRateForRoomType(rates, roomTypeID);
-  if (tyeRate) {
-    const realRateID = String(tyeRate.rateID ?? tyeRate.rate_id ?? tyeRate.id ?? '').trim();
-    if (realRateID) return realRateID;
-    const planID = String(
-      tyeRate.ratePlanID ?? tyeRate.rate_plan_id ?? tyeRate.ratePlan_id ?? ''
-    ).trim();
-    if (planID) return planID;
+  if (!tyeRate) return null;
+  const id = extractRateIDFromRateRow(tyeRate);
+  return id || null;
+}
+
+/**
+ * After a reservation is created (often without a rate → Base), switch it to the TYE
+ * rate via putReservation rooms[0][rateID]. Returns true when Cloudbeds accepts the update.
+ */
+async function applyTyeRateToReservation(opts: {
+  apiV13: string;
+  propertyID: string;
+  apiKey: string;
+  reservationID: string;
+  roomTypeID: string;
+  checkInDate: string;
+  checkOutDate: string;
+  tyeRateID: string;
+  log: (step: string, data?: any, response?: any, error?: string) => void;
+}): Promise<boolean> {
+  const {
+    apiV13, propertyID, apiKey, reservationID, roomTypeID,
+    checkInDate, checkOutDate, tyeRateID, log,
+  } = opts;
+
+  let subReservationID: string | null = null;
+  try {
+    const grUrl =
+      `${apiV13}/getReservation?propertyID=${encodeURIComponent(propertyID)}` +
+      `&reservationID=${encodeURIComponent(reservationID)}`;
+    const grRes = await fetch(grUrl, { headers: { Authorization: `Bearer ${apiKey}` } });
+    const grData = await grRes.json();
+    const reservation = unwrapReservationFromGetReservation(grData);
+    const line =
+      (Array.isArray(reservation?.unassigned) && reservation.unassigned[0]) ||
+      (Array.isArray(reservation?.assigned) && reservation.assigned[0]) ||
+      (Array.isArray(reservation?.rooms) && reservation.rooms[0]) ||
+      null;
+    if (line?.subReservationID != null && String(line.subReservationID).trim() !== '') {
+      subReservationID = String(line.subReservationID);
+    }
+  } catch (e: any) {
+    log('0_apply_tye_rate_getReservation_error', undefined, undefined, e?.message);
   }
-  return defaultTyeRatePlanID();
+
+  const params = new URLSearchParams();
+  params.append('propertyID', propertyID);
+  params.append('reservationID', reservationID);
+  params.append('rooms[0][roomTypeID]', roomTypeID);
+  params.append('rooms[0][checkinDate]', checkInDate);
+  params.append('rooms[0][checkoutDate]', checkOutDate);
+  params.append('rooms[0][adults]', '1');
+  params.append('rooms[0][children]', '0');
+  params.append('rooms[0][rateID]', tyeRateID);
+  if (subReservationID) params.append('rooms[0][subReservationID]', subReservationID);
+
+  log('0_apply_tye_rate_request', {
+    reservationID,
+    roomTypeID,
+    tyeRateID,
+    subReservationID: subReservationID ?? undefined,
+  });
+  try {
+    const resp = await fetch(`${apiV13}/putReservation`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString(),
+    });
+    const text = await resp.text();
+    let parsed: any = {};
+    try { parsed = JSON.parse(text); } catch { parsed = { success: false, message: text }; }
+    const ok = resp.ok && parsed.success === true;
+    log('0_apply_tye_rate_response', { status: resp.status, ok, body: parsed });
+    return ok;
+  } catch (e: any) {
+    log('0_apply_tye_rate_error', undefined, undefined, e?.message);
+    return false;
+  }
 }
 
 
@@ -1253,59 +1338,64 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
 
     let respParsed: any = {};
     let createdReservation = false;
+    let createdWithRoomTypeID: string | null = null;
+    let createdNeedsTyeApply = false;
 
-    // Always send a TYE roomRateID when classType is TYE. Omitting it makes Cloudbeds
-    // apply the property default (Base) — which is wrong for admin unassigned bookings.
-    const tyePlanFallback = defaultTyeRatePlanID();
+    // postReservation rooms[0][roomRateID] must be a real rateID from getRatePlans — never a
+    // bare ratePlanID like 227753 (Cloudbeds returns "could not accommodate your request").
     const pass1Types = candidateRoomTypeIDs.length > 0 ? candidateRoomTypeIDs : [];
 
-    // Pass 1 — every available room type with a date-specific TYE rateID when present.
-    const typesWithRealRate: Array<{ roomTypeID: string; roomRateID: string }> = [];
+    const typesWithTyeRate: Array<{ roomTypeID: string; roomRateID: string; bookable: boolean }> = [];
     if (wantTye) {
       for (const roomTypeID of pass1Types) {
         if (!roomTypeID) continue;
         const { tyeRate } = findTyeRateForRoomType(stayRates, roomTypeID);
-        const realRateID = tyeRate
-          ? String(tyeRate.rateID ?? tyeRate.rate_id ?? tyeRate.id ?? '').trim()
-          : '';
-        if (realRateID) typesWithRealRate.push({ roomTypeID, roomRateID: realRateID });
+        const rateID = extractRateIDFromRateRow(tyeRate);
+        if (!rateID) continue;
+        typesWithTyeRate.push({
+          roomTypeID,
+          roomRateID: rateID,
+          bookable: isRateRowBookable(tyeRate),
+        });
       }
-    }
-    for (const { roomTypeID, roomRateID } of typesWithRealRate) {
-      const { ok, parsed } = await tryUnassignedType(roomTypeID, roomRateID, 'pass1_with_rate');
-      respParsed = parsed;
-      if (ok) { createdReservation = true; break; }
+      typesWithTyeRate.sort((a, b) => Number(b.bookable) - Number(a.bookable));
     }
 
-    // Pass 2 — retry every available type with the TYE plan ID (not Base / not omitted).
-    // Covers types where getRatePlans only exposes a plan-level ID, or rejects a rateID.
+    // Pass 1 — room types that have a real TYE rateID (bookable first).
+    for (const { roomTypeID, roomRateID } of typesWithTyeRate) {
+      const { ok, parsed } = await tryUnassignedType(roomTypeID, roomRateID, 'pass1_with_tye_rate');
+      respParsed = parsed;
+      if (ok) {
+        createdReservation = true;
+        createdWithRoomTypeID = roomTypeID;
+        createdNeedsTyeApply = false;
+        break;
+      }
+    }
+
+    // Pass 2 — create without a rate so Cloudbeds accepts the booking (may land on Base).
+    // We switch to TYE via putReservation after create when we have a rateID for that type.
     if (!createdReservation) {
-      log('0_forceUnassigned_pass2_tye_plan', {
-        note: 'Pass 1 failed — retrying all available types with TYE rate plan ID',
-        tyePlanID: tyePlanFallback,
+      log('0_forceUnassigned_pass2_no_rate', {
+        note: 'Pass 1 failed or no TYE rateID — creating without rate, then applying TYE via putReservation',
       });
       for (const roomTypeID of pass1Types) {
         if (!roomTypeID) continue;
-        const roomRateID = wantTye
-          ? resolveTyeRoomRateID(stayRates, roomTypeID)
-          : null;
-        const { ok, parsed } = await tryUnassignedType(
-          roomTypeID,
-          roomRateID,
-          wantTye ? 'pass2_tye_plan' : 'pass2_no_rate'
-        );
+        const { ok, parsed } = await tryUnassignedType(roomTypeID, null, 'pass2_no_rate');
         respParsed = parsed;
-        if (ok) { createdReservation = true; break; }
+        if (ok) {
+          createdReservation = true;
+          createdWithRoomTypeID = roomTypeID;
+          createdNeedsTyeApply = wantTye;
+          break;
+        }
       }
     }
 
-    // Pass 3 — if available-room list was empty, fall back to the full undated room list
-    // (covers fully-booked nights where getRooms with dates returns 0 results).
-    // Still send TYE plan ID when wantTye so Cloudbeds never defaults to Base.
+    // Pass 3 — full undated room-type list, still without forcing a plan ID as roomRateID.
     if (!createdReservation) {
       log('0_forceUnassigned_pass3_all_types', {
         note: 'Passes 1-2 failed — trying all room types from full undated inventory',
-        tyePlanID: wantTye ? tyePlanFallback : undefined,
       });
       try {
         const allRooms = await fetchAllRoomsPagesMerged(apiV13, CLOUDBEDS_PROPERTY_ID, CLOUDBEDS_API_KEY);
@@ -1315,18 +1405,36 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
           const tid = String(r?.roomTypeID ?? r?.roomType_id ?? '').trim();
           if (tid && !seenAll.has(tid)) { seenAll.add(tid); allTypeIDs.push(tid); }
         }
+        // Prefer types that have a TYE rateID, then the rest without rate.
+        const withRate: Array<{ roomTypeID: string; roomRateID: string }> = [];
+        const withoutRate: string[] = [];
         for (const roomTypeID of allTypeIDs) {
           if (!roomTypeID) continue;
-          const roomRateID = wantTye
-            ? resolveTyeRoomRateID(stayRates, roomTypeID)
-            : null;
-          const { ok, parsed } = await tryUnassignedType(
-            roomTypeID,
-            roomRateID,
-            wantTye ? 'pass3_tye_plan' : 'pass3_all_types'
-          );
+          const rateID = wantTye ? resolveTyeRateID(stayRates, roomTypeID) : null;
+          if (rateID) withRate.push({ roomTypeID, roomRateID: rateID });
+          else withoutRate.push(roomTypeID);
+        }
+        for (const { roomTypeID, roomRateID } of withRate) {
+          const { ok, parsed } = await tryUnassignedType(roomTypeID, roomRateID, 'pass3_with_tye_rate');
           respParsed = parsed;
-          if (ok) { createdReservation = true; break; }
+          if (ok) {
+            createdReservation = true;
+            createdWithRoomTypeID = roomTypeID;
+            createdNeedsTyeApply = false;
+            break;
+          }
+        }
+        if (!createdReservation) {
+          for (const roomTypeID of withoutRate) {
+            const { ok, parsed } = await tryUnassignedType(roomTypeID, null, 'pass3_no_rate');
+            respParsed = parsed;
+            if (ok) {
+              createdReservation = true;
+              createdWithRoomTypeID = roomTypeID;
+              createdNeedsTyeApply = wantTye;
+              break;
+            }
+          }
         }
       } catch (e: any) {
         log('0_forceUnassigned_pass3_error', undefined, undefined, e?.message);
@@ -1344,6 +1452,51 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     const resID = respParsed.data?.reservationID ?? respParsed.reservationID;
     const gstID = respParsed.data?.guestID ?? respParsed.guestID;
     if (!resID) throw new Error('No reservationID returned from Cloudbeds');
+
+    // Create-without-rate lands on Base — switch to TYE via putReservation rateID.
+    if (createdNeedsTyeApply) {
+      const bookedType =
+        createdWithRoomTypeID ||
+        String(
+          respParsed?.data?.unassigned?.[0]?.roomTypeID ??
+          respParsed?.unassigned?.[0]?.roomTypeID ??
+          ''
+        ).trim();
+      const tyeRateID =
+        (bookedType ? resolveTyeRateID(stayRates, bookedType) : null) ||
+        (() => {
+          for (const rate of stayRates) {
+            const planID = String(rate.ratePlanID ?? rate.rate_plan_id ?? rate.ratePlan_id ?? '');
+            const planName = String(rate.ratePlanName ?? rate.name ?? '').toLowerCase();
+            const tyeIds = getTyeRatePlanIdSet();
+            if (!(tyeIds.has(planID) || tyeIds.has(String(Number(planID))) || planName.includes('tye'))) {
+              continue;
+            }
+            const id = extractRateIDFromRateRow(rate);
+            if (id) return id;
+          }
+          return null;
+        })();
+
+      if (bookedType && tyeRateID) {
+        await applyTyeRateToReservation({
+          apiV13,
+          propertyID: CLOUDBEDS_PROPERTY_ID,
+          apiKey: CLOUDBEDS_API_KEY,
+          reservationID: String(resID),
+          roomTypeID: bookedType,
+          checkInDate: bookingStartDate,
+          checkOutDate: bookingEndDate,
+          tyeRateID,
+          log,
+        });
+      } else {
+        log('0_forceUnassigned_tye_rate_skip', {
+          note: 'Could not resolve a TYE rateID to apply after create',
+          bookedType: bookedType || undefined,
+        });
+      }
+    }
 
     // Settle folio so the reservation is paid (confirmed + paid, no check-in)
     const amtHint = extractPostReservationAmountHint(respParsed);
@@ -1751,13 +1904,11 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
         p.append('adults[0][roomID]', overrideRoomID);
         p.append('children[0][roomID]', overrideRoomID);
       }
-      // Prefer the resolved TYE/Base rate for the selected type. For override types (last-resort),
-      // still send the TYE plan ID when classType is TYE — omitting it makes Cloudbeds use Base.
-      if (roomRateIDStr && (!overrideTypeID || overrideTypeID === roomTypeIDStr)) {
-        p.append('rooms[0][roomRateID]', roomRateIDStr);
-      } else if (wantTye) {
-        p.append('rooms[0][roomRateID]', defaultTyeRatePlanID());
-      }
+      // Only apply the resolved rate when we are using the same room type it belongs to.
+      // Never send a bare ratePlanID fallback for override types — Cloudbeds rejects that with
+      // "could not accommodate your request". Prefer omit (Base) over a hard failure.
+      const rateAppliesToThisType = !overrideTypeID || overrideTypeID === roomTypeIDStr;
+      if (roomRateIDStr && rateAppliesToThisType) p.append('rooms[0][roomRateID]', roomRateIDStr);
       if (!useTypeID && !overrideRoomID) {
         // No type and no room — nothing to book; skip adding adult/child lines to avoid Cloudbeds errors.
         p.append('adults[0][quantity]', '1');
@@ -1929,76 +2080,38 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       }
     }
 
-    // Pass B — only for non-TYE: strip rate entirely when types reject any roomRateID.
-    // For TYE, never omit the rate (Cloudbeds would apply Base); retry with the plan ID.
-    if (wantTye) {
-      const tyePlanID = defaultTyeRatePlanID();
-      log('3_last_resort_passB_tye_plan', {
-        note: 'Pass A failed — retrying all types with TYE rate plan ID',
-        tyePlanID,
-      });
-      for (const typeID of lastResortTypeIDs) {
-        if (!typeID) continue;
-        const pTye = new URLSearchParams();
-        pTye.append('propertyID', CLOUDBEDS_PROPERTY_ID);
-        pTye.append('startDate', bookingStartDate);
-        pTye.append('endDate', bookingEndDate);
-        pTye.append('guestFirstName', guestFirstName);
-        pTye.append('guestLastName', guestLastName);
-        pTye.append('guestCountry', 'US');
-        pTye.append('guestZip', '00000');
-        pTye.append('guestEmail', guestEmail);
-        pTye.append('guestPhone', phoneNumber || '000-000-0000');
-        pTye.append('paymentMethod', 'CLC');
-        pTye.append('rooms[0][roomTypeID]', typeID);
-        pTye.append('rooms[0][quantity]', '1');
-        pTye.append('rooms[0][roomRateID]', tyePlanID);
-        pTye.append('adults[0][roomTypeID]', typeID);
-        pTye.append('adults[0][quantity]', '1');
-        pTye.append('children[0][roomTypeID]', typeID);
-        pTye.append('children[0][quantity]', '0');
-        pTye.append('sourceID', 's-945658-1');
-        pTye.append('allowOverbooking', '1');
-        const rTye = await tryPostReservation(pTye, `3_last_resort_typeB_tye_${typeID}`);
-        if (rTye.ok) {
-          reservationData = rTye.parsed;
-          confirmedPayOnly = true;
-          physicalRoomPinnedInCreate = false;
-          log('3_last_resort_succeeded_tye_plan', { note: 'Last-resort TYE plan ID succeeded', typeID, tyePlanID });
-          return true;
-        }
-      }
-    } else {
-      log('3_last_resort_passB_no_rate', { note: 'Pass A failed — retrying all types with no roomRateID' });
-      for (const typeID of lastResortTypeIDs) {
-        if (!typeID) continue;
-        const pNoRate = new URLSearchParams();
-        pNoRate.append('propertyID', CLOUDBEDS_PROPERTY_ID);
-        pNoRate.append('startDate', bookingStartDate);
-        pNoRate.append('endDate', bookingEndDate);
-        pNoRate.append('guestFirstName', guestFirstName);
-        pNoRate.append('guestLastName', guestLastName);
-        pNoRate.append('guestCountry', 'US');
-        pNoRate.append('guestZip', '00000');
-        pNoRate.append('guestEmail', guestEmail);
-        pNoRate.append('guestPhone', phoneNumber || '000-000-0000');
-        pNoRate.append('paymentMethod', 'CLC');
-        pNoRate.append('rooms[0][roomTypeID]', typeID);
-        pNoRate.append('rooms[0][quantity]', '1');
-        pNoRate.append('adults[0][roomTypeID]', typeID);
-        pNoRate.append('adults[0][quantity]', '1');
-        pNoRate.append('children[0][roomTypeID]', typeID);
-        pNoRate.append('children[0][quantity]', '0');
-        pNoRate.append('sourceID', 's-945658-1');
-        pNoRate.append('allowOverbooking', '1');
-        const rNoRate = await tryPostReservation(pNoRate, `3_last_resort_typeB_${typeID}`);
-        if (rNoRate.ok) {
-          reservationData = rNoRate.parsed;
-          confirmedPayOnly = true;
-          physicalRoomPinnedInCreate = false;
-          log('3_last_resort_succeeded_no_rate', { note: 'Last-resort no-rate succeeded', typeID });
-          return true;
-        }
+    // Pass B — strip rate entirely; some room types reject any roomRateID under allowOverbooking.
+    // Do not send a bare TYE plan ID here — Cloudbeds treats it as an invalid rateID and returns
+    // "could not accommodate your request".
+    log('3_last_resort_passB_no_rate', { note: 'Pass A failed — retrying all types with no roomRateID' });
+    for (const typeID of lastResortTypeIDs) {
+      if (!typeID) continue;
+      const pNoRate = new URLSearchParams();
+      pNoRate.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+      pNoRate.append('startDate', bookingStartDate);
+      pNoRate.append('endDate', bookingEndDate);
+      pNoRate.append('guestFirstName', guestFirstName);
+      pNoRate.append('guestLastName', guestLastName);
+      pNoRate.append('guestCountry', 'US');
+      pNoRate.append('guestZip', '00000');
+      pNoRate.append('guestEmail', guestEmail);
+      pNoRate.append('guestPhone', phoneNumber || '000-000-0000');
+      pNoRate.append('paymentMethod', 'CLC');
+      pNoRate.append('rooms[0][roomTypeID]', typeID);
+      pNoRate.append('rooms[0][quantity]', '1');
+      pNoRate.append('adults[0][roomTypeID]', typeID);
+      pNoRate.append('adults[0][quantity]', '1');
+      pNoRate.append('children[0][roomTypeID]', typeID);
+      pNoRate.append('children[0][quantity]', '0');
+      pNoRate.append('sourceID', 's-945658-1');
+      pNoRate.append('allowOverbooking', '1');
+      const rNoRate = await tryPostReservation(pNoRate, `3_last_resort_typeB_${typeID}`);
+      if (rNoRate.ok) {
+        reservationData = rNoRate.parsed;
+        confirmedPayOnly = true;
+        physicalRoomPinnedInCreate = false;
+        log('3_last_resort_succeeded_no_rate', { note: 'Last-resort no-rate succeeded', typeID });
+        return true;
       }
     }
 
