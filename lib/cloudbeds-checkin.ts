@@ -1226,26 +1226,32 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     let respParsed: any = {};
     let createdReservation = false;
 
-    // Pass 1 — try every available room type with the resolved TYE rate (or no rate).
-    for (const roomTypeID of candidateRoomTypeIDs.length > 0 ? candidateRoomTypeIDs : []) {
-      if (!roomTypeID) continue;
-      let roomRateID: string | null = null;
-      if (wantTye) {
+    // Pass 1 — try every available room type with the resolved TYE rateID (only when we have
+    // a real rateID from getRatePlans, not a fallback plan-level ID like 227753).
+    const pass1Types = candidateRoomTypeIDs.length > 0 ? candidateRoomTypeIDs : [];
+    const typesWithRealRate: Array<{ roomTypeID: string; roomRateID: string }> = [];
+    if (wantTye) {
+      for (const roomTypeID of pass1Types) {
+        if (!roomTypeID) continue;
         const { tyeRate } = findTyeRateForRoomType(stayRates, roomTypeID);
-        roomRateID = tyeRate
-          ? String(tyeRate.rateID ?? tyeRate.rate_id ?? tyeRate.id ?? tyeRate.ratePlanID ?? 227753)
-          : '227753';
+        const realRateID = tyeRate
+          ? String(tyeRate.rateID ?? tyeRate.rate_id ?? tyeRate.id ?? '').trim()
+          : '';
+        if (realRateID) typesWithRealRate.push({ roomTypeID, roomRateID: realRateID });
       }
-      const { ok, parsed } = await tryUnassignedType(roomTypeID, roomRateID, 'pass1');
+    }
+    for (const { roomTypeID, roomRateID } of typesWithRealRate) {
+      const { ok, parsed } = await tryUnassignedType(roomTypeID, roomRateID, 'pass1_with_rate');
       respParsed = parsed;
       if (ok) { createdReservation = true; break; }
     }
 
-    // Pass 2 — retry every type WITHOUT a rate (Cloudbeds sometimes rejects a specific rateID
-    // even with allowOverbooking, but accepts the same type with no rate specified).
-    if (!createdReservation && wantTye) {
-      log('0_forceUnassigned_pass2_no_rate', { note: 'Pass 1 failed — retrying all types without rate ID' });
-      for (const roomTypeID of candidateRoomTypeIDs.length > 0 ? candidateRoomTypeIDs : []) {
+    // Pass 2 — retry every available type WITHOUT a rate. Covers:
+    // - types where no real rateID was found (only a plan-level ID)
+    // - cases where Cloudbeds rejects the rateID under allowOverbooking
+    if (!createdReservation) {
+      log('0_forceUnassigned_pass2_no_rate', { note: 'Pass 1 failed — retrying all available types without rate ID' });
+      for (const roomTypeID of pass1Types) {
         if (!roomTypeID) continue;
         const { ok, parsed } = await tryUnassignedType(roomTypeID, null, 'pass2_no_rate');
         respParsed = parsed;
