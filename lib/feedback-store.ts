@@ -23,6 +23,8 @@ export interface FeedbackMessage {
   status: FeedbackStatus;
   /** Optional admin notes */
   notes?: string;
+  /** ISO timestamp when an admin marked this message read (shared across devices). */
+  readAt?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -125,15 +127,49 @@ export async function getAllFeedback(limit = 200): Promise<FeedbackMessage[]> {
     .slice(0, cap);
 }
 
-/** Update the status or notes on a feedback message. */
+type FeedbackUpdates = Partial<Pick<FeedbackMessage, 'status' | 'notes' | 'readAt'>> & {
+  /** When true, clears shared read state so the message is unread on all devices. */
+  clearReadAt?: boolean;
+};
+
+function applyFeedbackUpdates(
+  existing: FeedbackMessage,
+  updates: FeedbackUpdates
+): FeedbackMessage {
+  const next: FeedbackMessage = { ...existing };
+  if (updates.status !== undefined) next.status = updates.status;
+  if (updates.notes !== undefined) next.notes = updates.notes;
+  if (updates.clearReadAt) {
+    delete next.readAt;
+  } else if (updates.readAt !== undefined) {
+    next.readAt = updates.readAt;
+  }
+  return next;
+}
+
+function toFirestorePayload(updates: FeedbackUpdates): Record<string, unknown> {
+  const payload: Record<string, unknown> = {};
+  if (updates.status !== undefined) payload.status = updates.status;
+  if (updates.notes !== undefined) payload.notes = updates.notes;
+  if (updates.clearReadAt) {
+    payload.readAt = firebaseAdmin.firestore.FieldValue.delete();
+  } else if (updates.readAt !== undefined) {
+    payload.readAt = updates.readAt;
+  }
+  return payload;
+}
+
+/** Update the status, notes, or shared read state on a feedback message. */
 export async function updateFeedback(
   id: string,
-  updates: Partial<Pick<FeedbackMessage, 'status' | 'notes'>>
+  updates: FeedbackUpdates
 ): Promise<void> {
   const db = getDb();
   if (db) {
     try {
-      await db.collection(COLLECTION).doc(id).update(updates as Record<string, unknown>);
+      const payload = toFirestorePayload(updates);
+      if (Object.keys(payload).length === 0) return;
+      await db.collection(COLLECTION).doc(id).update(payload);
       return;
     } catch (err) {
       console.error('[feedback] Firestore update failed, merging in-memory if present.', err);
@@ -142,7 +178,46 @@ export async function updateFeedback(
 
   const existing = memoryStore.get(id);
   if (existing) {
-    memoryStore.set(id, { ...existing, ...updates });
+    memoryStore.set(id, applyFeedbackUpdates(existing, updates));
+  }
+}
+
+/** Mark one or more feedback messages as read or unread (shared across devices). */
+export async function setFeedbackReadState(
+  ids: string[],
+  read: boolean
+): Promise<void> {
+  const uniqueIds = [...new Set(ids.filter((id) => typeof id === 'string' && id.length > 0))];
+  if (uniqueIds.length === 0) return;
+
+  const updates: FeedbackUpdates = read
+    ? { readAt: new Date().toISOString() }
+    : { clearReadAt: true };
+
+  const db = getDb();
+  if (db) {
+    try {
+      const payload = toFirestorePayload(updates);
+      // Firestore batches are capped at 500 writes.
+      for (let i = 0; i < uniqueIds.length; i += 450) {
+        const chunk = uniqueIds.slice(i, i + 450);
+        const batch = db.batch();
+        for (const id of chunk) {
+          batch.update(db.collection(COLLECTION).doc(id), payload);
+        }
+        await batch.commit();
+      }
+      return;
+    } catch (err) {
+      console.error('[feedback] Firestore batch read-state update failed — using in-memory store.', err);
+    }
+  }
+
+  for (const id of uniqueIds) {
+    const existing = memoryStore.get(id);
+    if (existing) {
+      memoryStore.set(id, applyFeedbackUpdates(existing, updates));
+    }
   }
 }
 

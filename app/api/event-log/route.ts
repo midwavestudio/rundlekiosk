@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { saveEventLog, getRecentEventLogs, type EventLogEntry } from '@/lib/event-log-store';
-import { saveFeedback, getAllFeedback, updateFeedback, deleteFeedback } from '@/lib/feedback-store';
+import { saveFeedback, getAllFeedback, updateFeedback, deleteFeedback, setFeedbackReadState } from '@/lib/feedback-store';
 
 // ─── Event log cache ─────────────────────────────────────────────────────────
 interface EventCache { events: EventLogEntry[]; limit: number; expiresAt: number; }
@@ -11,7 +11,7 @@ function bustEventCache() { eventCache = null; }
 // ─── Feedback cache ──────────────────────────────────────────────────────────
 let feedbackCache: any[] | null = null;
 let feedbackCacheExpiresAt = 0;
-const FEEDBACK_CACHE_TTL_MS = 5 * 60_000;
+const FEEDBACK_CACHE_TTL_MS = 15_000;
 function bustFeedbackCache() { feedbackCache = null; feedbackCacheExpiresAt = 0; }
 
 const ALLOWED_SOURCES = new Set([
@@ -34,12 +34,12 @@ export async function GET(req: NextRequest) {
     try {
       const now = Date.now();
       if (feedbackCache && now < feedbackCacheExpiresAt) {
-        return NextResponse.json({ messages: feedbackCache }, { headers: { 'Cache-Control': 'private, max-age=300' } });
+        return NextResponse.json({ messages: feedbackCache }, { headers: { 'Cache-Control': 'private, no-store' } });
       }
       const messages = await getAllFeedback();
       feedbackCache = messages;
       feedbackCacheExpiresAt = now + FEEDBACK_CACHE_TTL_MS;
-      return NextResponse.json({ messages }, { headers: { 'Cache-Control': 'private, max-age=300' } });
+      return NextResponse.json({ messages }, { headers: { 'Cache-Control': 'private, no-store' } });
     } catch (err) {
       return NextResponse.json({ error: 'Failed to retrieve feedback.' }, { status: 500 });
     }
@@ -98,14 +98,30 @@ export async function POST(req: NextRequest) {
 }
 
 // ─── PATCH — update feedback ─────────────────────────────────────────────────
-// PATCH /api/event-log?type=feedback   → update feedback status/notes
+// PATCH /api/event-log?type=feedback   → update feedback status/notes/read state
+// Body: { id, status?, notes?, read? } or { ids: string[], read: boolean }
 
 export async function PATCH(req: NextRequest) {
   const type = new URL(req.url).searchParams.get('type');
   if (type !== 'feedback') return NextResponse.json({ error: 'Use ?type=feedback for PATCH.' }, { status: 400 });
   try {
     const body = await req.json();
-    const { id, status, notes } = body;
+    const { id, ids, status, notes, read } = body;
+
+    if (typeof read === 'boolean') {
+      const targetIds: string[] = Array.isArray(ids)
+        ? ids.filter((value: unknown): value is string => typeof value === 'string' && value.length > 0)
+        : typeof id === 'string' && id.length > 0
+          ? [id]
+          : [];
+      if (targetIds.length === 0) {
+        return NextResponse.json({ error: 'id or ids is required when updating read state.' }, { status: 400 });
+      }
+      await setFeedbackReadState(targetIds, read);
+      bustFeedbackCache();
+      return NextResponse.json({ ok: true });
+    }
+
     if (!id) return NextResponse.json({ error: 'id is required.' }, { status: 400 });
     await updateFeedback(id, { status, notes });
     bustFeedbackCache();

@@ -31,7 +31,6 @@ import {
   recordErrorLogVisit,
   loadErrorLogLastVisited,
 } from '@/lib/event-log-read';
-import { loadReadFeedbackIds } from '@/lib/feedback-read';
 import BackupButton from './BackupButton';
 
 interface DashboardProps {
@@ -55,6 +54,7 @@ interface EventLogEntry {
 
 interface FeedbackEntry {
   id: string;
+  readAt?: string;
 }
 
 type TabId = 'dashboard' | 'arrivals' | 'departures' | 'admin-checkin' | 'tye-placeholders' | 'feedback' | 'event-log';
@@ -122,12 +122,14 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
     const refreshFeedbackBadge = async () => {
       if (document.visibilityState !== 'visible') return;
       try {
-        const res = await fetch('/api/event-log?type=feedback');
+        const res = await fetch('/api/event-log?type=feedback', { cache: 'no-store' });
         if (!res.ok || cancelled) return;
         const data = await res.json();
         const messages: FeedbackEntry[] = Array.isArray(data.messages) ? data.messages : [];
-        const readIds = loadReadFeedbackIds();
-        const unread = messages.reduce((count, m) => (readIds.has(m.id) ? count : count + 1), 0);
+        const unread = messages.reduce(
+          (count, m) => (typeof m.readAt === 'string' && m.readAt.length > 0 ? count : count + 1),
+          0
+        );
         if (!cancelled) setFeedbackUnreadCount(unread);
       } catch { /* ignore */ }
     };
@@ -136,14 +138,6 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
     const pollId = setInterval(refreshFeedbackBadge, 30 * 60_000);
     return () => { cancelled = true; clearInterval(pollId); };
   }, []);
-
-  useEffect(() => {
-    if (activeTab !== 'feedback') return;
-    // Zero the nav badge immediately when the Messages tab is opened.
-    // FeedbackTab will mark all loaded messages as read in localStorage; if any
-    // are later marked unread, onUnreadCountChange will push the count back up.
-    setFeedbackUnreadCount(0);
-  }, [activeTab]);
 
   useEffect(() => {
     if (activeTab !== 'event-log') return;

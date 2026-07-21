@@ -10,7 +10,6 @@ import {
   ADMIN_SURFACE_RAISED,
   ADMIN_BORDER_STRONG,
 } from '../lib/adminTheme';
-import { loadReadFeedbackIds, markFeedbackRead, markFeedbacksRead, removeFeedbackReadId } from '@/lib/feedback-read';
 
 interface FeedbackMessage {
   id: string;
@@ -19,6 +18,8 @@ interface FeedbackMessage {
   submittedAt: string;
   status: 'new' | 'reviewed' | 'resolved';
   notes?: string;
+  /** Shared across devices — ISO timestamp when marked read. */
+  readAt?: string;
 }
 
 const STATUS_LABELS: Record<FeedbackMessage['status'], string> = {
@@ -38,6 +39,19 @@ interface FeedbackTabProps {
   onUnreadCountChange?: (count: number) => void;
 }
 
+function isMessageRead(msg: FeedbackMessage): boolean {
+  return typeof msg.readAt === 'string' && msg.readAt.length > 0;
+}
+
+async function patchFeedbackRead(ids: string[], read: boolean): Promise<void> {
+  const res = await fetch('/api/event-log?type=feedback', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(ids.length === 1 ? { id: ids[0], read } : { ids, read }),
+  });
+  if (!res.ok) throw new Error('Failed to update read state.');
+}
+
 export default function FeedbackTab({ onUnreadCountChange }: FeedbackTabProps) {
   const [messages, setMessages] = useState<FeedbackMessage[]>([]);
   const [loading, setLoading] = useState(true);
@@ -46,13 +60,12 @@ export default function FeedbackTab({ onUnreadCountChange }: FeedbackTabProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [notesInput, setNotesInput] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<string | null>(null);
-  const [readIds, setReadIds] = useState<Set<string>>(new Set());
 
   const fetchMessages = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
-      const res = await fetch('/api/event-log?type=feedback');
+      const res = await fetch('/api/event-log?type=feedback', { cache: 'no-store' });
       if (!res.ok) throw new Error('Failed to load messages.');
       const data = await res.json();
       setMessages(data.messages ?? []);
@@ -64,26 +77,35 @@ export default function FeedbackTab({ onUnreadCountChange }: FeedbackTabProps) {
   }, []);
 
   useEffect(() => { fetchMessages(); }, [fetchMessages]);
-  useEffect(() => { setReadIds(loadReadFeedbackIds()); }, []);
-
-  // Mark all loaded messages as read when the tab is open and messages finish loading.
-  // This resets the badge. If a message is later marked unread, the badge reappears
-  // when the user navigates away because readIds will not contain that id.
-  useEffect(() => {
-    if (loading || messages.length === 0) return;
-    setReadIds((prev) => markFeedbacksRead(messages.map((m) => m.id), prev));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading]);
 
   useEffect(() => {
     if (!onUnreadCountChange || loading) return;
-    const unread = messages.reduce((n, m) => (readIds.has(m.id) ? n : n + 1), 0);
+    const unread = messages.reduce((n, m) => (isMessageRead(m) ? n : n + 1), 0);
     onUnreadCountChange(unread);
-  }, [messages, readIds, onUnreadCountChange, loading]);
+  }, [messages, onUnreadCountChange, loading]);
 
-  const handleMarkUnread = (id: string) => {
-    setReadIds((prev) => removeFeedbackReadId(id, prev));
-  };
+  async function setMessageRead(id: string, read: boolean) {
+    const previous = messages.find((m) => m.id === id);
+    if (!previous) return;
+    if (isMessageRead(previous) === read) return;
+
+    setSaving(id);
+    const readAt = read ? new Date().toISOString() : undefined;
+    setMessages((prev) =>
+      prev.map((m) => (m.id === id ? { ...m, readAt } : m))
+    );
+
+    try {
+      await patchFeedbackRead([id], read);
+    } catch {
+      setMessages((prev) =>
+        prev.map((m) => (m.id === id ? { ...m, readAt: previous.readAt } : m))
+      );
+      alert('Failed to update read state. Please try again.');
+    } finally {
+      setSaving(null);
+    }
+  }
 
   async function updateMessage(id: string, status: FeedbackMessage['status'], notes?: string) {
     setSaving(id);
@@ -111,7 +133,6 @@ export default function FeedbackTab({ onUnreadCountChange }: FeedbackTabProps) {
       const res = await fetch(`/api/event-log?type=feedback&id=${encodeURIComponent(id)}`, { method: 'DELETE' });
       if (!res.ok) throw new Error();
       setMessages((prev) => prev.filter((m) => m.id !== id));
-      setReadIds((prev) => removeFeedbackReadId(id, prev));
       setExpandedId((ex) => (ex === id ? null : ex));
     } catch {
       alert('Failed to delete message. Please try again.');
@@ -121,11 +142,21 @@ export default function FeedbackTab({ onUnreadCountChange }: FeedbackTabProps) {
   }
 
   const filtered = filter === 'all' ? messages : messages.filter((m) => m.status === filter);
-  const unreadCount = messages.reduce((n, m) => (readIds.has(m.id) ? n : n + 1), 0);
+  const unreadCount = messages.reduce((n, m) => (isMessageRead(m) ? n : n + 1), 0);
 
   const handleMarkAllShownRead = () => {
-    if (messages.length === 0) return;
-    setReadIds((prev) => markFeedbacksRead(messages.map((m) => m.id), prev));
+    const unreadIds = messages.filter((m) => !isMessageRead(m)).map((m) => m.id);
+    if (unreadIds.length === 0) return;
+    const readAt = new Date().toISOString();
+    setMessages((prev) =>
+      prev.map((m) => (unreadIds.includes(m.id) ? { ...m, readAt } : m))
+    );
+    void patchFeedbackRead(unreadIds, true).catch(() => {
+      setMessages((prev) =>
+        prev.map((m) => (unreadIds.includes(m.id) ? { ...m, readAt: undefined } : m))
+      );
+      alert('Failed to mark messages as read. Please try again.');
+    });
   };
 
   return (
@@ -232,7 +263,7 @@ export default function FeedbackTab({ onUnreadCountChange }: FeedbackTabProps) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           {filtered.map((msg) => {
             const isExpanded = expandedId === msg.id;
-            const isRead = readIds.has(msg.id);
+            const isRead = isMessageRead(msg);
             const showReadBadge = msg.status === 'new' && isRead;
             const sc = showReadBadge
               ? { bg: '#f3f4f6', color: '#6b7280' }
@@ -261,8 +292,8 @@ export default function FeedbackTab({ onUnreadCountChange }: FeedbackTabProps) {
                   onClick={() => {
                     const nextExpanded = isExpanded ? null : msg.id;
                     setExpandedId(nextExpanded);
-                    if (nextExpanded) {
-                      setReadIds((prev) => markFeedbackRead(msg.id, prev));
+                    if (nextExpanded && !isRead) {
+                      void setMessageRead(msg.id, true);
                     }
                   }}
                 >
@@ -306,7 +337,7 @@ export default function FeedbackTab({ onUnreadCountChange }: FeedbackTabProps) {
                         disabled={saving === msg.id}
                         onClick={(e) => {
                           e.stopPropagation();
-                          handleMarkUnread(msg.id);
+                          void setMessageRead(msg.id, false);
                         }}
                         style={{
                           padding: '6px 10px',
@@ -382,7 +413,7 @@ export default function FeedbackTab({ onUnreadCountChange }: FeedbackTabProps) {
                         <button
                           type="button"
                           disabled={saving === msg.id}
-                          onClick={() => handleMarkUnread(msg.id)}
+                          onClick={() => void setMessageRead(msg.id, false)}
                           style={{
                             padding: '8px 16px',
                             borderRadius: '8px',
@@ -401,7 +432,7 @@ export default function FeedbackTab({ onUnreadCountChange }: FeedbackTabProps) {
                         <button
                           type="button"
                           disabled={saving === msg.id}
-                          onClick={() => setReadIds((prev) => markFeedbackRead(msg.id, prev))}
+                          onClick={() => void setMessageRead(msg.id, true)}
                           style={{
                             padding: '8px 16px',
                             borderRadius: '8px',
