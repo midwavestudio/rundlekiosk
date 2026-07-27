@@ -1291,7 +1291,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       stayRates = [];
     }
 
-    const buildUnassignedParams = (roomTypeID: string, roomRateID: string | null): URLSearchParams => {
+    const buildUnassignedParams = (roomTypeID: string, roomRateID: string | null, forceOverbooking = false): URLSearchParams => {
       const p = new URLSearchParams();
       p.append('propertyID', CLOUDBEDS_PROPERTY_ID);
       p.append('startDate', bookingStartDate);
@@ -1316,14 +1316,17 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       p.append('children[0][roomTypeID]', roomTypeID);
       p.append('children[0][quantity]', '0');
       p.append('sourceID', 's-945658-1');
-      if (useOverbooking) p.append('allowOverbooking', '1');
+      if (useOverbooking || forceOverbooking) p.append('allowOverbooking', '1');
       return p;
     };
 
     // tryUnassignedType: attempt one postReservation for a given roomTypeID + optional rateID.
+    // For TYE with a rate, also retries with allowOverbooking=1 if the first attempt fails —
+    // Cloudbeds rejects roomRateID when roomsAvailable=0 without the overbooking flag even
+    // when allowOverbooking is semantically desired.
     const tryUnassignedType = async (roomTypeID: string, roomRateID: string | null, passLabel: string): Promise<{ ok: boolean; parsed: any }> => {
       const unassignedParams = buildUnassignedParams(roomTypeID, roomRateID);
-      log(`0_forceUnassigned_request_${passLabel}`, { roomTypeID, roomRateID: roomRateID ?? undefined, startDate: bookingStartDate, endDate: bookingEndDate });
+      log(`0_forceUnassigned_request_${passLabel}`, { roomTypeID, roomRateID: roomRateID ?? undefined, startDate: bookingStartDate, endDate: bookingEndDate, allowOverbooking: unassignedParams.get('allowOverbooking') === '1' });
       const resp = await fetch(`${apiV13}/postReservation`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -1333,7 +1336,28 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       let parsed: any = {};
       try { parsed = JSON.parse(respText); } catch { parsed = { success: false, message: respText }; }
       log(`0_forceUnassigned_response_${passLabel}`, { status: resp.status, roomTypeID, body: parsed });
-      return { ok: resp.ok && parsed.success === true, parsed };
+      if (resp.ok && parsed.success === true) return { ok: true, parsed };
+
+      // If first attempt failed with a TYE rate and we didn't already send allowOverbooking,
+      // retry with it — some TYE rates show roomsAvailable=0 even though they can be booked.
+      if (roomRateID && !useOverbooking) {
+        const retryParams = buildUnassignedParams(roomTypeID, roomRateID, true);
+        log(`0_forceUnassigned_request_${passLabel}_overbooking_retry`, { roomTypeID, roomRateID, allowOverbooking: true });
+        const retryResp = await fetch(`${apiV13}/postReservation`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: retryParams.toString(),
+        });
+        const retryText = await retryResp.text();
+        let retryParsed: any = {};
+        try { retryParsed = JSON.parse(retryText); } catch { retryParsed = { success: false, message: retryText }; }
+        log(`0_forceUnassigned_response_${passLabel}_overbooking_retry`, { status: retryResp.status, roomTypeID, body: retryParsed });
+        if (retryResp.ok && retryParsed.success === true) return { ok: true, parsed: retryParsed };
+        // Return the overbooking-retry result as the final failure (more informative).
+        return { ok: false, parsed: retryParsed };
+      }
+
+      return { ok: false, parsed };
     };
 
     let respParsed: any = {};
@@ -1490,8 +1514,11 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     const gstID = respParsed.data?.guestID ?? respParsed.guestID;
     if (!resID) throw new Error('No reservationID returned from Cloudbeds');
 
-    // Create-without-rate lands on Base — switch to TYE via putReservation rateID.
-    if (createdNeedsTyeApply) {
+    // For TYE bookings: always apply the TYE rate via putReservation after create.
+    // postReservation may silently ignore roomRateID when the rate has roomsAvailable=0,
+    // leaving the reservation on Base. putReservation with rooms[0][rateID] is the reliable
+    // way to set the rate after the reservation exists.
+    if (wantTye) {
       const bookedType =
         createdWithRoomTypeID ||
         String(
@@ -1499,21 +1526,10 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
           respParsed?.unassigned?.[0]?.roomTypeID ??
           ''
         ).trim();
+      // Prefer the exact TYE rateID we used to create, then per-type lookup, then cross-type.
       const tyeRateID =
-        (bookedType ? resolveTyeRateID(stayRates, bookedType) : null) ||
-        (() => {
-          for (const rate of stayRates) {
-            const planID = String(rate.ratePlanID ?? rate.rate_plan_id ?? rate.ratePlan_id ?? '');
-            const planName = String(rate.ratePlanName ?? rate.name ?? '').toLowerCase();
-            const tyeIds = getTyeRatePlanIdSet();
-            if (!(tyeIds.has(planID) || tyeIds.has(String(Number(planID))) || planName.includes('tye'))) {
-              continue;
-            }
-            const id = extractRateIDFromRateRow(rate);
-            if (id) return id;
-          }
-          return null;
-        })();
+        crossTypeTyeRateID ||
+        (bookedType ? resolveTyeRateID(stayRates, bookedType) : null);
 
       if (bookedType && tyeRateID) {
         await applyTyeRateToReservation({
@@ -1529,8 +1545,9 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
         });
       } else {
         log('0_forceUnassigned_tye_rate_skip', {
-          note: 'Could not resolve a TYE rateID to apply after create',
+          note: 'Could not resolve a TYE rateID to apply via putReservation after create',
           bookedType: bookedType || undefined,
+          stayRatesCount: stayRates.length,
         });
       }
     }
