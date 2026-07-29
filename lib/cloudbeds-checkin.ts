@@ -2410,6 +2410,36 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       message: first.data?.message ?? first.text,
     });
 
+    // Before escalating to unassigned: retry with the server's UTC date when it differs from the
+    // kiosk's local checkInDate. This handles the time-of-day window (e.g. 5:30 PM – midnight
+    // and midnight – ~2:30 AM local) where Cloudbeds' own server has already advanced to the next
+    // UTC date and rejects the local date as a past startDate, even though the room is available.
+    if (!isPastCheckInDate && serverUtcToday !== bookingStartDate && !preflightDuplicateFound) {
+      const utcStartDate = serverUtcToday;
+      const utcEndDate = addOneCalendarDayYmd(utcStartDate);
+      log('3_postReservation_utc_date_retry', {
+        note: 'First attempt failed — retrying with server UTC date in case Cloudbeds considers local date as past',
+        originalStartDate: bookingStartDate,
+        utcStartDate,
+        utcEndDate,
+      });
+      const utcRetry = await runPostReservation({
+        attachPhysicalRoom: canAttachPhysicalRoomToReservation,
+        allowOverbooking: useOverbooking,
+        dateOverride: { startDate: utcStartDate, endDate: utcEndDate },
+      });
+      if (utcRetry.ok) {
+        reservationData = utcRetry.data;
+        physicalRoomPinnedInCreate = canAttachPhysicalRoomToReservation;
+        log('3_postReservation_utc_date_retry_succeeded', { utcStartDate, utcEndDate });
+      } else {
+        log('3_postReservation_utc_date_retry_failed', { message: utcRetry.data?.message ?? utcRetry.text });
+      }
+    }
+
+    // Only proceed to recovery/escalation when neither the original nor the UTC-date retry succeeded.
+    if (!reservationData?.data?.reservationID && !reservationData?.reservationID) {
+
     let recoveredPayload: any = null;
     try {
       const candidates = await fetchGuestReservationsForStayWindow(
@@ -2469,6 +2499,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
         throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
       }
     }
+    } // end: only proceed to recovery/escalation when neither retry succeeded
   } else {
     // first.ok is false and canAttachPhysicalRoomToReservation is false (no room ID available).
     // TYE placeholders cannot fall back to unassigned — surface error directly.
@@ -2677,6 +2708,110 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     } catch (e: any) {
       log('confirmedPayOnly_unassign_outer_error', undefined, undefined, e?.message);
       // Non-fatal — the reservation exists and is paid; staff will see it as assigned and can manually unassign.
+    }
+
+    // Recovery attempt: if the original room is actually available (escalation may have been
+    // triggered solely by a Cloudbeds date/UTC mismatch rather than true occupancy), try to
+    // assign it now via postRoomAssign and check the guest in. This handles the time-of-day
+    // windows (e.g. midnight–2:30 AM and 5:30–8:12 PM local) where postReservation with the
+    // physical room fails due to server UTC vs kiosk local date mismatch.
+    const recoveryRoomId = String(roomIdForCreate ?? roomIdForStayPeriod ?? actualRoomID ?? '').trim();
+    if (recoveryRoomId) {
+      // Only attempt recovery when the reservation is truly unassigned (no room line ID),
+      // meaning the room may genuinely be free — not when we just unassigned an occupied room.
+      let recoveryAssigned = false;
+      try {
+        // Fetch a fresh reservationRoomID for postRoomAssign (needed after the unassign above).
+        const grRecoveryUrl = `${apiV13}/getReservation?propertyID=${encodeURIComponent(CLOUDBEDS_PROPERTY_ID)}&reservationID=${encodeURIComponent(String(reservationID))}`;
+        log('confirmedPayOnly_recovery_getReservation_request', { url: grRecoveryUrl, recoveryRoomId });
+        const grRecoveryResp = await fetch(grRecoveryUrl, {
+          headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/json' },
+        });
+        const grRecoveryText = await grRecoveryResp.text();
+        let grRecoveryParsed: any = null;
+        try { grRecoveryParsed = JSON.parse(grRecoveryText); } catch { grRecoveryParsed = null; }
+        log('confirmedPayOnly_recovery_getReservation_response', { status: grRecoveryResp.status, body: grRecoveryParsed ?? grRecoveryText });
+
+        if (grRecoveryParsed?.success) {
+          const d = grRecoveryParsed.data ?? grRecoveryParsed;
+          // Only proceed if the reservation is still unassigned (no assigned rooms).
+          const isStillUnassigned = !reservationAlreadyHasPhysicalRoom(grRecoveryParsed);
+          const recoveryLineId =
+            extractReservationRoomLineId(grRecoveryParsed) ??
+            (Array.isArray(d?.unassigned) && d.unassigned[0]?.reservationRoomID ? String(d.unassigned[0].reservationRoomID) : null);
+          const recoverySubResID =
+            (Array.isArray(d?.unassigned) && d.unassigned[0]?.subReservationID) ? String(d.unassigned[0].subReservationID) : null;
+
+          if (isStillUnassigned && recoveryLineId) {
+            const assignParams = new URLSearchParams();
+            assignParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+            assignParams.append('reservationID', String(reservationID));
+            assignParams.append('reservationRoomID', recoveryLineId);
+            assignParams.append('newRoomID', recoveryRoomId);
+            if (recoverySubResID && recoverySubResID !== String(reservationID)) {
+              assignParams.append('subReservationID', recoverySubResID);
+            }
+            log('confirmedPayOnly_recovery_postRoomAssign_request', {
+              reservationID: String(reservationID),
+              reservationRoomID: recoveryLineId,
+              newRoomID: recoveryRoomId,
+            });
+            const assignResp = await fetch(`${apiV13}/postRoomAssign`, {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: assignParams.toString(),
+            });
+            const assignText = await assignResp.text();
+            let assignData: any = {};
+            try { assignData = JSON.parse(assignText); } catch { assignData = {}; }
+            log('confirmedPayOnly_recovery_postRoomAssign_response', { status: assignResp.status, ok: assignResp.ok && assignData.success === true, body: assignData });
+
+            if (assignResp.ok && assignData.success === true) {
+              // Room assigned — now check the guest in.
+              const checkInParams = new URLSearchParams();
+              checkInParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+              checkInParams.append('reservationID', String(reservationID));
+              checkInParams.append('status', 'checked_in');
+              log('confirmedPayOnly_recovery_putReservation_checkin_request', { reservationID: String(reservationID) });
+              try {
+                const ciResp = await fetch(`${apiV13}/putReservation`, {
+                  method: 'PUT',
+                  headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+                  body: checkInParams.toString(),
+                });
+                const ciText = await ciResp.text();
+                let ciData: any = {};
+                try { ciData = JSON.parse(ciText); } catch { ciData = {}; }
+                log('confirmedPayOnly_recovery_putReservation_checkin_response', { status: ciResp.status, ok: ciResp.ok && ciData.success === true });
+                if (ciResp.ok && ciData.success === true) {
+                  recoveryAssigned = true;
+                  log('confirmedPayOnly_recovery_success', {
+                    note: 'Originally-selected room was available — assigned and checked in successfully',
+                    roomId: recoveryRoomId,
+                    reservationID: String(reservationID),
+                  });
+                }
+              } catch (ciErr: any) {
+                log('confirmedPayOnly_recovery_checkin_error', undefined, undefined, ciErr?.message);
+              }
+            }
+          }
+        }
+      } catch (recoveryErr: any) {
+        log('confirmedPayOnly_recovery_error', undefined, undefined, recoveryErr?.message);
+        // Non-fatal — fall through to the confirmed/unassigned return below.
+      }
+
+      if (recoveryAssigned) {
+        return {
+          success: true,
+          guestID,
+          reservationID: String(reservationID),
+          roomName: String(selectedRoomName ?? roomName),
+          message: 'Guest successfully checked in.',
+          reservationStatus: 'checked_in',
+        };
+      }
     }
 
     return {
@@ -2900,6 +3035,101 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
         }
       } catch (e: any) {
         log('3e_unassign_outer_error', undefined, undefined, e?.message);
+      }
+
+      // Recovery: after unassigning the wrong room, try to assign the originally-requested room.
+      // When postReservation succeeded but Cloudbeds auto-assigned a different room, the requested
+      // room may actually be free. Assigning it directly and checking in avoids an unneeded
+      // confirmed/unassigned reservation for a room that was never truly occupied.
+      let recoveryAssigned3e = false;
+      const recoveryRoomId3e = requestedRoomId;
+      if (recoveryRoomId3e) {
+        try {
+          // Re-fetch the reservation to get the fresh unassigned line ID after the unassign above.
+          const grR3eUrl = `${apiV13}/getReservation?propertyID=${encodeURIComponent(CLOUDBEDS_PROPERTY_ID)}&reservationID=${encodeURIComponent(String(reservationID))}`;
+          log('3e_recovery_getReservation_request', { url: grR3eUrl, recoveryRoomId: recoveryRoomId3e });
+          const grR3eResp = await fetch(grR3eUrl, {
+            headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/json' },
+          });
+          const grR3eText = await grR3eResp.text();
+          let grR3eParsed: any = null;
+          try { grR3eParsed = JSON.parse(grR3eText); } catch { grR3eParsed = null; }
+          log('3e_recovery_getReservation_response', { status: grR3eResp.status, body: grR3eParsed ?? grR3eText });
+
+          if (grR3eParsed?.success) {
+            const d3e = grR3eParsed.data ?? grR3eParsed;
+            const isUnassigned3e = !reservationAlreadyHasPhysicalRoom(grR3eParsed);
+            const lineId3e =
+              extractReservationRoomLineId(grR3eParsed) ??
+              (Array.isArray(d3e?.unassigned) && d3e.unassigned[0]?.reservationRoomID ? String(d3e.unassigned[0].reservationRoomID) : null);
+            const subResId3e =
+              (Array.isArray(d3e?.unassigned) && d3e.unassigned[0]?.subReservationID) ? String(d3e.unassigned[0].subReservationID) : null;
+
+            if (isUnassigned3e && lineId3e) {
+              const aParams3e = new URLSearchParams();
+              aParams3e.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+              aParams3e.append('reservationID', String(reservationID));
+              aParams3e.append('reservationRoomID', lineId3e);
+              aParams3e.append('newRoomID', recoveryRoomId3e);
+              if (subResId3e && subResId3e !== String(reservationID)) {
+                aParams3e.append('subReservationID', subResId3e);
+              }
+              log('3e_recovery_postRoomAssign_request', { reservationID: String(reservationID), reservationRoomID: lineId3e, newRoomID: recoveryRoomId3e });
+              const aResp3e = await fetch(`${apiV13}/postRoomAssign`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: aParams3e.toString(),
+              });
+              const aText3e = await aResp3e.text();
+              let aData3e: any = {};
+              try { aData3e = JSON.parse(aText3e); } catch { aData3e = {}; }
+              log('3e_recovery_postRoomAssign_response', { status: aResp3e.status, ok: aResp3e.ok && aData3e.success === true, body: aData3e });
+
+              if (aResp3e.ok && aData3e.success === true) {
+                // Room assigned — check in.
+                const ci3eParams = new URLSearchParams();
+                ci3eParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+                ci3eParams.append('reservationID', String(reservationID));
+                ci3eParams.append('status', 'checked_in');
+                log('3e_recovery_putReservation_checkin_request', { reservationID: String(reservationID) });
+                try {
+                  const ciR3e = await fetch(`${apiV13}/putReservation`, {
+                    method: 'PUT',
+                    headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: ci3eParams.toString(),
+                  });
+                  const ciText3e = await ciR3e.text();
+                  let ciData3e: any = {};
+                  try { ciData3e = JSON.parse(ciText3e); } catch { ciData3e = {}; }
+                  log('3e_recovery_putReservation_checkin_response', { status: ciR3e.status, ok: ciR3e.ok && ciData3e.success === true });
+                  if (ciR3e.ok && ciData3e.success === true) {
+                    recoveryAssigned3e = true;
+                    log('3e_recovery_success', {
+                      note: 'Originally-requested room was available — assigned and checked in successfully after unassigning wrong room',
+                      roomId: recoveryRoomId3e,
+                      reservationID: String(reservationID),
+                    });
+                  }
+                } catch (ci3eErr: any) {
+                  log('3e_recovery_checkin_error', undefined, undefined, ci3eErr?.message);
+                }
+              }
+            }
+          }
+        } catch (recoveryErr3e: any) {
+          log('3e_recovery_error', undefined, undefined, recoveryErr3e?.message);
+        }
+      }
+
+      if (recoveryAssigned3e) {
+        return {
+          success: true,
+          guestID,
+          reservationID: String(reservationID),
+          roomName: String(selectedRoomName ?? roomName),
+          message: 'Guest successfully checked in.',
+          reservationStatus: 'checked_in',
+        };
       }
 
       return {
