@@ -1908,6 +1908,30 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     allowOverbooking?: boolean;
   }
 
+  /**
+   * True when the Cloudbeds error response specifically indicates the startDate is in the past.
+   * Used to gate the UTC-date retry so it only fires on genuine past-date rejections, not on
+   * unrelated failures (e.g. room unavailable, rate not found) that should not shift the date.
+   */
+  function isPastDateError(data: any): boolean {
+    const msg = String(
+      data?.message ?? data?.error ?? data?.data?.message ?? data?.data?.error ?? ''
+    ).toLowerCase();
+    return (
+      msg.includes('past') ||
+      msg.includes('in the past') ||
+      msg.includes('start date') ||
+      msg.includes('startdate') ||
+      msg.includes('check-in date') ||
+      msg.includes('checkin date') ||
+      msg.includes('invalid date') ||
+      msg.includes('date is before') ||
+      msg.includes('date must be') ||
+      msg.includes('cannot be before') ||
+      msg.includes('historical')
+    );
+  }
+
   /** True when the Cloudbeds error response indicates an overbooking or availability block. */
   function isOverbookingError(data: any): boolean {
     // Cloudbeds may nest the error message under data.message, data.error, data.data.message,
@@ -2410,11 +2434,16 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       message: first.data?.message ?? first.text,
     });
 
-    // Before escalating to unassigned: retry with the server's UTC date when it differs from the
-    // kiosk's local checkInDate. This handles the time-of-day window (e.g. 5:30 PM – midnight
-    // and midnight – ~2:30 AM local) where Cloudbeds' own server has already advanced to the next
-    // UTC date and rejects the local date as a past startDate, even though the room is available.
-    if (!isPastCheckInDate && serverUtcToday !== bookingStartDate && !preflightDuplicateFound) {
+    // Before escalating to unassigned: retry with the server's UTC date ONLY when Cloudbeds
+    // explicitly rejects the local date as being in the past. This handles the evening window
+    // (e.g. 6 PM – midnight local) where Vercel's UTC clock has advanced to the next calendar
+    // day and Cloudbeds refuses the local date as a past startDate.
+    //
+    // IMPORTANT: The retry must be gated on isPastDateError(). Without this guard any failure
+    // (room unavailable, rate not found, etc.) during the 6 PM–midnight window would silently
+    // book the reservation on the next calendar day, which is the bug this change fixes.
+    if (!isPastCheckInDate && serverUtcToday !== bookingStartDate && !preflightDuplicateFound &&
+        isPastDateError(first.data)) {
       const utcStartDate = serverUtcToday;
       const utcEndDate = addOneCalendarDayYmd(utcStartDate);
       log('3_postReservation_utc_date_retry', {
