@@ -2466,7 +2466,35 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       }
     }
 
-    // Only proceed to recovery/escalation when neither the original nor the UTC-date retry succeeded.
+    // Before escalating to unassigned: retry with roomIdOnly=true (omits rooms[0][roomTypeID]).
+    // This bypasses Cloudbeds's type-level inventory counter, which blocks new reservations for
+    // rooms whose prior same-day guest hasn't checked out yet even though the physical room is
+    // selectable. Applies to the early-morning window (midnight–~7 AM) when overnight guests
+    // with today's endDate are still occupying the room at the type-inventory level.
+    //
+    // Only fire this retry when the first failure looks like an availability/overbooking block
+    // (not a date or auth error), to avoid booking into a genuinely occupied room.
+    if (!reservationData?.data?.reservationID && !reservationData?.reservationID &&
+        roomIdForCreate != null && isOverbookingError(first.data)) {
+      log('3_postReservation_roomIdOnly_retry', {
+        note: 'First attempt failed with availability error — retrying with roomIdOnly=true to bypass type-level inventory check',
+        roomIdForCreate: String(roomIdForCreate),
+      });
+      const roomIdOnlyRetry = await runPostReservation({
+        attachPhysicalRoom: canAttachPhysicalRoomToReservation,
+        allowOverbooking: true,
+        roomIdOnly: true,
+      });
+      if (roomIdOnlyRetry.ok) {
+        reservationData = roomIdOnlyRetry.data;
+        physicalRoomPinnedInCreate = true;
+        log('3_postReservation_roomIdOnly_retry_succeeded', { roomIdForCreate: String(roomIdForCreate) });
+      } else {
+        log('3_postReservation_roomIdOnly_retry_failed', { message: roomIdOnlyRetry.data?.message ?? roomIdOnlyRetry.text });
+      }
+    }
+
+    // Only proceed to recovery/escalation when neither the original nor the retries succeeded.
     if (!reservationData?.data?.reservationID && !reservationData?.reservationID) {
 
     let recoveredPayload: any = null;
