@@ -1333,8 +1333,8 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
             </div>
             <div style={{ width: '44px', flexShrink: 0 }} />
             <div style={{ flex: '2 1 0', minWidth: '120px', padding: '0 12px', fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Name</div>
-            <div style={{ flex: '1 1 0', minWidth: '90px', padding: '0 12px', fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>CLC Number</div>
-            <div style={{ flex: '1 1 0', minWidth: '80px', padding: '0 12px', fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Room</div>
+            <div style={{ flex: '1 1 0', minWidth: '90px', padding: '0 12px', fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', overflow: 'hidden' }}>CLC Number</div>
+            <div style={{ flex: '1 1 0', minWidth: '80px', padding: '0 12px', fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', overflow: 'hidden' }}>Room</div>
             <div style={{ flex: '1.5 1 0', minWidth: '140px', padding: '0 12px', fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Check-in</div>
             <div style={{ flex: '1.5 1 0', minWidth: '140px', padding: '0 12px', fontSize: '12px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Check-out</div>
             <div style={{ width: '136px', flexShrink: 0, padding: '0 8px', fontSize: '11px', fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }} title="Create or re-sync this guest's reservation in Cloudbeds">
@@ -1429,8 +1429,8 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
                       <div style={{ fontWeight: 600, fontSize: '14px', color: primaryText }}>{row.guestName}</div>
                     </div>
 
-                    <div style={{ flex: '1 1 0', minWidth: '90px', padding: '0 12px', fontSize: '14px', color: secondaryText }}>{row.clcNumber}</div>
-                    <div style={{ flex: '1 1 0', minWidth: '80px', padding: '0 12px', fontSize: '14px', color: secondaryText, fontWeight: 500 }}>{row.roomNumber}</div>
+                    <div style={{ flex: '1 1 0', minWidth: '90px', padding: '0 12px', fontSize: '14px', color: secondaryText, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.clcNumber}>{row.clcNumber}</div>
+                    <div style={{ flex: '1 1 0', minWidth: '80px', padding: '0 12px', fontSize: '14px', color: secondaryText, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.roomNumber}>{row.roomNumber}</div>
                     <div style={{ flex: '1.5 1 0', minWidth: '140px', padding: '0 12px', fontSize: '13px', color: secondaryText }}>
                       <span style={{ whiteSpace: 'nowrap' }}>{row.checkInDate}</span>
                       <span style={{ color: '#9ca3af', margin: '0 4px' }}>·</span>
