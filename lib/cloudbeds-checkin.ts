@@ -2469,13 +2469,15 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     // Before escalating to unassigned: retry with roomIdOnly=true (omits rooms[0][roomTypeID]).
     // This bypasses Cloudbeds's type-level inventory counter, which blocks new reservations for
     // rooms whose prior same-day guest hasn't checked out yet even though the physical room is
-    // selectable. Applies to the early-morning window (midnight–~7 AM) when overnight guests
-    // with today's endDate are still occupying the room at the type-inventory level.
+    // selectable. Applies to the early-morning window (midnight–checkout time) when overnight
+    // guests with today's endDate are still occupying rooms at the type-inventory level.
     //
-    // Only fire this retry when the first failure looks like an availability/overbooking block
-    // (not a date or auth error), to avoid booking into a genuinely occupied room.
+    // Run unconditionally on any first-attempt failure when a room ID is available — the error
+    // message from Cloudbeds is not always an overbooking keyword match (it can be generic), so
+    // gating on isOverbookingError() caused silent skips. Any wrong-room assignment is caught
+    // downstream by the step-3e verification which unassigns and tries recovery.
     if (!reservationData?.data?.reservationID && !reservationData?.reservationID &&
-        roomIdForCreate != null && isOverbookingError(first.data)) {
+        roomIdForCreate != null) {
       log('3_postReservation_roomIdOnly_retry', {
         note: 'First attempt failed with availability error — retrying with roomIdOnly=true to bypass type-level inventory check',
         roomIdForCreate: String(roomIdForCreate),
