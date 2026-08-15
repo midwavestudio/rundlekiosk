@@ -2479,8 +2479,10 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     if (!reservationData?.data?.reservationID && !reservationData?.reservationID &&
         roomIdForCreate != null) {
       log('3_postReservation_roomIdOnly_retry', {
-        note: 'First attempt failed with availability error — retrying with roomIdOnly=true to bypass type-level inventory check',
+        note: 'First attempt failed — retrying with roomIdOnly=true to bypass type-level inventory check',
         roomIdForCreate: String(roomIdForCreate),
+        bookingStartDate,
+        serverUtcToday,
       });
       const roomIdOnlyRetry = await runPostReservation({
         attachPhysicalRoom: canAttachPhysicalRoomToReservation,
@@ -2493,6 +2495,33 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
         log('3_postReservation_roomIdOnly_retry_succeeded', { roomIdForCreate: String(roomIdForCreate) });
       } else {
         log('3_postReservation_roomIdOnly_retry_failed', { message: roomIdOnlyRetry.data?.message ?? roomIdOnlyRetry.text });
+
+        // Secondary roomIdOnly retry with the server UTC date — handles the 11 PM–midnight
+        // window where Cloudbeds's UTC clock is already on the next calendar day and rejects
+        // the local date even in roomIdOnly mode. Only fires when the dates actually differ.
+        if (!isPastCheckInDate && serverUtcToday !== bookingStartDate) {
+          const utcStartDate = serverUtcToday;
+          const utcEndDate = addOneCalendarDayYmd(utcStartDate);
+          log('3_postReservation_roomIdOnly_utc_retry', {
+            note: 'roomIdOnly retry failed — retrying with UTC date override',
+            utcStartDate,
+            utcEndDate,
+            roomIdForCreate: String(roomIdForCreate),
+          });
+          const roomIdOnlyUtcRetry = await runPostReservation({
+            attachPhysicalRoom: canAttachPhysicalRoomToReservation,
+            allowOverbooking: true,
+            roomIdOnly: true,
+            dateOverride: { startDate: utcStartDate, endDate: utcEndDate },
+          });
+          if (roomIdOnlyUtcRetry.ok) {
+            reservationData = roomIdOnlyUtcRetry.data;
+            physicalRoomPinnedInCreate = true;
+            log('3_postReservation_roomIdOnly_utc_retry_succeeded', { utcStartDate, roomIdForCreate: String(roomIdForCreate) });
+          } else {
+            log('3_postReservation_roomIdOnly_utc_retry_failed', { message: roomIdOnlyUtcRetry.data?.message ?? roomIdOnlyUtcRetry.text });
+          }
+        }
       }
     }
 
@@ -2769,18 +2798,16 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       // Non-fatal — the reservation exists and is paid; staff will see it as assigned and can manually unassign.
     }
 
-    // Recovery attempt: if the original room is actually available (escalation may have been
-    // triggered solely by a Cloudbeds date/UTC mismatch rather than true occupancy), try to
-    // assign it now via postRoomAssign and check the guest in. This handles the time-of-day
-    // windows (e.g. midnight–2:30 AM and 5:30–8:12 PM local) where postReservation with the
-    // physical room fails due to server UTC vs kiosk local date mismatch.
+    // Recovery attempt: after escalation creates an unassigned reservation and payment is
+    // settled, try to assign the originally-selected room via postRoomAssign and check the
+    // guest in. Uses the same multi-variant approach as the normal step-5 path so that
+    // Cloudbeds API field quirks (missing reservationRoomID, subReservationID variations,
+    // adjustPrice requirements) don't block a successful assignment.
     const recoveryRoomId = String(roomIdForCreate ?? roomIdForStayPeriod ?? actualRoomID ?? '').trim();
     if (recoveryRoomId) {
-      // Only attempt recovery when the reservation is truly unassigned (no room line ID),
-      // meaning the room may genuinely be free — not when we just unassigned an occupied room.
       let recoveryAssigned = false;
       try {
-        // Fetch a fresh reservationRoomID for postRoomAssign (needed after the unassign above).
+        // Fetch fresh reservation state — source of truth for line IDs after the unassign above.
         const grRecoveryUrl = `${apiV13}/getReservation?propertyID=${encodeURIComponent(CLOUDBEDS_PROPERTY_ID)}&reservationID=${encodeURIComponent(String(reservationID))}`;
         log('confirmedPayOnly_recovery_getReservation_request', { url: grRecoveryUrl, recoveryRoomId });
         const grRecoveryResp = await fetch(grRecoveryUrl, {
@@ -2793,66 +2820,89 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
 
         if (grRecoveryParsed?.success) {
           const d = grRecoveryParsed.data ?? grRecoveryParsed;
-          // Only proceed if the reservation is still unassigned (no assigned rooms).
-          const isStillUnassigned = !reservationAlreadyHasPhysicalRoom(grRecoveryParsed);
           const recoveryLineId =
             extractReservationRoomLineId(grRecoveryParsed) ??
-            (Array.isArray(d?.unassigned) && d.unassigned[0]?.reservationRoomID ? String(d.unassigned[0].reservationRoomID) : null);
+            (Array.isArray(d?.unassigned) && d.unassigned[0]?.reservationRoomID ? String(d.unassigned[0].reservationRoomID) : null) ??
+            (Array.isArray(d?.assigned) && d.assigned[0]?.reservationRoomID ? String(d.assigned[0].reservationRoomID) : null);
           const recoverySubResID =
-            (Array.isArray(d?.unassigned) && d.unassigned[0]?.subReservationID) ? String(d.unassigned[0].subReservationID) : null;
+            (Array.isArray(d?.unassigned) && d.unassigned[0]?.subReservationID ? String(d.unassigned[0].subReservationID) : null) ??
+            (Array.isArray(d?.assigned) && d.assigned[0]?.subReservationID ? String(d.assigned[0].subReservationID) : null);
+          const recoveryTypeID = String(roomTypeID ?? roomTypeIDStr ?? '').trim();
+          const recoveryRoomName = selectedRoomName ? String(selectedRoomName).trim() : '';
 
-          if (isStillUnassigned && recoveryLineId) {
-            const assignParams = new URLSearchParams();
-            assignParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
-            assignParams.append('reservationID', String(reservationID));
-            assignParams.append('reservationRoomID', recoveryLineId);
-            assignParams.append('newRoomID', recoveryRoomId);
-            if (recoverySubResID && recoverySubResID !== String(reservationID)) {
-              assignParams.append('subReservationID', recoverySubResID);
+          // Build the same set of postRoomAssign variants the normal step-5 path uses.
+          // Try each in order; stop at the first success.
+          const mk = (fields: Record<string, string>): URLSearchParams => {
+            const p = new URLSearchParams();
+            p.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+            for (const [k, v] of Object.entries(fields)) {
+              if (v !== '') p.append(k, v);
             }
-            log('confirmedPayOnly_recovery_postRoomAssign_request', {
-              reservationID: String(reservationID),
-              reservationRoomID: recoveryLineId,
-              newRoomID: recoveryRoomId,
-            });
-            const assignResp = await fetch(`${apiV13}/postRoomAssign`, {
-              method: 'POST',
-              headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-              body: assignParams.toString(),
-            });
-            const assignText = await assignResp.text();
-            let assignData: any = {};
-            try { assignData = JSON.parse(assignText); } catch { assignData = {}; }
-            log('confirmedPayOnly_recovery_postRoomAssign_response', { status: assignResp.status, ok: assignResp.ok && assignData.success === true, body: assignData });
+            return p;
+          };
 
-            if (assignResp.ok && assignData.success === true) {
-              // Room assigned — now check the guest in.
-              const checkInParams = new URLSearchParams();
-              checkInParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
-              checkInParams.append('reservationID', String(reservationID));
-              checkInParams.append('status', 'checked_in');
-              log('confirmedPayOnly_recovery_putReservation_checkin_request', { reservationID: String(reservationID) });
-              try {
-                const ciResp = await fetch(`${apiV13}/putReservation`, {
-                  method: 'PUT',
-                  headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-                  body: checkInParams.toString(),
-                });
-                const ciText = await ciResp.text();
-                let ciData: any = {};
-                try { ciData = JSON.parse(ciText); } catch { ciData = {}; }
-                log('confirmedPayOnly_recovery_putReservation_checkin_response', { status: ciResp.status, ok: ciResp.ok && ciData.success === true });
-                if (ciResp.ok && ciData.success === true) {
-                  recoveryAssigned = true;
-                  log('confirmedPayOnly_recovery_success', {
-                    note: 'Originally-selected room was available — assigned and checked in successfully',
-                    roomId: recoveryRoomId,
-                    reservationID: String(reservationID),
+          const assignVariants: Array<{ step: string; params: URLSearchParams }> = [];
+
+          if (recoveryLineId) {
+            assignVariants.push({ step: 'confirmedPayOnly_recovery_lineId_subRes_adjust', params: mk({ reservationID: String(reservationID), reservationRoomID: recoveryLineId, ...(recoverySubResID && recoverySubResID !== String(reservationID) ? { subReservationID: recoverySubResID } : {}), newRoomID: recoveryRoomId, roomTypeID: recoveryTypeID, adjustPrice: 'true' }) });
+            assignVariants.push({ step: 'confirmedPayOnly_recovery_lineId_subRes', params: mk({ reservationID: String(reservationID), reservationRoomID: recoveryLineId, ...(recoverySubResID && recoverySubResID !== String(reservationID) ? { subReservationID: recoverySubResID } : {}), newRoomID: recoveryRoomId, roomTypeID: recoveryTypeID }) });
+            assignVariants.push({ step: 'confirmedPayOnly_recovery_lineId_only_adjust', params: mk({ reservationID: String(reservationID), reservationRoomID: recoveryLineId, newRoomID: recoveryRoomId, roomTypeID: recoveryTypeID, adjustPrice: 'true' }) });
+            assignVariants.push({ step: 'confirmedPayOnly_recovery_lineId_only', params: mk({ reservationID: String(reservationID), reservationRoomID: recoveryLineId, newRoomID: recoveryRoomId, roomTypeID: recoveryTypeID }) });
+            if (recoveryRoomName && recoveryRoomName !== recoveryRoomId) {
+              assignVariants.push({ step: 'confirmedPayOnly_recovery_lineId_roomName', params: mk({ reservationID: String(reservationID), reservationRoomID: recoveryLineId, ...(recoverySubResID && recoverySubResID !== String(reservationID) ? { subReservationID: recoverySubResID } : {}), newRoomID: recoveryRoomName, roomTypeID: recoveryTypeID }) });
+            }
+          }
+          if (recoverySubResID && recoverySubResID !== String(reservationID)) {
+            assignVariants.push({ step: 'confirmedPayOnly_recovery_subRes_id', params: mk({ reservationID: String(reservationID), subReservationID: recoverySubResID, newRoomID: recoveryRoomId, roomTypeID: recoveryTypeID }) });
+            if (recoveryRoomName && recoveryRoomName !== recoveryRoomId) {
+              assignVariants.push({ step: 'confirmedPayOnly_recovery_subRes_name', params: mk({ reservationID: String(reservationID), subReservationID: recoverySubResID, newRoomID: recoveryRoomName, roomTypeID: recoveryTypeID }) });
+            }
+          }
+          assignVariants.push({ step: 'confirmedPayOnly_recovery_resOnly_id', params: mk({ reservationID: String(reservationID), newRoomID: recoveryRoomId, roomTypeID: recoveryTypeID }) });
+          if (recoveryRoomName && recoveryRoomName !== recoveryRoomId) {
+            assignVariants.push({ step: 'confirmedPayOnly_recovery_resOnly_name', params: mk({ reservationID: String(reservationID), newRoomID: recoveryRoomName, roomTypeID: recoveryTypeID }) });
+          }
+
+          for (const { step, params } of assignVariants) {
+            log(`${step}_request`, { body: Object.fromEntries(params.entries()) });
+            let assignData: any = {};
+            try {
+              const aResp = await fetch(`${apiV13}/postRoomAssign`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: params.toString(),
+              });
+              const aText = await aResp.text();
+              try { assignData = JSON.parse(aText); } catch { assignData = {}; }
+              log(`${step}_response`, { status: aResp.status, ok: aResp.ok && assignData.success === true, body: assignData });
+              if (aResp.ok && assignData.success === true) {
+                // Room assigned — check the guest in.
+                const ciParams = new URLSearchParams();
+                ciParams.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+                ciParams.append('reservationID', String(reservationID));
+                ciParams.append('status', 'checked_in');
+                log('confirmedPayOnly_recovery_checkin_request', { reservationID: String(reservationID), step });
+                try {
+                  const ciResp = await fetch(`${apiV13}/putReservation`, {
+                    method: 'PUT',
+                    headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: ciParams.toString(),
                   });
+                  const ciText = await ciResp.text();
+                  let ciData: any = {};
+                  try { ciData = JSON.parse(ciText); } catch { ciData = {}; }
+                  log('confirmedPayOnly_recovery_checkin_response', { status: ciResp.status, ok: ciResp.ok && ciData.success === true });
+                  if (ciResp.ok && ciData.success === true) {
+                    recoveryAssigned = true;
+                    log('confirmedPayOnly_recovery_success', { note: 'Room assigned and checked in via recovery', step, roomId: recoveryRoomId, reservationID: String(reservationID) });
+                  }
+                } catch (ciErr: any) {
+                  log('confirmedPayOnly_recovery_checkin_error', undefined, undefined, ciErr?.message);
                 }
-              } catch (ciErr: any) {
-                log('confirmedPayOnly_recovery_checkin_error', undefined, undefined, ciErr?.message);
+                break; // stop trying variants once postRoomAssign succeeds
               }
+            } catch (aErr: any) {
+              log(`${step}_error`, undefined, undefined, aErr?.message);
             }
           }
         }
