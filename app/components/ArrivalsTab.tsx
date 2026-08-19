@@ -937,8 +937,8 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
    * Create a Cloudbeds reservation for a guest.
    * Always uses allowOverbooking=true so the full escalation path fires:
    *   1. Try the guest's specific room
-   *   2. If unavailable: book any available room, then immediately unassign it
-   *      → reservation lands as confirmed + paid + unassigned in Cloudbeds
+   *   2. If unavailable: assign any other available physical room and check in
+   *   3. Only if no physical room can be booked: create confirmed + paid + unassigned
    *
    * @param row      The arrivals row to process
    * @param inlineRowId  When set, updates per-row UI state instead of the detail-panel state
