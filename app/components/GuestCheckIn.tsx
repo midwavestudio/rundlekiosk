@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { buildGuestSyntheticEmail } from '@/lib/guest-email';
 import { formatCloudbedsRoomNameLabel, kioskPersistRoomDisplayName } from '@/lib/room-display';
+import { isClcNumberLongEnough } from '@/lib/checkin-validation';
 
 interface GuestCheckInProps {
   onBack: () => void;
@@ -135,8 +136,8 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
       setError('Please enter your first and last name.');
       return;
     }
-    if (!formData.clcNumber.trim()) {
-      setError('Failed to check in: Please enter your CLC number.');
+    if (!formData.clcNumber.trim() || !isClcNumberLongEnough(formData.clcNumber)) {
+      setError('Please enter a valid CLC number (at least 6 digits).');
       return;
     }
     // Require a complete 10-digit phone number: formatted as (XXX) XXX-XXXX → 14 chars,
@@ -442,7 +443,13 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
             value={formData.clcNumber}
             onChange={(e) => handleChange('clcNumber', e.target.value)}
             placeholder="Enter your CLC number"
+            minLength={6}
           />
+          {formData.clcNumber.trim() !== '' && !isClcNumberLongEnough(formData.clcNumber) && (
+            <span style={{ fontSize: 'clamp(12px, 1.5vw, 13px)', color: '#ef4444', marginTop: '4px', display: 'block' }}>
+              CLC number must be at least 6 digits.
+            </span>
+          )}
         </div>
 
         <div className="form-group">
@@ -506,6 +513,7 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
             loadingRooms ||
             availableRooms.length === 0 ||
             !formData.clcNumber.trim() ||
+            !isClcNumberLongEnough(formData.clcNumber) ||
             formData.phoneNumber.replace(/\D/g, '').length < 10
           }
         >

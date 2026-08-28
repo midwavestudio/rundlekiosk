@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { buildGuestSyntheticEmail } from '@/lib/guest-email';
 import { formatCloudbedsRoomNameLabel } from '@/lib/room-display';
+import { isClcNumberLongEnough } from '@/lib/checkin-validation';
 import { ADMIN_ACCENT, ADMIN_TEXT_PRIMARY, ADMIN_TEXT_MUTED } from '../lib/adminTheme';
 
 interface Room {
@@ -153,11 +154,13 @@ export default function AdminCheckInTab() {
     const lastName = form.lastName.trim();
     const clcNumber = form.clcNumber.trim();
     const phoneNumber = form.phoneNumber.trim();
-    if (!firstName || !lastName || !clcNumber || !phoneNumber || !form.roomID) {
+    if (!firstName || !lastName || !clcNumber || !isClcNumberLongEnough(clcNumber) || !phoneNumber || !form.roomID) {
       setStatus('error');
       setResultMsg(
         !clcNumber
           ? 'CLC Number is required. Please enter a CLC number before continuing.'
+          : !isClcNumberLongEnough(clcNumber)
+          ? 'CLC Number must be at least 6 digits.'
           : 'Please fill in all fields and select a room.'
       );
       return;
@@ -446,8 +449,13 @@ export default function AdminCheckInTab() {
               onChange={(e) => handleChange('clcNumber', e.target.value)}
               placeholder="CLC number"
               required
-              minLength={1}
+              minLength={6}
             />
+            {form.clcNumber.trim() !== '' && !isClcNumberLongEnough(form.clcNumber) && (
+              <span style={{ fontSize: '12px', color: '#ef4444', marginTop: '4px', display: 'block' }}>
+                Must be at least 6 digits.
+              </span>
+            )}
           </div>
           <div style={fieldStyle}>
             <label style={labelStyle}>Phone Number *</label>
@@ -547,6 +555,7 @@ export default function AdminCheckInTab() {
             !form.firstName.trim() ||
             !form.lastName.trim() ||
             !form.clcNumber.trim() ||
+            !isClcNumberLongEnough(form.clcNumber) ||
             !form.phoneNumber.trim() ||
             !form.roomID
           }
