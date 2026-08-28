@@ -36,19 +36,28 @@ export function pickPreferredRoomForPickerLabel<T extends PickerRoomRow>(
   if (candidates.length === 0) return undefined;
   if (candidates.length === 1) return candidates[0];
 
+  // Always prefer a candidate that carries a placeholder reservation — it
+  // must be used as-is so the check-in flow claims the existing block rather
+  // than creating a new reservation in a different room.
+  const withPlaceholder = candidates.filter((r) => r.placeholderReservationID);
+  if (withPlaceholder.length === 1) return withPlaceholder[0];
+  // When multiple candidates have a placeholder (edge case), fall through to
+  // canonical type priority among those candidates only.
+  const pool = withPlaceholder.length > 0 ? withPlaceholder : candidates;
+
   const canonical = CANONICAL_ROOM_TYPE_BY_PICKER_LABEL[pickerLabel];
   if (canonical) {
-    const hit = candidates.find((r) => normalizeRoomTypeName(r.roomTypeName) === canonical);
+    const hit = pool.find((r) => normalizeRoomTypeName(r.roomTypeName) === canonical);
     if (hit) return hit;
   }
 
   const typePriority = ['interior single king', 'interior queen'];
   for (const t of typePriority) {
-    const hit = candidates.find((r) => normalizeRoomTypeName(r.roomTypeName) === t);
+    const hit = pool.find((r) => normalizeRoomTypeName(r.roomTypeName) === t);
     if (hit) return hit;
   }
 
-  return candidates[0];
+  return pool[0];
 }
 
 /**
@@ -78,7 +87,14 @@ export function dedupePickerRoomsByDisplayLabel<T extends PickerRoomRow>(rooms: 
       group.length === 1 ? group[0] : pickPreferredRoomForPickerLabel(group, label)!;
     if (!seenIds.has(winner.roomID)) {
       seenIds.add(winner.roomID);
-      out.push(winner);
+      // If the winner itself has no placeholder annotation but another candidate
+      // in the group does (same display label, different room type object), carry
+      // the annotation forward so the check-in path uses the existing block.
+      const phId = winner.placeholderReservationID
+        ?? group.find((r) => r.placeholderReservationID)?.placeholderReservationID;
+      out.push(phId && !winner.placeholderReservationID
+        ? { ...winner, placeholderReservationID: phId }
+        : winner);
     }
   }
 

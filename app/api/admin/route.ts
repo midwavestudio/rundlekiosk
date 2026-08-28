@@ -17,6 +17,7 @@ import {
 } from '@/lib/tye-placeholder-store';
 import { cancelTyeBlockReservationInCloudbeds, performCloudbedsCheckIn } from '@/lib/cloudbeds-checkin';
 import { unwrapReservationFromGetReservation } from '@/lib/cloudbeds-rate-preserve';
+import { bustRoomsCache } from '@/lib/available-rooms-cache';
 import * as firebaseAdmin from 'firebase-admin';
 
 export const dynamic = 'force-dynamic';
@@ -694,6 +695,9 @@ async function handleCreateTyePlaceholders(request: NextRequest) {
 
     const totalCreated = Object.values(summary).reduce((n, s) => n + s.created.length, 0);
     const totalFailed = Object.values(summary).reduce((n, s) => n + s.failed.length, 0);
+    // Bust the available-rooms cache so the next kiosk request immediately sees
+    // the new placeholder annotations instead of waiting up to 10 minutes.
+    if (totalCreated > 0) bustRoomsCache();
     return NextResponse.json({ success: totalFailed === 0, summary, totalCreated, totalSkipped: Object.values(summary).reduce((n, s) => n + s.skipped.length, 0), totalFailed });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Internal server error';
@@ -743,6 +747,8 @@ async function handleCancelTyePlaceholder(request: NextRequest) {
       }
     }
     await updatePlaceholder(placeholder.id, { status: 'cancelled', cloudbedsStatus: 'cancelled', lastSyncedAt: new Date().toISOString() });
+    // Bust the available-rooms cache so the cancelled room is removed from the picker immediately.
+    bustRoomsCache();
     return NextResponse.json({ success: true, reservationID, message: 'Block cancelled in Cloudbeds and updated locally.' });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Internal server error';

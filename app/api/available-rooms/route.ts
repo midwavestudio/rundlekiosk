@@ -1,19 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAvailablePlaceholdersOverlappingStay } from '@/lib/tye-placeholder-store';
 import { dedupePickerRoomsByDisplayLabel } from '@/lib/room-picker-dedupe';
+import { roomsCache, ROOMS_CACHE_TTL_MS } from '@/lib/available-rooms-cache';
 
 export const dynamic = 'force-dynamic';
-
-// ---------------------------------------------------------------------------
-// Short-lived cache for the available-rooms list keyed on check-in date.
-// Multiple kiosk devices loading on the same day share one Firestore read.
-// ---------------------------------------------------------------------------
-interface RoomsCache {
-  rooms: unknown[];
-  expiresAt: number;
-}
-const roomsCache = new Map<string, RoomsCache>();
-const ROOMS_CACHE_TTL_MS = 10 * 60_000; // 10 minutes
 
 /** Excluded from kiosk/admin room pickers. */
 const KIOSK_ROOM_PICKER_EXCLUSIONS = ['227', 'CON', '303'];
