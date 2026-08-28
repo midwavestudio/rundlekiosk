@@ -245,11 +245,11 @@ function reservationOccupiesSellableRoom(r: any, sellable: SellableInventory): b
   return false;
 }
 
-function countActiveTyeInHouseFromRecords(records: CheckinRecord[], oldestCheckInMs: number): number {
+function countActiveInHouseFromRecords(records: CheckinRecord[], oldestCheckInMs: number): number {
   const seen = new Set<string>();
   let n = 0;
   for (const r of records) {
-    if (String(r.class ?? '').toUpperCase() !== 'TYE' || r.checkOutTime) continue;
+    if (r.checkOutTime) continue;
     const t = r.checkInTime ? new Date(r.checkInTime).getTime() : 0;
     if (t < oldestCheckInMs) continue;
     const key = r.cloudbedsReservationID ? `res:${r.cloudbedsReservationID}` : `g:${r.firstName}|${r.lastName}|${r.checkInTime}`;
@@ -279,30 +279,52 @@ function countSellableOccupancyHintFromRecords(records: CheckinRecord[], sellabl
   return n;
 }
 
-async function fetchStayingCheckedInStats(apiBase: string, propertyID: string, headers: HeadersInit, todayYmd: string, sellable: SellableInventory): Promise<{ totalInHouseSellable: number }> {
-  const seenReservation = new Set<string>();
-  let totalInHouseSellable = 0;
+async function fetchOccupiedSellableRooms(
+  apiBase: string,
+  propertyID: string,
+  headers: HeadersInit,
+  todayYmd: string,
+  sellable: SellableInventory,
+  status: 'checked_in' | 'confirmed',
+  seenReservation: Set<string>,
+): Promise<number> {
+  let count = 0;
   let pageNumber = 1;
   for (;;) {
-    const qs = new URLSearchParams({ propertyID, status: 'checked_in', pageNumber: String(pageNumber), pageSize: '500', includeAllRooms: 'true', sortByRecent: 'true' });
+    const qs = new URLSearchParams({ propertyID, status, pageNumber: String(pageNumber), pageSize: '500', includeAllRooms: 'true', sortByRecent: 'true' });
     const res = await fetch(`${apiBase}/getReservations?${qs}`, { method: 'GET', headers });
     if (!res.ok) break;
     const data = await res.json();
     const list = extractReservationList(data);
     if (list.length === 0) break;
     for (const r of list) {
-      const out = String(r.endDate ?? r.checkOutDate ?? '').trim();
-      if (out && out < todayYmd) continue;
+      // For confirmed reservations, only count those whose stay covers today
+      // (checkIn <= today <= checkOut). checked_in ones are already filtered
+      // by Cloudbeds to be active; we still guard against stale past checkouts.
+      const startDate = String(r.startDate ?? r.checkInDate ?? '').trim();
+      const endDate   = String(r.endDate   ?? r.checkOutDate ?? '').trim();
+      if (endDate && endDate < todayYmd) continue;
+      if (status === 'confirmed' && startDate && startDate > todayYmd) continue;
       const id = String(r.reservationID ?? '').trim();
       if (!id || seenReservation.has(id)) continue;
       seenReservation.add(id);
-      if (reservationOccupiesSellableRoom(r, sellable)) totalInHouseSellable++;
+      if (reservationOccupiesSellableRoom(r, sellable)) count++;
     }
     if (list.length < 500) break;
     pageNumber++;
     if (pageNumber > 50) break;
   }
-  return { totalInHouseSellable };
+  return count;
+}
+
+async function fetchStayingCheckedInStats(apiBase: string, propertyID: string, headers: HeadersInit, todayYmd: string, sellable: SellableInventory): Promise<{ totalInHouseSellable: number }> {
+  // Count all rooms occupied today: physically checked-in + confirmed bookings
+  // covering today (i.e. checkIn <= today < checkOut). Both consume a sellable
+  // room and should be subtracted from available inventory.
+  const seenReservation = new Set<string>();
+  const checkedIn = await fetchOccupiedSellableRooms(apiBase, propertyID, headers, todayYmd, sellable, 'checked_in', seenReservation);
+  const confirmed  = await fetchOccupiedSellableRooms(apiBase, propertyID, headers, todayYmd, sellable, 'confirmed',  seenReservation);
+  return { totalInHouseSellable: checkedIn + confirmed };
 }
 
 async function fetchTyeInHouseBySource(apiBase: string, propertyID: string, headers: HeadersInit, todayYmd: string): Promise<number> {
@@ -364,12 +386,13 @@ async function handleDashboardStats() {
       const sellable = await fetchSellableInventory(apiV13, CLOUDBEDS_PROPERTY_ID, headers);
       totalRooms = Math.max(sellable.ids.size, 1);
       const occupancy = await fetchStayingCheckedInStats(apiV13, CLOUDBEDS_PROPERTY_ID, headers, todayYmd, sellable);
-      inHouse = await fetchTyeInHouseBySource(apiV13, CLOUDBEDS_PROPERTY_ID, headers, todayYmd);
       const occupancyFromFirestore = countSellableOccupancyHintFromRecords(records, sellable);
       totalOccupiedSellable = Math.max(occupancy.totalInHouseSellable, occupancyFromFirestore);
+      inHouse = totalOccupiedSellable;
       available = Math.max(totalRooms - totalOccupiedSellable, 0);
     } else {
-      inHouse = countActiveTyeInHouseFromRecords(records, oldestTyeMs);
+      inHouse = countActiveInHouseFromRecords(records, oldestTyeMs);
+      available = Math.max(totalRooms - inHouse, 0);
     }
 
     const payload = { success: true, stats: { inHouse, totalRooms, available, arrivalsToday, departedToday } };

@@ -204,6 +204,17 @@ function avatarColor(name: string): string {
   return AVATAR_COLORS[h % AVATAR_COLORS.length];
 }
 
+/** Returns true when the guest checked out more than 24 hours after checking in. */
+function stayedOver24h(checkInIso: string, checkOutIso?: string): boolean {
+  if (!checkOutIso) return false;
+  try {
+    const diff = new Date(checkOutIso).getTime() - new Date(checkInIso).getTime();
+    return diff > 24 * 60 * 60 * 1000;
+  } catch {
+    return false;
+  }
+}
+
 function guestMatchKey(g: Pick<CheckedInGuest, 'firstName' | 'lastName' | 'checkInTime'>): string {
   return `${g.firstName}|${g.lastName}|${g.checkInTime}`;
 }
@@ -1273,6 +1284,29 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
         >
           Reset Dot Marks
         </button>
+
+        {/* Legend */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginLeft: '4px', padding: '6px 10px', background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: '8px' }}>
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '3px',
+              padding: '2px 6px',
+              borderRadius: '10px',
+              fontSize: '10px',
+              fontWeight: 700,
+              background: '#fff7ed',
+              color: '#c2410c',
+              border: '1px solid #fed7aa',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            <span aria-hidden style={{ fontSize: '9px' }}>⏱</span>
+            24h+
+          </span>
+          <span style={{ fontSize: '12px', color: '#92400e', fontWeight: 500 }}>Stayed over 24 hours</span>
+        </div>
       </div>
 
       {/* â”€â”€ Export Panel â”€â”€ */}
@@ -1436,12 +1470,37 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
                       <span style={{ color: '#9ca3af', margin: '0 4px' }}>·</span>
                       <span style={{ fontWeight: 600, color: primaryText }}>{row.checkInTime}</span>
                     </div>
-                    <div style={{ flex: '1.5 1 0', minWidth: '140px', padding: '0 12px', fontSize: '13px', color: secondaryText }}>
+                    <div style={{ flex: '1.5 1 0', minWidth: '140px', padding: '0 12px', fontSize: '13px', color: secondaryText, display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
                       {row.checkOutIso ? (
                         <>
-                          <span style={{ whiteSpace: 'nowrap' }}>{fmtDate(row.checkOutIso)}</span>
-                          <span style={{ color: '#9ca3af', margin: '0 4px' }}>·</span>
-                          <span style={{ fontWeight: 600, color: primaryText }}>{fmtTime(row.checkOutIso)}</span>
+                          <span style={{ whiteSpace: 'nowrap' }}>
+                            <span>{fmtDate(row.checkOutIso)}</span>
+                            <span style={{ color: '#9ca3af', margin: '0 4px' }}>·</span>
+                            <span style={{ fontWeight: 600, color: primaryText }}>{fmtTime(row.checkOutIso)}</span>
+                          </span>
+                          {stayedOver24h(row.checkInIso, row.checkOutIso) && (
+                            <span
+                              title="Guest stayed more than 24 hours"
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '3px',
+                                padding: '2px 6px',
+                                borderRadius: '10px',
+                                fontSize: '10px',
+                                fontWeight: 700,
+                                letterSpacing: '0.03em',
+                                background: '#fff7ed',
+                                color: '#c2410c',
+                                border: '1px solid #fed7aa',
+                                whiteSpace: 'nowrap',
+                                flexShrink: 0,
+                              }}
+                            >
+                              <span aria-hidden style={{ fontSize: '9px' }}>⏱</span>
+                              24h+
+                            </span>
+                          )}
                         </>
                       ) : (
                         <span style={{ color: '#9ca3af' }}>-</span>

@@ -422,7 +422,7 @@ function DashboardTab({ firestoreStatus }: { firestoreStatus: FirebaseStatus | n
         gap: 'clamp(10px, 1.5vw, 18px)',
         marginBottom: 'clamp(16px, 2.5vw, 28px)',
       }}>
-        <StatCard label="In House (TYE)"  value={stats.inHouse}   color="#34d399" icon="🏨" />
+        <StatCard label="In House"         value={stats.inHouse}   color="#34d399" icon="🏨" />
         <StatCard label="Available"        value={stats.available} color="#60a5fa" icon="🔓" />
         <StatCard label="Arrivals Today"   value={stats.arrivals}  color={ADMIN_ACCENT} icon="→" />
         <StatCard label="Departed Today"   value={stats.departed}  color="#a78bfa" icon="←" />
