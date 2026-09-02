@@ -1402,7 +1402,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       p.append('adults[0][quantity]', '1');
       p.append('children[0][roomTypeID]', roomTypeID);
       p.append('children[0][quantity]', '0');
-      p.append('sourceID', 's-945658-1');
+      p.append('sourceID', 's-945658');
       if (useOverbooking || forceOverbooking) p.append('allowOverbooking', '1');
       return p;
     };
@@ -2023,7 +2023,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
         reservationParams.append('children[0][roomID]', rid);
       }
     }
-    reservationParams.append('sourceID', 's-945658-1');
+    reservationParams.append('sourceID', 's-945658');
     return reservationParams;
   };
 
@@ -2164,7 +2164,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
         p.append('adults[0][quantity]', '1');
         p.append('children[0][quantity]', '0');
       }
-      p.append('sourceID', 's-945658-1');
+      p.append('sourceID', 's-945658');
       p.append('allowOverbooking', '1');
       return p;
     };
@@ -2376,7 +2376,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       pNoRate.append('adults[0][quantity]', '1');
       pNoRate.append('children[0][roomTypeID]', typeID);
       pNoRate.append('children[0][quantity]', '0');
-      pNoRate.append('sourceID', 's-945658-1');
+      pNoRate.append('sourceID', 's-945658');
       pNoRate.append('allowOverbooking', '1');
       const rNoRate = await tryPostReservation(pNoRate, `3_last_resort_typeB_${typeID}`);
       if (rNoRate.ok) {

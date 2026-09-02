@@ -24,10 +24,15 @@ export function getTyeRatePlanIdSet(): Set<string> {
   return cachedPlanIds;
 }
 
-/** Reservation source IDs used for TYE kiosk bookings (comma-separated). */
+/**
+ * Reservation source IDs used for TYE kiosk bookings (comma-separated).
+ * Includes both the current format (s-945658) and the legacy format (s-945658-1)
+ * so that existing reservations created before the Cloudbeds API format change
+ * are still correctly recognised as TYE stays.
+ */
 export function getTyeSourceIdSet(): Set<string> {
   if (!cachedSourceIds) {
-    cachedSourceIds = parseCommaIds(process.env.CLOUDBEDS_TYE_SOURCE_IDS, 's-945658-1');
+    cachedSourceIds = parseCommaIds(process.env.CLOUDBEDS_TYE_SOURCE_IDS, 's-945658,s-945658-1');
   }
   return cachedSourceIds;
 }
