@@ -104,7 +104,12 @@ function addCalendarDaysToYmd(ymd: string, delta: number): string {
   return localYmd(dt);
 }
 
-const SERVER_DATE_WINDOW_DAYS = 1;
+// Fetch records up to 45 days before the selected date so multi-night stays
+// (guests who checked in days ago but check out on the selected date) are
+// included. This matches the dashboard's departure count window and fixes the
+// discrepancy between "Departed Today" on the dashboard and the Departures tab.
+const SERVER_DATE_WINDOW_DAYS_BEFORE = 45;
+const SERVER_DATE_WINDOW_DAYS_AFTER = 1;
 const SERVER_RECORD_LIMIT = 500;
 const SERVER_POLL_MS = 10 * 60_000;
 
@@ -257,8 +262,8 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
 
     const loadServer = async () => {
       try {
-        const fromYmd = addCalendarDaysToYmd(selectedDate, -SERVER_DATE_WINDOW_DAYS);
-        const toYmd = addCalendarDaysToYmd(selectedDate, SERVER_DATE_WINDOW_DAYS);
+        const fromYmd = addCalendarDaysToYmd(selectedDate, -SERVER_DATE_WINDOW_DAYS_BEFORE);
+        const toYmd = addCalendarDaysToYmd(selectedDate, SERVER_DATE_WINDOW_DAYS_AFTER);
         const params = new URLSearchParams({
           from: fromYmd,
           to: toYmd,

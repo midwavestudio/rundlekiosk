@@ -2,10 +2,9 @@ import 'server-only';
 
 /**
  * Append-only kiosk / API event log for admin review (check-in failures, checkout failures, etc.).
- * Persists to Firestore when configured; otherwise in-memory (dev / CI).
+ * Firestore persistence is disabled to reduce cloud read/write costs. Logs are kept in-memory
+ * for the current server process and appear in Vercel function logs via console.error/warn.
  */
-
-import * as firebaseAdmin from 'firebase-admin';
 
 export type EventLogLevel = 'error' | 'warn' | 'info';
 
@@ -20,44 +19,6 @@ export interface EventLogEntry {
   occurredAt: string;
 }
 
-let _app: firebaseAdmin.app.App | null = null;
-
-function getAdminApp(): firebaseAdmin.app.App | null {
-  if (_app) return _app;
-
-  const projectId = process.env.FIREBASE_PROJECT_ID;
-  const privateKey = process.env.FIREBASE_PRIVATE_KEY;
-  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-
-  if (
-    !projectId || projectId.includes('your_') ||
-    !privateKey || privateKey.includes('your_') ||
-    !clientEmail
-  ) {
-    return null;
-  }
-
-  try {
-    _app = firebaseAdmin.apps.length
-      ? (firebaseAdmin.apps[0] as firebaseAdmin.app.App)
-      : firebaseAdmin.initializeApp({
-          credential: firebaseAdmin.credential.cert({
-            projectId,
-            privateKey: privateKey.replace(/\\n/g, '\n'),
-            clientEmail,
-          }),
-        });
-    return _app;
-  } catch {
-    return null;
-  }
-}
-
-function getDb(): firebaseAdmin.firestore.Firestore | null {
-  const app = getAdminApp();
-  if (!app) return null;
-  return firebaseAdmin.firestore(app);
-}
 
 const memoryStore: EventLogEntry[] = [];
 const MAX_MEMORY = 500;
@@ -77,7 +38,10 @@ function stringifyDetail(detail: unknown): string | undefined {
   }
 }
 
-const COLLECTION = 'kiosk_event_log';
+// Event log Firestore writes are disabled to reduce cloud costs.
+// Logs are kept in-memory for the current server process and visible in the
+// admin Error Log tab within the same session. They do not persist across
+// deployments or server restarts.
 
 export async function saveEventLog(entry: {
   level: EventLogLevel;
@@ -88,30 +52,22 @@ export async function saveEventLog(entry: {
 }): Promise<string> {
   const occurredAt = entry.occurredAt ?? new Date().toISOString();
   const detailJson = stringifyDetail(entry.detail);
-  const payload = {
-    level: entry.level,
-    source: entry.source,
-    message: entry.message.slice(0, 4000),
-    ...(detailJson ? { detailJson } : {}),
-    occurredAt,
-  };
+  const message = entry.message.slice(0, 4000);
 
-  const db = getDb();
-  if (db) {
-    try {
-      const ref = await db.collection(COLLECTION).add(payload);
-      return ref.id;
-    } catch (err) {
-      console.error('[event-log] Firestore add failed — using in-memory store.', err);
-    }
+  // Always write to console so errors appear in Vercel function logs.
+  if (entry.level === 'error') {
+    console.error(`[event-log] ${entry.source}: ${message}`, detailJson ? JSON.parse(detailJson) : '');
+  } else if (entry.level === 'warn') {
+    console.warn(`[event-log] ${entry.source}: ${message}`);
   }
 
+  // Store in-memory only (no Firestore write).
   const id = nextMemoryId();
   memoryStore.unshift({
     id,
     level: entry.level,
     source: entry.source,
-    message: payload.message,
+    message,
     detailJson,
     occurredAt,
   });
@@ -121,29 +77,6 @@ export async function saveEventLog(entry: {
 
 export async function getRecentEventLogs(limit = 200): Promise<EventLogEntry[]> {
   const cap = Math.min(Math.max(limit, 1), 500);
-  const db = getDb();
-  if (db) {
-    try {
-      const snap = await db
-        .collection(COLLECTION)
-        .orderBy('occurredAt', 'desc')
-        .limit(cap)
-        .get();
-      return snap.docs.map((d) => {
-        const data = d.data();
-        return {
-          id: d.id,
-          level: (data.level as EventLogLevel) || 'error',
-          source: String(data.source ?? ''),
-          message: String(data.message ?? ''),
-          detailJson: data.detailJson != null ? String(data.detailJson) : undefined,
-          occurredAt: String(data.occurredAt ?? ''),
-        };
-      });
-    } catch (err) {
-      console.error('[event-log] Firestore query failed — using in-memory store.', err);
-    }
-  }
-
+  // Return in-memory logs only (Firestore reads disabled to reduce cloud costs).
   return memoryStore.slice(0, cap);
 }
