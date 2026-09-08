@@ -1,6 +1,6 @@
 ﻿'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, type ReactNode } from 'react';
 import { resolveRoomNumberLabel } from '@/lib/room-display';
 import {
   datetimeLocalValueToIso,
@@ -14,6 +14,7 @@ import {
   ADMIN_INPUT_BG,
   ADMIN_ACCENT,
 } from '../lib/adminTheme';
+import { ClcNumberDisplay } from './ClcNumberDisplay';
 
 interface DeparturesTabProps {
   onCheckOut: (reservation: any) => void;
@@ -853,7 +854,9 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
                       <div style={{ fontWeight: 600, fontSize: '14px', color: '#111' }}>{row.guestName}</div>
                     </div>
 
-                    <div style={{ flex: '1 1 0', minWidth: '90px', padding: '0 12px', fontSize: '14px', color: '#374151' }}>{row.clcNumber}</div>
+                    <div style={{ flex: '1 1 0', minWidth: '90px', padding: '0 12px', display: 'flex', alignItems: 'center', overflow: 'hidden' }}>
+                      <ClcNumberDisplay value={row.clcNumber} truncate />
+                    </div>
                     <div style={{ flex: '1 1 0', minWidth: '80px', padding: '0 12px', fontSize: '14px', color: '#374151', fontWeight: 500 }}>{row.roomNumber}</div>
                     <div style={{ flex: '0.7 1 0', minWidth: '60px', padding: '0 12px' }}>
                       <span style={{ fontSize: '12px', fontWeight: 600, padding: '2px 8px', borderRadius: '12px', background: '#fef3c7', color: '#92400e' }}>{row.class}</span>
@@ -969,16 +972,16 @@ export default function DeparturesTab({ onCheckOut, onDelete }: DeparturesTabPro
               </>
             ) : (
               <>
-                {[
+                {([
                   { label: 'Full Name', value: selectedRow.guestName },
                   { label: 'Phone Number', value: selectedRow.phoneNumber },
-                  { label: 'CLC Number', value: selectedRow.clcNumber },
+                  { label: 'CLC Number', value: <ClcNumberDisplay value={selectedRow.clcNumber} /> },
                   { label: 'Room', value: selectedRow.roomNumber },
                   { label: 'Class', value: selectedRow.class },
                   { label: 'Signed In', value: `${selectedRow.checkInDate}, ${selectedRow.checkInTime}` },
                   { label: 'Signed Out', value: selectedRow.checkOutDate !== '-' ? `${selectedRow.checkOutDate}, ${selectedRow.checkOutTime}` : '-' },
                   ...(selectedRow.cloudbedsReservationID ? [{ label: 'Reservation ID', value: selectedRow.cloudbedsReservationID }] : []),
-                ].map(({ label, value }) => (
+                ] as { label: string; value: ReactNode }[]).map(({ label, value }) => (
                   <div key={label}>
                     <div style={{ fontSize: '11px', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '4px' }}>{label}</div>
                     <div style={{ padding: '8px 12px', border: '1px solid #e5e7eb', borderRadius: '6px', fontSize: '14px', color: '#374151', background: '#fafafa', wordBreak: 'break-all' }}>{value}</div>

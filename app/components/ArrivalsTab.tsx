@@ -1,6 +1,6 @@
 ﻿'use client';
 
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { resolveRoomNumberLabel } from '@/lib/room-display';
 import {
   datetimeLocalValueToIso,
@@ -14,6 +14,7 @@ import {
   ADMIN_INPUT_BG,
   ADMIN_ACCENT,
 } from '../lib/adminTheme';
+import { ClcNumberDisplay } from './ClcNumberDisplay';
 
 interface ArrivalsTabProps {
   onCheckIn: (reservation: any) => void;
@@ -1463,7 +1464,9 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
                       <div style={{ fontWeight: 600, fontSize: '14px', color: primaryText }}>{row.guestName}</div>
                     </div>
 
-                    <div style={{ flex: '1 1 0', minWidth: '90px', padding: '0 12px', fontSize: '14px', color: secondaryText, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.clcNumber}>{row.clcNumber}</div>
+                    <div style={{ flex: '1 1 0', minWidth: '90px', padding: '0 12px', display: 'flex', alignItems: 'center', overflow: 'hidden' }}>
+                      <ClcNumberDisplay value={row.clcNumber} color={secondaryText} truncate />
+                    </div>
                     <div style={{ flex: '1 1 0', minWidth: '80px', padding: '0 12px', fontSize: '14px', color: secondaryText, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.roomNumber}>{row.roomNumber}</div>
                     <div style={{ flex: '1.5 1 0', minWidth: '140px', padding: '0 12px', fontSize: '13px', color: secondaryText }}>
                       <span style={{ whiteSpace: 'nowrap' }}>{row.checkInDate}</span>
@@ -1670,10 +1673,10 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
               </>
             ) : (
               <>
-                {[
+                {([
                 { label: 'Full Name', value: selectedRow.guestName },
                 { label: 'Phone Number', value: selectedRow.phoneNumber },
-                { label: 'CLC Number', value: selectedRow.clcNumber },
+                { label: 'CLC Number', value: <ClcNumberDisplay value={selectedRow.clcNumber} /> },
                 { label: 'Room', value: selectedRow.roomNumber },
                 { label: 'Class', value: selectedRow.class },
                 { label: 'Signed In', value: `${selectedRow.checkInDate}, ${selectedRow.checkInTime}` },
@@ -1681,7 +1684,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
                   ? [{ label: 'Checked Out', value: `${fmtDate(selectedRow.checkOutIso)}, ${fmtTime(selectedRow.checkOutIso)}` }]
                   : []),
                 ...(selectedRow.cloudbedsReservationID ? [{ label: 'Reservation ID', value: selectedRow.cloudbedsReservationID }] : []),
-              ].map(({ label, value }) => (
+              ] as { label: string; value: ReactNode }[]).map(({ label, value }) => (
                 <div key={label}>
                   <div style={{ fontSize: '11px', fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '4px' }}>{label}</div>
                   <div style={{ padding: '8px 12px', border: '1px solid #e5e7eb', borderRadius: '6px', fontSize: '14px', color: '#374151', background: '#fafafa', wordBreak: 'break-all' }}>{value}</div>
