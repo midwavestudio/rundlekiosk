@@ -2388,6 +2388,46 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       }
     }
 
+    // --- Path C (nuclear fallback): no roomTypeID at all, allowOverbooking=1 ---
+    // When every specific room type is fully booked or has overbooking disabled, Cloudbeds
+    // sometimes still accepts a reservation with NO roomTypeID — it creates an unassigned/
+    // confirmed booking that staff can place into any room later.  This is the absolute last
+    // resort before giving up entirely.
+    log('3_last_resort_nuclear_no_type', {
+      note: 'Pass A+B exhausted — attempting postReservation with no roomTypeID (nuclear fallback)',
+    });
+    try {
+      const pNuclear = new URLSearchParams();
+      pNuclear.append('propertyID', CLOUDBEDS_PROPERTY_ID);
+      pNuclear.append('startDate', bookingStartDate);
+      pNuclear.append('endDate', bookingEndDate);
+      pNuclear.append('guestFirstName', guestFirstName);
+      pNuclear.append('guestLastName', guestLastName);
+      pNuclear.append('guestCountry', 'US');
+      pNuclear.append('guestZip', '00000');
+      pNuclear.append('guestEmail', guestEmail);
+      pNuclear.append('guestPhone', phoneNumber || '000-000-0000');
+      pNuclear.append('paymentMethod', 'CLC');
+      pNuclear.append('rooms[0][quantity]', '1');
+      pNuclear.append('adults[0][quantity]', '1');
+      pNuclear.append('children[0][quantity]', '0');
+      pNuclear.append('sourceID', 's-945658');
+      pNuclear.append('allowOverbooking', '1');
+      const rNuclear = await tryPostReservation(pNuclear, '3_last_resort_nuclear');
+      if (rNuclear.ok) {
+        reservationData = rNuclear.parsed;
+        confirmedPayOnly = true;
+        physicalRoomPinnedInCreate = false;
+        log('3_last_resort_nuclear_succeeded', {
+          note: 'Nuclear no-type fallback succeeded — reservation is unassigned; staff must assign room in Cloudbeds',
+        });
+        return true;
+      }
+      log('3_last_resort_nuclear_failed', { message: rNuclear.parsed?.message });
+    } catch (e: any) {
+      log('3_last_resort_nuclear_error', undefined, undefined, e?.message);
+    }
+
     log('3_last_resort_failed', {
       note: 'All escalation and last-resort paths exhausted — could not create any reservation',
       typesAttempted: lastResortTypeIDs.length,
@@ -2624,8 +2664,11 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
         });
         applyTyeRateAfterEscalation = true;
       } else {
-        const msg = first.data?.message || first.text || 'Failed to create reservation in Cloudbeds';
-        throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
+        const rawMsg = first.data?.message || first.text || '';
+        const msg = typeof rawMsg === 'string' && rawMsg
+          ? rawMsg
+          : 'Cloudbeds could not create a reservation — all rooms are fully booked and overbooking was also rejected. Please create the reservation manually in Cloudbeds.';
+        throw new Error(msg);
       }
     }
     } // end: only proceed to recovery/escalation when neither retry succeeded
@@ -2647,8 +2690,11 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       });
       applyTyeRateAfterEscalation = true;
     } else {
-      const msg = first.data?.message || first.text || 'Failed to create reservation in Cloudbeds';
-      throw new Error(typeof msg === 'string' ? msg : 'Reservation creation failed');
+      const rawMsg = first.data?.message || first.text || '';
+      const msg = typeof rawMsg === 'string' && rawMsg
+        ? rawMsg
+        : 'Cloudbeds could not create a reservation — all rooms are fully booked and overbooking was also rejected. Please create the reservation manually in Cloudbeds.';
+      throw new Error(msg);
     }
   }
 
