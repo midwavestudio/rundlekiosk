@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { reservationHasTyeRatePlan } from '@/lib/cloudbeds-tye';
 
 export async function DELETE(request: NextRequest) {
   try {
@@ -27,6 +28,34 @@ export async function DELETE(request: NextRequest) {
         { status: 200 }
       );
     }
+
+    // ── SAFETY GUARD: Only cancel reservations this kiosk created ──────────────────
+    // Prevents accidental cancellation of OTA (Expedia, Booking.com) or direct bookings.
+    {
+      const baseUrl = CLOUDBEDS_API_URL.replace(/\/v1\.\d+\/?$/, '');
+      const apiV13 = `${baseUrl.replace(/\/$/, '')}/v1.3`;
+      const grUrl = `${apiV13}/getReservation?propertyID=${encodeURIComponent(CLOUDBEDS_PROPERTY_ID)}&reservationID=${encodeURIComponent(reservationID)}`;
+      const grRes = await fetch(grUrl, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/json' },
+      });
+      if (!grRes.ok) {
+        return NextResponse.json(
+          { success: false, error: `Could not verify ownership of reservation ${reservationID} (HTTP ${grRes.status}). Refusing to delete to prevent accidental changes to OTA bookings.` },
+          { status: 502 }
+        );
+      }
+      const grJson = await grRes.json();
+      const grData = grJson?.data ?? grJson;
+      if (!reservationHasTyeRatePlan(grData)) {
+        const srcId = grData?.sourceID ?? grData?.source_id ?? '(unknown)';
+        return NextResponse.json(
+          { success: false, error: `Reservation ${reservationID} (sourceID: ${srcId}) was not created by this kiosk — cannot cancel OTA or direct bookings.` },
+          { status: 403 }
+        );
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────────────
 
     // Cancel/delete the reservation in Cloudbeds
     // Note: Cloudbeds may use different endpoints for cancellation vs deletion

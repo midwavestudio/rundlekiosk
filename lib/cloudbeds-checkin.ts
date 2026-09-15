@@ -7,7 +7,7 @@ import { buildGuestSyntheticEmail } from '@/lib/guest-email';
 import { validateClcNumberRequired } from '@/lib/checkin-validation';
 import { unwrapReservationFromGetReservation } from '@/lib/cloudbeds-rate-preserve';
 import { resolveDuplicateRoomMatches } from '@/lib/room-picker-dedupe';
-import { getTyeRatePlanIdSet } from '@/lib/cloudbeds-tye';
+import { getTyeRatePlanIdSet, reservationHasTyeRatePlan } from '@/lib/cloudbeds-tye';
 
 function getLocalDateStr(d: Date): string {
   const y = d.getFullYear();
@@ -310,6 +310,44 @@ export async function settleReservationFolio(
   log: (step: string, request?: unknown, response?: unknown, error?: string) => void,
   options?: SettleReservationFolioOptions
 ): Promise<void> {
+  // ─── SAFETY GUARD: Only post CLC payment to reservations this app created ───────
+  // Verify the reservation belongs to the TYE kiosk (correct sourceID or rate plan) BEFORE
+  // posting any payment.  A guest who also has an OTA booking (Expedia, Booking.com, etc.)
+  // must NEVER have that foreign folio charged here.
+  //
+  // The check is skipped when Cloudbeds is not configured (mock mode) so unit tests don't break.
+  if (process.env.CLOUDBEDS_API_KEY && process.env.CLOUDBEDS_PROPERTY_ID) {
+    try {
+      const verifyUrl = `${apiV13}/getReservation?propertyID=${encodeURIComponent(propertyID)}&reservationID=${encodeURIComponent(reservationID)}`;
+      const verifyRes = await fetch(verifyUrl, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${process.env.CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/json' },
+      });
+      if (verifyRes.ok) {
+        const verifyJson = await verifyRes.json();
+        const verifyData = verifyJson?.data ?? verifyJson;
+        if (!reservationHasTyeRatePlan(verifyData)) {
+          const srcId = verifyData?.sourceID ?? verifyData?.source_id ?? '(unknown)';
+          const errMsg = `BLOCKED: Reservation ${reservationID} (sourceID: ${srcId}) was not created by this kiosk. Refusing to post CLC payment to prevent modification of OTA or direct bookings.`;
+          log('4_settleFolio_ownership_check_failed', { reservationID, sourceID: srcId, error: errMsg });
+          console.error(`[settleReservationFolio] ${errMsg}`);
+          throw new Error(errMsg);
+        }
+        log('4_settleFolio_ownership_verified', { reservationID, sourceID: verifyData?.sourceID ?? '(TYE rate plan match)' });
+      } else {
+        // If we cannot verify (e.g. network error), be conservative and block the payment.
+        const errMsg = `BLOCKED: Could not verify ownership of reservation ${reservationID} (HTTP ${verifyRes.status}). Refusing to post CLC payment to prevent accidental modification of foreign reservations.`;
+        log('4_settleFolio_ownership_check_http_error', { reservationID, status: verifyRes.status, error: errMsg });
+        console.error(`[settleReservationFolio] ${errMsg}`);
+        throw new Error(errMsg);
+      }
+    } catch (ownershipErr: any) {
+      // Re-throw errors we deliberately threw above; for unexpected fetch failures, block too.
+      throw ownershipErr;
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────────────
+
   const types = await resolvePaymentTypesToTry(apiV13, propertyID, apiKey);
   const hint =
     options?.amountDueHint != null && Number(options.amountDueHint) > 0.01
@@ -1072,6 +1110,18 @@ async function fetchGuestReservationsForStayWindow(
       const id = String(row?.reservationID ?? '').trim();
       if (!id || seenIds.has(id)) continue;
       seenIds.add(id);
+      // SAFETY GUARD: Only consider reservations created by this kiosk (TYE source/rate plan).
+      // A guest who also has an OTA booking (Expedia, Booking.com, etc.) must never have that
+      // foreign reservation matched here — the kiosk must not modify or pay reservations it did
+      // not create.
+      if (!reservationHasTyeRatePlan(row)) {
+        log?.('guest_stay_lookup_skipped_non_tye', {
+          reservationID: id,
+          reason: 'Reservation is not a TYE/kiosk booking — skipping to prevent modification of OTA or direct bookings',
+          sourceID: row?.sourceID ?? row?.source_id ?? '(unknown)',
+        });
+        continue;
+      }
       aggregated.push(row);
     }
     if (list.length < pageSize) break;

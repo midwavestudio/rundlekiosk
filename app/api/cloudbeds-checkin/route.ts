@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { performCloudbedsCheckIn } from '@/lib/cloudbeds-checkin';
 import { validateClcNumberRequired } from '@/lib/checkin-validation';
+import { reservationHasTyeRatePlan } from '@/lib/cloudbeds-tye';
 import { saveEventLog } from '@/lib/event-log-store';
 import {
   savePendingCheckin,
@@ -194,6 +195,33 @@ export async function POST(request: NextRequest) {
           },
           { status: 200 }
         );
+      }
+
+      // ── SAFETY GUARD: Verify this reservation belongs to the TYE kiosk before modifying it ──
+      // Prevents the app from accidentally flipping the status of an OTA booking (Expedia, etc.)
+      // that shares the same guest name.
+      {
+        const grUrl = `${CLOUDBEDS_API_URL}/getReservation?propertyID=${encodeURIComponent(CLOUDBEDS_PROPERTY_ID)}&reservationID=${encodeURIComponent(existingReservationID)}`;
+        const grRes = await fetch(grUrl, {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${CLOUDBEDS_API_KEY}`, 'Content-Type': 'application/json' },
+        });
+        if (grRes.ok) {
+          const grJson = await grRes.json();
+          const grData = grJson?.data ?? grJson;
+          if (!reservationHasTyeRatePlan(grData)) {
+            const srcId = grData?.sourceID ?? grData?.source_id ?? '(unknown)';
+            const errMsg = `Reservation ${existingReservationID} (sourceID: ${srcId}) was not created by this kiosk — cannot modify OTA or direct bookings.`;
+            logCheckInFailure({ guest: guestLabel, room: roomLabel, reservationID: existingReservationID, error: errMsg, submittedRequest: submittedRequestLog });
+            return NextResponse.json({ success: false, error: errMsg }, { status: 403 });
+          }
+        }
+        // If we can't verify (network error), block to be safe.
+        if (!grRes.ok) {
+          const errMsg = `Could not verify ownership of reservation ${existingReservationID} (HTTP ${grRes.status}). Refusing to modify to prevent accidental changes to OTA bookings.`;
+          logCheckInFailure({ guest: guestLabel, room: roomLabel, reservationID: existingReservationID, error: errMsg, submittedRequest: submittedRequestLog });
+          return NextResponse.json({ success: false, error: errMsg }, { status: 502 });
+        }
       }
 
       // Check in the reservation (just update status)

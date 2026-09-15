@@ -4,6 +4,7 @@ import {
   pickActiveRoom,
   unwrapReservationFromGetReservation,
 } from '@/lib/cloudbeds-rate-preserve';
+import { reservationHasTyeRatePlan } from '@/lib/cloudbeds-tye';
 import { saveEventLog } from '@/lib/event-log-store';
 import {
   findByReservationID,
@@ -430,6 +431,26 @@ export async function POST(request: NextRequest) {
 
     const resData = await getReservationDetails(apiBase, CLOUDBEDS_PROPERTY_ID, CLOUDBEDS_API_KEY, String(reservationID));
     log.push({ step: 'getReservation', success: resData?.success === true });
+
+    // ── SAFETY GUARD: Only check out reservations created by this kiosk ──────────────
+    // A guest who also has an OTA booking (Expedia, Booking.com, etc.) that shares the
+    // same name must never be checked out by this app via the guest-name search path.
+    {
+      const resRoot = resData?.data ?? resData;
+      if (!resRoot) {
+        // Could not fetch the reservation from Cloudbeds — block to be safe.
+        const errMsg = `Could not fetch reservation ${reservationID} from Cloudbeds. Refusing to check out to prevent accidental modification of unknown reservations.`;
+        logCheckOutFailure({ reservationID: String(reservationID), checkoutDate, error: errMsg, submittedRequest: submittedRequestLog });
+        return NextResponse.json({ success: false, error: errMsg }, { status: 502 });
+      }
+      if (!reservationHasTyeRatePlan(resRoot)) {
+        const srcId = resRoot?.sourceID ?? resRoot?.source_id ?? '(unknown)';
+        const errMsg = `Reservation ${reservationID} (sourceID: ${srcId}) was not created by this kiosk — cannot check out OTA or direct bookings.`;
+        logCheckOutFailure({ reservationID: String(reservationID), checkoutDate, error: errMsg, submittedRequest: submittedRequestLog });
+        return NextResponse.json({ success: false, error: errMsg }, { status: 403 });
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────────────
 
     const reservationRecord = unwrapReservationFromGetReservation(resData) ?? resData?.data ?? null;
     const checkInYmdFromBody = normalizeYmd(bodyCheckInDate);
