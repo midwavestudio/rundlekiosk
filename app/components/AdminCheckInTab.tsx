@@ -449,7 +449,6 @@ export default function AdminCheckInTab() {
               onChange={(e) => handleChange('clcNumber', e.target.value)}
               placeholder="CLC number"
               required
-              minLength={6}
             />
             {form.clcNumber.trim() !== '' && !isClcNumberLongEnough(form.clcNumber) && (
               <span style={{ fontSize: '12px', color: '#ef4444', marginTop: '4px', display: 'block' }}>

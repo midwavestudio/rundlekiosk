@@ -443,7 +443,7 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
             value={formData.clcNumber}
             onChange={(e) => handleChange('clcNumber', e.target.value)}
             placeholder="Enter your CLC number"
-            minLength={6}
+            required
           />
           {formData.clcNumber.trim() !== '' && !isClcNumberLongEnough(formData.clcNumber) && (
             <span style={{ fontSize: 'clamp(12px, 1.5vw, 13px)', color: '#ef4444', marginTop: '4px', display: 'block' }}>

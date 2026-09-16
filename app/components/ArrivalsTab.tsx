@@ -15,6 +15,7 @@ import {
   ADMIN_ACCENT,
 } from '../lib/adminTheme';
 import { ClcNumberDisplay } from './ClcNumberDisplay';
+import { validateClcNumberRequired } from '@/lib/checkin-validation';
 
 interface ArrivalsTabProps {
   onCheckIn: (reservation: any) => void;
@@ -832,6 +833,13 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
 
   const handleSaveEdit = async () => {
     if (!selectedRow || !editForm) return;
+
+    // Validate CLC number
+    const clcValidation = validateClcNumberRequired(editForm.clcNumber);
+    if (!clcValidation.ok) {
+      alert(clcValidation.error);
+      return;
+    }
 
     const checkInIso = datetimeLocalValueToIso(editForm.checkInDateTime);
     if (!checkInIso) {

@@ -219,7 +219,16 @@ export async function PATCH(request: NextRequest) {
     if (body.roomNumber !== undefined) updates.roomNumber = String(body.roomNumber);
     if (body.firstName !== undefined) updates.firstName = String(body.firstName);
     if (body.lastName !== undefined) updates.lastName = String(body.lastName);
-    if (body.clcNumber !== undefined) updates.clcNumber = String(body.clcNumber);
+    if (body.clcNumber !== undefined) {
+      const clcValidation = validateClcNumberRequired(body.clcNumber);
+      if (!clcValidation.ok) {
+        return NextResponse.json(
+          { success: false, error: clcValidation.error },
+          { status: 400 }
+        );
+      }
+      updates.clcNumber = clcValidation.clcNumber;
+    }
     if (body.phoneNumber !== undefined) updates.phoneNumber = String(body.phoneNumber);
     if (body.class !== undefined) updates.class = String(body.class);
     if (body.reservationStatus !== undefined) updates.reservationStatus = String(body.reservationStatus);
@@ -248,10 +257,19 @@ export async function PATCH(request: NextRequest) {
         const checkInDateYmd = body.checkInDate && /^\d{4}-\d{2}-\d{2}$/.test(String(body.checkInDate))
           ? String(body.checkInDate)
           : checkInTime.slice(0, 10);
+        // Validate CLC number for checkout stub creation
+        const clcValidation = validateClcNumberRequired(body.clcNumber);
+        if (!clcValidation.ok) {
+          return NextResponse.json(
+            { success: false, error: `Cannot create checkout stub: ${clcValidation.error}` },
+            { status: 400 }
+          );
+        }
+
         const newId = await saveCheckinRecord({
           firstName: String(body.firstName ?? '').trim() || 'Unknown',
           lastName: String(body.lastName ?? '').trim(),
-          clcNumber: String(body.clcNumber ?? ''),
+          clcNumber: clcValidation.clcNumber,
           phoneNumber: String(body.phoneNumber ?? ''),
           class: String(body.class ?? 'TYE'),
           roomNumber: String(body.roomNumber ?? ''),
@@ -393,10 +411,16 @@ async function handleSync(request: NextRequest) {
     const results = await Promise.all(
       batch.map(async (r) => {
         try {
+          // Validate CLC number for sync records
+          const clcValidation = validateClcNumberRequired(r.clcNumber);
+          if (!clcValidation.ok) {
+            return { id: null, created: false, error: `CLC validation failed: ${clcValidation.error}` };
+          }
+
           return await upsertCheckinRecord({
             firstName: String(r.firstName ?? '').trim(),
             lastName: String(r.lastName ?? '').trim(),
-            clcNumber: String(r.clcNumber ?? ''),
+            clcNumber: clcValidation.clcNumber,
             phoneNumber: String(r.phoneNumber ?? ''),
             class: String(r.class ?? 'TYE'),
             roomNumber: String(r.roomNumber ?? ''),
