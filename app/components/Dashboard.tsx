@@ -140,6 +140,26 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
   }, []);
 
   useEffect(() => {
+    // Safety net: Vercel Hobby plan cannot run the 5-minute cron that would normally auto-retry
+    // failed/pending Cloudbeds check-ins (see app/api/retry-cloudbeds-checkins/route.ts). Without
+    // this, a guest whose kiosk check-in failed to reach Cloudbeds (network blip, transient
+    // Cloudbeds error, etc.) stays un-synced until someone manually clicks "Retry Failed
+    // Check-ins" on this dashboard. Auto-run the same retry endpoint every 5 minutes while an
+    // admin/front-desk tab is open and visible, so most failures self-heal without manual action.
+    let cancelled = false;
+    const runAutoRetry = async () => {
+      if (document.visibilityState !== 'visible') return;
+      try {
+        await fetch('/api/admin?action=retry-checkins', { method: 'POST' });
+      } catch { /* non-fatal — next poll or the manual button will catch it */ }
+    };
+    // Small initial delay so this doesn't compete with the tab's first paint / other fetches.
+    const initialId = setTimeout(() => { if (!cancelled) runAutoRetry(); }, 15_000);
+    const pollId = setInterval(runAutoRetry, 5 * 60_000);
+    return () => { cancelled = true; clearTimeout(initialId); clearInterval(pollId); };
+  }, []);
+
+  useEffect(() => {
     if (activeTab !== 'feedback') return;
     // Zero the nav badge immediately when the Messages tab is opened.
     // FeedbackTab marks all loaded messages as read on the server; if any are later

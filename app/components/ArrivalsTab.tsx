@@ -34,6 +34,12 @@ interface CheckedInGuest {
   checkOutTime?: string;
   cloudbedsGuestID?: string;
   cloudbedsReservationID?: string;
+  /**
+   * 'checked_in' when the Cloudbeds reservation is fully checked in; 'confirmed' when a
+   * reservation exists (has cloudbedsReservationID) but Cloudbeds never flipped the status to
+   * checked_in (e.g. payment/room-assign step failed after creation). Absent on older records.
+   */
+  reservationStatus?: string;
   roomNumber?: string;
   /** Firestore document ID - present on records fetched from the server. */
   _serverId?: string;
@@ -57,6 +63,7 @@ interface Row {
   fromHistory?: boolean;
   cloudbedsReservationID?: string;
   cloudbedsGuestID?: string;
+  reservationStatus?: string;
   rawData: CheckedInGuest;
 }
 
@@ -357,6 +364,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
           checkOutTime: r.checkOutTime ? String(r.checkOutTime) : undefined,
           cloudbedsReservationID: r.cloudbedsReservationID ? String(r.cloudbedsReservationID) : undefined,
           cloudbedsGuestID: r.cloudbedsGuestID ? String(r.cloudbedsGuestID) : undefined,
+          reservationStatus: r.reservationStatus ? String(r.reservationStatus) : undefined,
           roomNumber: String(r.roomNumber ?? ''),
           ...(r.id != null && String(r.id).trim() !== '' ? { _serverId: String(r.id) } : {}),
         }));
@@ -476,6 +484,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
       fromHistory,
       cloudbedsReservationID: g.cloudbedsReservationID,
       cloudbedsGuestID: g.cloudbedsGuestID,
+      reservationStatus: g.reservationStatus,
       rawData: g,
     });
 
@@ -650,6 +659,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
         checkOutTime: r.checkOutTime ? String(r.checkOutTime) : undefined,
         cloudbedsReservationID: r.cloudbedsReservationID ? String(r.cloudbedsReservationID) : undefined,
         cloudbedsGuestID: r.cloudbedsGuestID ? String(r.cloudbedsGuestID) : undefined,
+        reservationStatus: r.reservationStatus ? String(r.reservationStatus) : undefined,
         roomNumber: String(r.roomNumber ?? ''),
         ...(r.id != null && String(r.id).trim() !== '' ? { _serverId: String(r.id) } : {}),
       };
@@ -675,6 +685,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
         fromHistory: !!g.checkOutTime,
         cloudbedsReservationID: g.cloudbedsReservationID,
         cloudbedsGuestID: g.cloudbedsGuestID,
+        reservationStatus: g.reservationStatus,
         rawData: g,
       });
     }
@@ -1061,12 +1072,22 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
             const nameMatch = g.firstName === row.firstName && g.lastName === row.lastName;
             const timeMatch = g.checkInTime === row.rawData.checkInTime;
             if (!nameMatch || !timeMatch) return g;
-            return { ...g, cloudbedsReservationID: reservationID, cloudbedsGuestID: data.guestID ?? g.cloudbedsGuestID };
+            return {
+              ...g,
+              cloudbedsReservationID: reservationID,
+              cloudbedsGuestID: data.guestID ?? g.cloudbedsGuestID,
+              reservationStatus: (data.reservationStatus as string | undefined) ?? g.reservationStatus,
+            };
           };
           setCheckedInGuests((prev) => prev.map(updateGuest));
           setSelectedRow((prev) =>
             prev && prev.id === row.id
-              ? { ...prev, cloudbedsReservationID: reservationID, rawData: updateGuest(prev.rawData) }
+              ? {
+                  ...prev,
+                  cloudbedsReservationID: reservationID,
+                  reservationStatus: (data.reservationStatus as string | undefined) ?? prev.reservationStatus,
+                  rawData: updateGuest(prev.rawData),
+                }
               : prev
           );
         }
@@ -1527,8 +1548,31 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
                         const isLoading = rowCreatingId === row.id;
                         const result = rowCreateResults[row.id];
                         const hasReservation = !!row.cloudbedsReservationID;
+                        // "confirmed" means Cloudbeds has a reservation but never flipped to
+                        // checked_in (payment/room-assign failed after creation) — the reservation
+                        // exists but the guest is NOT actually checked in. Surface this clearly so
+                        // staff don't mistake a reservation ID for a completed check-in.
+                        const isConfirmedOnly = hasReservation && row.reservationStatus === 'confirmed';
                         return (
                           <>
+                            {isConfirmedOnly && !result && (
+                              <span
+                                title="A Cloudbeds reservation exists but was never checked in (payment or room assignment may have failed). Click Re-sync to finish it."
+                                style={{
+                                  fontSize: '9px',
+                                  fontWeight: 700,
+                                  letterSpacing: '0.02em',
+                                  padding: '2px 6px',
+                                  borderRadius: '8px',
+                                  background: '#fff7ed',
+                                  color: '#c2410c',
+                                  border: '1px solid #fed7aa',
+                                  whiteSpace: 'nowrap',
+                                }}
+                              >
+                                ⚠ Not checked in
+                              </span>
+                            )}
                             <button
                               type="button"
                               disabled={isLoading}

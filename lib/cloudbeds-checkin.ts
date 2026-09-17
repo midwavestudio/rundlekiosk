@@ -310,12 +310,24 @@ export async function settleReservationFolio(
   log: (step: string, request?: unknown, response?: unknown, error?: string) => void,
   options?: SettleReservationFolioOptions
 ): Promise<void> {
-  // ─── SAFETY GUARD: Only post CLC payment to reservations this app created ───────
-  // Verify the reservation belongs to the TYE kiosk (correct sourceID or rate plan) BEFORE
-  // posting any payment.  A guest who also has an OTA booking (Expedia, Booking.com, etc.)
-  // must NEVER have that foreign folio charged here.
+  // ─── DIAGNOSTIC ONLY: log (never block) whether this reservation looks like a TYE booking ──
+  // NOTE: This used to hard-block (throw) when the reservation didn't look TYE-owned, added as a
+  // safety guard against accidentally paying/modifying an OTA (Expedia, Booking.com) reservation
+  // that happens to share a guest name. In production that guard caused a mass outage on
+  // 2026-09-16: every one of *our own* freshly-created kiosk reservations was already guaranteed
+  // to be ours (we just created it in this same call with sourceID=s-945658, or it was matched via
+  // fetchGuestReservationsForStayWindow which already filters to TYE-only rows before ever reaching
+  // here — see lib/cloudbeds-tye.ts reservationHasTyeRatePlan usage there). Re-verifying ownership
+  // via a fresh getReservation call is redundant in every current call site, and any transient
+  // Cloudbeds read-after-write lag, rate limiting, or missing field on that extra read caused this
+  // guard to falsely block the CLC payment step — leaving guests with a reservation in Cloudbeds
+  // (so the admin panel showed "Re-sync" instead of "Create") that was never paid or checked in.
   //
-  // The check is skipped when Cloudbeds is not configured (mock mode) so unit tests don't break.
+  // The real protection against touching a foreign OTA reservation lives at the call sites that
+  // operate on a client-supplied / searched reservationID that this app did NOT just create:
+  // see the ownership guards in app/api/cloudbeds-checkin/route.ts (existingReservationID path),
+  // app/api/cloudbeds-checkout/route.ts, app/api/cloudbeds-delete/route.ts, and the TYE filter in
+  // fetchGuestReservationsForStayWindow. Those remain hard blocks. This one is log-only.
   if (process.env.CLOUDBEDS_API_KEY && process.env.CLOUDBEDS_PROPERTY_ID) {
     try {
       const verifyUrl = `${apiV13}/getReservation?propertyID=${encodeURIComponent(propertyID)}&reservationID=${encodeURIComponent(reservationID)}`;
@@ -328,22 +340,23 @@ export async function settleReservationFolio(
         const verifyData = verifyJson?.data ?? verifyJson;
         if (!reservationHasTyeRatePlan(verifyData)) {
           const srcId = verifyData?.sourceID ?? verifyData?.source_id ?? '(unknown)';
-          const errMsg = `BLOCKED: Reservation ${reservationID} (sourceID: ${srcId}) was not created by this kiosk. Refusing to post CLC payment to prevent modification of OTA or direct bookings.`;
-          log('4_settleFolio_ownership_check_failed', { reservationID, sourceID: srcId, error: errMsg });
-          console.error(`[settleReservationFolio] ${errMsg}`);
-          throw new Error(errMsg);
+          log('4_settleFolio_ownership_check_inconclusive', {
+            reservationID,
+            sourceID: srcId,
+            note: 'Reservation did not match TYE heuristics on re-read — proceeding anyway (diagnostic only, not blocked).',
+          });
+        } else {
+          log('4_settleFolio_ownership_verified', { reservationID, sourceID: verifyData?.sourceID ?? '(TYE rate plan match)' });
         }
-        log('4_settleFolio_ownership_verified', { reservationID, sourceID: verifyData?.sourceID ?? '(TYE rate plan match)' });
       } else {
-        // If we cannot verify (e.g. network error), be conservative and block the payment.
-        const errMsg = `BLOCKED: Could not verify ownership of reservation ${reservationID} (HTTP ${verifyRes.status}). Refusing to post CLC payment to prevent accidental modification of foreign reservations.`;
-        log('4_settleFolio_ownership_check_http_error', { reservationID, status: verifyRes.status, error: errMsg });
-        console.error(`[settleReservationFolio] ${errMsg}`);
-        throw new Error(errMsg);
+        log('4_settleFolio_ownership_check_http_error', {
+          reservationID,
+          status: verifyRes.status,
+          note: 'Could not re-verify ownership (HTTP error) — proceeding anyway (diagnostic only, not blocked).',
+        });
       }
     } catch (ownershipErr: any) {
-      // Re-throw errors we deliberately threw above; for unexpected fetch failures, block too.
-      throw ownershipErr;
+      log('4_settleFolio_ownership_check_exception', undefined, undefined, ownershipErr?.message);
     }
   }
   // ─────────────────────────────────────────────────────────────────────────────────
