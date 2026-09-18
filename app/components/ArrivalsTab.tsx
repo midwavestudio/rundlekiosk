@@ -994,6 +994,19 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
     };
 
     try {
+      // Guard against creating a Cloudbeds reservation for a guest with no CLC number on file.
+      // The server enforces this too, but checking here first avoids an extra round-trip and
+      // gives staff a clearer, more actionable message pointing them at "Edit Guest".
+      const clcForCheck = row.clcNumber === '-' ? '' : row.clcNumber;
+      const clcGuard = validateClcNumberRequired(clcForCheck);
+      if (!clcGuard.ok) {
+        setResult({
+          ok: false,
+          message: `${clcGuard.error} — use "Edit Guest" to add one before creating the Cloudbeds reservation.`,
+        });
+        return;
+      }
+
       const checkInDateYmd = row.rawData.checkInTime
         ? localYmd(new Date(row.rawData.checkInTime))
         : localYmd(new Date());

@@ -2136,6 +2136,18 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   let physicalRoomPinnedInCreate = false;
 
   const runPostReservation = async (opts: PostReservationOpts): Promise<{ ok: boolean; text: string; data: any }> => {
+    // Defense-in-depth: this is the single choke point every attempt (first try, escalation,
+    // roomIdOnly retry, nuclear fallback) funnels through to actually create the reservation in
+    // Cloudbeds. Re-check the CLC number here too so that no current or future code path can ever
+    // create a room reservation for a guest without one, even if the entry-point check above (or
+    // in a caller route) is ever skipped or refactored away. stopAfterReservationCreate (the
+    // Blocks tab) is the only guest-less exception — those have no guest/CLC yet by design.
+    if (!stopAfterReservationCreate) {
+      const clcGuard = validateClcNumberRequired(clcNumber);
+      if (!clcGuard.ok) {
+        throw new Error(`Refusing to create Cloudbeds reservation without a CLC number: ${clcGuard.error}`);
+      }
+    }
     const { attachPhysicalRoom, dateOverride, roomIdOnly } = opts;
     const reservationParams = buildReservationParams(opts);
     log('3_postReservation_request', {
