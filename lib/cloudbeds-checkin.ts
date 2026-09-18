@@ -8,6 +8,7 @@ import { validateClcNumberRequired } from '@/lib/checkin-validation';
 import { unwrapReservationFromGetReservation } from '@/lib/cloudbeds-rate-preserve';
 import { resolveDuplicateRoomMatches } from '@/lib/room-picker-dedupe';
 import { getTyeRatePlanIdSet, reservationHasTyeRatePlan } from '@/lib/cloudbeds-tye';
+import { saveEventLog } from '@/lib/event-log-store';
 
 function getLocalDateStr(d: Date): string {
   const y = d.getFullYear();
@@ -1158,6 +1159,42 @@ function reservationAssignedRoomIds(row: any): string[] {
   }
   push(row?.roomID);
   return [...ids];
+}
+
+/**
+ * Reservations this guest already holds for the SAME stay window but a DIFFERENT physical
+ * room than the one they are checking into right now.
+ *
+ * This is the "guest changed rooms and checked in twice" case: a guest checks in, is assigned
+ * room A, then decides to switch and checks in again through the kiosk with room B selected.
+ * Without this guard, room A's reservation stays "checked_in"/"confirmed" in Cloudbeds forever
+ * (nothing ever cancels it), which keeps room A permanently unavailable and causes later,
+ * unrelated guests who pick room A to get silently redirected to a fallback room by the
+ * escalation logic below. The fix: whichever room the guest checks into LAST is the one that
+ * should remain active in Cloudbeds — any earlier same-guest, same-stay reservation on a
+ * different room must be released back to inventory.
+ *
+ * Only returns reservations that have an assigned physical room (nothing to release for
+ * unassigned reservations) and excludes the target room itself (that case is a same-room
+ * duplicate, handled separately by `pickMatchingReservationForSameRoomStay`).
+ */
+function findPriorDifferentRoomReservations(
+  rows: any[],
+  guestFirstName: string,
+  guestLastName: string,
+  checkInDate: string,
+  checkOutDate: string,
+  targetRoomId: string | null | undefined
+): any[] {
+  const roomId = targetRoomId != null ? String(targetRoomId).trim() : '';
+  if (!roomId) return [];
+  return rows.filter((r) => {
+    if (!rowMatchesGuestName(r, guestFirstName, guestLastName)) return false;
+    if (!reservationOverlapsStayWindow(r, checkInDate, checkOutDate)) return false;
+    const assigned = reservationAssignedRoomIds(r);
+    if (assigned.length === 0) return false;
+    return !assigned.includes(roomId);
+  });
 }
 
 /**
@@ -2526,6 +2563,58 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
           checkOutDate,
           log
         );
+
+        // Room-change guard: if this guest already has an active reservation for this same
+        // stay window on a DIFFERENT room (they checked in earlier, then decided to switch
+        // rooms and are checking in again now), cancel the earlier reservation so its room
+        // is released back to Cloudbeds inventory. Without this, the guest ends up with two
+        // active reservations — the stale one keeps blocking its room for every other guest
+        // for the rest of the day. The room the guest is checking into right now (the LATEST
+        // choice) is the one that should remain in Cloudbeds.
+        const priorDifferentRoomReservations = findPriorDifferentRoomReservations(
+          preflightCandidates,
+          guestFirstName,
+          guestLastName,
+          checkInDate,
+          checkOutDate,
+          targetRoomForPreflight
+        );
+        for (const staleReservation of priorDifferentRoomReservations) {
+          const staleReservationID = String(staleReservation?.reservationID ?? '').trim();
+          if (!staleReservationID) continue;
+          const staleRoomIds = reservationAssignedRoomIds(staleReservation);
+          const released = await cancelCloudbedsReservation(
+            apiV13,
+            CLOUDBEDS_PROPERTY_ID,
+            CLOUDBEDS_API_KEY,
+            staleReservationID
+          );
+          log('3_prior_room_reservation_released', {
+            guest: `${guestFirstName} ${guestLastName}`,
+            staleReservationID,
+            staleRoomIds,
+            newTargetRoomID: targetRoomForPreflight,
+            released,
+          });
+          void saveEventLog({
+            level: 'warn',
+            source: 'cloudbeds-checkin:room-change-guard',
+            message: released
+              ? `${guestFirstName} ${guestLastName} checked in again on a different room — cancelled the earlier reservation ${staleReservationID} (room ${staleRoomIds.join(', ') || 'unknown'}) so it is released back to Cloudbeds inventory.`
+              : `${guestFirstName} ${guestLastName} checked in again on a different room, but Cloudbeds rejected cancellation of the earlier reservation ${staleReservationID} — that room (${staleRoomIds.join(', ') || 'unknown'}) may still be blocked. Manual cleanup may be required.`,
+            detail: {
+              guestFirstName,
+              guestLastName,
+              staleReservationID,
+              staleRoomIds,
+              newTargetRoomID: targetRoomForPreflight,
+              checkInDate,
+              checkOutDate,
+              released,
+            },
+          }).catch(() => {});
+        }
+
         const existingReservation = pickMatchingReservationForSameRoomStay(
           preflightCandidates,
           guestFirstName,
