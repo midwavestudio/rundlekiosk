@@ -11,6 +11,10 @@ import {
   upsertCheckinRecord,
   deleteCheckinRecord,
   deleteByReservationID,
+  getCheckinRecordById,
+  findAllByReservationID,
+  saveDeletedArrival,
+  getDeletedArrivals,
   type CheckinRecord,
 } from '@/lib/checkin-store';
 
@@ -37,6 +41,7 @@ function bustRecordsCache() {
  *  - ?from=YYYY-MM-DD&to=YYYY-MM-DD&limit=N  → list records
  *  - ?action=backup                           → download all records as JSON file
  *  - ?action=search&name=John+Smith           → search checked-in guests
+ *  - ?action=deleted                          → arrivals removed from the Arrivals tab
  */
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
@@ -44,6 +49,7 @@ export async function GET(request: NextRequest) {
 
   if (action === 'backup') return handleBackup();
   if (action === 'search') return handleSearch(request);
+  if (action === 'deleted') return handleDeleted(request);
 
   try {
     const from = searchParams.get('from') ?? '';
@@ -358,6 +364,44 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
+    const archive = body?.archive === true;
+    const toArchive = new Map<string, CheckinRecord>();
+    if (archive) {
+      if (id) {
+        const existing = await getCheckinRecordById(id);
+        if (existing) toArchive.set(existing.id, existing);
+      }
+      if (reservationID) {
+        for (const rec of await findAllByReservationID(reservationID)) {
+          toArchive.set(rec.id, rec);
+        }
+      }
+      if (toArchive.size === 0 && firstName && checkInTime) {
+        const byKey = await findByGuestKey(firstName, lastName, checkInTime);
+        if (byKey) toArchive.set(byKey.id, byKey);
+      }
+      if (toArchive.size === 0 && firstName && checkInDateYmd) {
+        const byName = await findByGuestName(firstName, lastName, checkInDateYmd);
+        if (byName) toArchive.set(byName.id, byName);
+      }
+
+      const snapshotFields = snapshotFromDeleteBody(body);
+      if (toArchive.size === 0) {
+        await saveDeletedArrival({
+          ...snapshotFields,
+          originalId: id || undefined,
+        });
+      } else {
+        for (const rec of toArchive.values()) {
+          await saveDeletedArrival({
+            ...rec,
+            originalId: rec.id,
+            ...fillMissingSnapshot(rec, snapshotFields),
+          });
+        }
+      }
+    }
+
     let deleted = false;
     if (id) {
       await deleteCheckinRecord(id);
@@ -371,6 +415,63 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ success: true, deleted });
   } catch (err: any) {
     console.error('[checkin-records DELETE]', err);
+    return NextResponse.json(
+      { success: false, error: err?.message ?? 'Server error' },
+      { status: 500 }
+    );
+  }
+}
+
+function optionalTrim(v: unknown): string | undefined {
+  if (typeof v !== 'string') return undefined;
+  const s = v.trim();
+  return s ? s : undefined;
+}
+
+/** Guest fields from the Arrivals delete request — used when Firestore has no doc. */
+function snapshotFromDeleteBody(body: Record<string, unknown>): Omit<CheckinRecord, 'id' | 'createdAt'> {
+  const checkInDateYmd = optionalTrim(body.checkInDateYmd);
+  return {
+    firstName: optionalTrim(body.firstName) ?? '',
+    lastName: optionalTrim(body.lastName) ?? '',
+    clcNumber: optionalTrim(body.clcNumber) ?? '',
+    phoneNumber: optionalTrim(body.phoneNumber) ?? '',
+    class: optionalTrim(body.class) ?? '',
+    roomNumber: optionalTrim(body.roomNumber) ?? '',
+    checkInTime: optionalTrim(body.checkInTime) ?? '',
+    checkInDateYmd: checkInDateYmd && /^\d{4}-\d{2}-\d{2}$/.test(checkInDateYmd) ? checkInDateYmd : undefined,
+    checkOutTime: optionalTrim(body.checkOutTime),
+    cloudbedsReservationID: optionalTrim(body.reservationID) ?? optionalTrim(body.cloudbedsReservationID),
+    cloudbedsGuestID: optionalTrim(body.cloudbedsGuestID),
+  };
+}
+
+function fillMissingSnapshot(
+  rec: CheckinRecord,
+  snap: Omit<CheckinRecord, 'id' | 'createdAt'>,
+): Partial<CheckinRecord> {
+  const out: Partial<CheckinRecord> = {};
+  if (!rec.clcNumber && snap.clcNumber) out.clcNumber = snap.clcNumber;
+  if (!rec.phoneNumber && snap.phoneNumber) out.phoneNumber = snap.phoneNumber;
+  if (!rec.class && snap.class) out.class = snap.class;
+  if (!rec.roomNumber && snap.roomNumber) out.roomNumber = snap.roomNumber;
+  if (!rec.checkOutTime && snap.checkOutTime) out.checkOutTime = snap.checkOutTime;
+  if (!rec.cloudbedsGuestID && snap.cloudbedsGuestID) out.cloudbedsGuestID = snap.cloudbedsGuestID;
+  return out;
+}
+
+async function handleDeleted(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    let limit = 500;
+    if (searchParams.has('limit')) {
+      const n = parseInt(searchParams.get('limit')!, 10);
+      if (Number.isFinite(n)) limit = Math.min(Math.max(n, 1), 1000);
+    }
+    const records = await getDeletedArrivals(limit);
+    return NextResponse.json({ success: true, records });
+  } catch (err: any) {
+    console.error('[checkin-records GET deleted]', err);
     return NextResponse.json(
       { success: false, error: err?.message ?? 'Server error' },
       { status: 500 }

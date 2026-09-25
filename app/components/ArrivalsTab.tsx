@@ -776,12 +776,19 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          archive: true,
           ...(row.rawData._serverId ? { id: row.rawData._serverId } : {}),
           ...(row.cloudbedsReservationID ? { reservationID: row.cloudbedsReservationID } : {}),
           firstName: row.rawData.firstName,
           lastName: row.rawData.lastName,
           checkInTime: row.rawData.checkInTime,
           checkInDateYmd,
+          clcNumber: row.rawData.clcNumber,
+          phoneNumber: row.rawData.phoneNumber,
+          class: row.rawData.class,
+          roomNumber: row.rawData.roomNumber,
+          checkOutTime: row.rawData.checkOutTime,
+          cloudbedsGuestID: row.rawData.cloudbedsGuestID,
         }),
       });
       const delData = (await serverRes.json().catch(() => ({}))) as {

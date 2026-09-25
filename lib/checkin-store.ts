@@ -672,3 +672,149 @@ export async function upsertCheckinRecord(
   const id = await saveCheckinRecord(record);
   return { id, created: true };
 }
+
+/** Fetch a single check-in record by Firestore / in-memory document ID. */
+export async function getCheckinRecordById(id: string): Promise<CheckinRecord | null> {
+  if (!id) return null;
+  const db = getDb();
+  if (db) {
+    try {
+      const snap = await db.collection(COLLECTION).doc(id).get();
+      if (snap.exists) return docToRecord(snap);
+      return null;
+    } catch (err) {
+      console.error('[checkin-store] getCheckinRecordById failed.', err);
+    }
+  }
+  return memStore.find((r) => r.id === id) ?? null;
+}
+
+/** All records sharing a Cloudbeds reservation ID (may be more than one). */
+export async function findAllByReservationID(reservationID: string): Promise<CheckinRecord[]> {
+  if (!reservationID) return [];
+  const db = getDb();
+  if (db) {
+    try {
+      const snap = await db
+        .collection(COLLECTION)
+        .where('cloudbedsReservationID', '==', reservationID)
+        .get();
+      return snap.docs.map(docToRecord);
+    } catch (err) {
+      console.error('[checkin-store] findAllByReservationID failed.', err);
+    }
+  }
+  return memStore.filter((r) => r.cloudbedsReservationID === reservationID);
+}
+
+// ---------------------------------------------------------------------------
+// Deleted arrivals archive — records removed from Arrivals stay here for review
+// ---------------------------------------------------------------------------
+
+const DELETED_COLLECTION = 'kiosk_deleted_arrivals';
+const MAX_DELETED_MEM = 1000;
+
+export interface DeletedCheckinRecord extends CheckinRecord {
+  /** ISO timestamp when staff deleted this arrival. */
+  deletedAt: string;
+  /** Original Firestore document ID before deletion, when known. */
+  originalId?: string;
+}
+
+const deletedMemStore: DeletedCheckinRecord[] = [];
+
+function docToDeletedRecord(d: FirebaseFirestore.DocumentSnapshot): DeletedCheckinRecord {
+  const data = d.data() as Omit<DeletedCheckinRecord, 'id'>;
+  return { id: d.id, ...data };
+}
+
+function stripUndefined<T extends Record<string, unknown>>(obj: T): T {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v !== undefined) out[k] = v;
+  }
+  return out as T;
+}
+
+/** Archive a check-in snapshot so it appears on the admin Deleted tab. */
+export async function saveDeletedArrival(
+  record: Omit<DeletedCheckinRecord, 'id' | 'createdAt' | 'deletedAt'> & {
+    id?: string;
+    createdAt?: string;
+    deletedAt?: string;
+  }
+): Promise<string> {
+  const deletedAt = record.deletedAt ?? new Date().toISOString();
+  const createdAt = record.createdAt ?? record.checkInTime ?? deletedAt;
+  const originalId = record.originalId ?? record.id;
+  const payload = stripUndefined({
+    firstName: record.firstName ?? '',
+    lastName: record.lastName ?? '',
+    clcNumber: record.clcNumber ?? '',
+    phoneNumber: record.phoneNumber ?? '',
+    class: record.class ?? '',
+    roomNumber: record.roomNumber ?? '',
+    checkInTime: record.checkInTime ?? '',
+    checkInDateYmd: record.checkInDateYmd,
+    checkOutTime: record.checkOutTime,
+    cloudbedsReservationID: record.cloudbedsReservationID,
+    cloudbedsGuestID: record.cloudbedsGuestID,
+    source: record.source,
+    createdAt,
+    deletedAt,
+    originalId,
+  } as Record<string, unknown>);
+
+  const db = getDb();
+  if (db) {
+    try {
+      const ref = await db.collection(DELETED_COLLECTION).add(payload);
+      return ref.id;
+    } catch (err) {
+      console.error('[checkin-store] Firestore saveDeletedArrival failed — using in-memory store.', err);
+    }
+  }
+
+  const id = memId();
+  deletedMemStore.unshift({
+    id,
+    firstName: String(payload.firstName ?? ''),
+    lastName: String(payload.lastName ?? ''),
+    clcNumber: String(payload.clcNumber ?? ''),
+    phoneNumber: String(payload.phoneNumber ?? ''),
+    class: String(payload.class ?? ''),
+    roomNumber: String(payload.roomNumber ?? ''),
+    checkInTime: String(payload.checkInTime ?? ''),
+    checkInDateYmd: payload.checkInDateYmd as string | undefined,
+    checkOutTime: payload.checkOutTime as string | undefined,
+    cloudbedsReservationID: payload.cloudbedsReservationID as string | undefined,
+    cloudbedsGuestID: payload.cloudbedsGuestID as string | undefined,
+    source: payload.source as string | undefined,
+    createdAt,
+    deletedAt,
+    originalId: originalId as string | undefined,
+  });
+  while (deletedMemStore.length > MAX_DELETED_MEM) deletedMemStore.pop();
+  return id;
+}
+
+/** Newest deletions first. */
+export async function getDeletedArrivals(limit = 500): Promise<DeletedCheckinRecord[]> {
+  const cap = Math.min(Math.max(limit, 1), 1000);
+  const db = getDb();
+  if (db) {
+    try {
+      const snap = await db
+        .collection(DELETED_COLLECTION)
+        .orderBy('deletedAt', 'desc')
+        .limit(cap)
+        .get();
+      return snap.docs.map(docToDeletedRecord);
+    } catch (err) {
+      console.error('[checkin-store] getDeletedArrivals Firestore failed — using in-memory store.', err);
+    }
+  }
+  return [...deletedMemStore]
+    .sort((a, b) => (b.deletedAt ?? '').localeCompare(a.deletedAt ?? ''))
+    .slice(0, cap);
+}

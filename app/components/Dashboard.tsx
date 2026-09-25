@@ -17,6 +17,7 @@ import {
   ADMIN_TEXT_FAINT,
 } from '../lib/adminTheme';
 import ArrivalsTab from './ArrivalsTab';
+import DeletedArrivalsTab from './DeletedArrivalsTab';
 import DeparturesTab from './DeparturesTab';
 import CheckInModal from './CheckInModal';
 import CheckOutModal from './CheckOutModal';
@@ -57,11 +58,12 @@ interface FeedbackEntry {
   readAt?: string;
 }
 
-type TabId = 'dashboard' | 'arrivals' | 'departures' | 'admin-checkin' | 'tye-placeholders' | 'feedback' | 'event-log';
+type TabId = 'dashboard' | 'arrivals' | 'deleted-arrivals' | 'departures' | 'admin-checkin' | 'tye-placeholders' | 'feedback' | 'event-log';
 
 const TAB_CONFIG: { id: TabId; label: string }[] = [
   { id: 'dashboard',        label: 'Dashboard'  },
   { id: 'arrivals',         label: 'Arrivals'   },
+  { id: 'deleted-arrivals', label: 'Deleted'    },
   { id: 'departures',       label: 'Departures' },
   { id: 'admin-checkin',    label: 'Check In'   },
   { id: 'tye-placeholders', label: 'Blocks'     },
@@ -193,7 +195,7 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
   const handleCheckIn  = (r: any) => { setSelectedReservation(r); setShowCheckInModal(true); };
   const handleCheckOut = (r: any) => { setSelectedReservation(r); setShowCheckOutModal(true); };
 
-  const wideGuestTab = activeTab === 'arrivals' || activeTab === 'departures';
+  const wideGuestTab = activeTab === 'arrivals' || activeTab === 'deleted-arrivals' || activeTab === 'departures';
 
   const firestoreQuotaExceeded =
     !!firestoreStatus?.error &&
@@ -370,6 +372,11 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
             {activeTab === 'arrivals' && (
               <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
                 <ArrivalsTab onCheckIn={handleCheckIn} />
+              </div>
+            )}
+            {activeTab === 'deleted-arrivals' && (
+              <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+                <DeletedArrivalsTab />
               </div>
             )}
             {activeTab === 'departures' && (
