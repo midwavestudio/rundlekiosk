@@ -201,6 +201,18 @@ function extractPostReservationAmountHint(reservationData: unknown): number | nu
 }
 
 /** Ordered payment method `type` values for postPayment (must match getPaymentMethods `method`). */
+const CARD_PAYMENT_RE = /credit|debit|visa|mastercard|master\s*card|amex|american\s*express|discover|stripe|paypal|\bcard\b/i;
+
+function paymentMethodBlob(m: any): string {
+  return `${m?.name ?? ''} ${m?.code ?? ''} ${m?.method ?? ''}`.toLowerCase();
+}
+
+function pushNonCardPaymentType(ordered: string[], raw: unknown) {
+  const t = String(raw ?? '').trim();
+  if (!t || ordered.includes(t) || CARD_PAYMENT_RE.test(t)) return;
+  ordered.push(t);
+}
+
 async function resolvePaymentTypesToTry(
   apiV13: string,
   propertyID: string,
@@ -208,7 +220,6 @@ async function resolvePaymentTypesToTry(
 ): Promise<string[]> {
   const envType = process.env.CLOUDBEDS_POST_PAYMENT_TYPE?.trim();
   const ordered: string[] = [];
-  if (envType) ordered.push(envType);
   try {
     const url = `${apiV13}/getPaymentMethods?propertyID=${encodeURIComponent(propertyID)}`;
     const resp = await fetch(url, {
@@ -218,28 +229,35 @@ async function resolvePaymentTypesToTry(
     const parsed = await resp.json();
     const paymentMethodsRaw = parsed?.data ?? parsed?.paymentMethods ?? parsed;
     const methods = Array.isArray(paymentMethodsRaw?.methods) ? paymentMethodsRaw.methods : [];
-    const byPreference = (name: string) =>
-      methods.find((m: any) => {
-        const n = String(m.name ?? '').toLowerCase();
-        const c = String(m.code ?? '').toLowerCase();
-        const method = String(m.method ?? '').toLowerCase();
-        return n === name || c === name || method === name;
-      });
-    const pushMethod = (m: any) => {
-      const t = String(m?.method ?? m?.code ?? '').trim();
-      if (t && !ordered.includes(t)) ordered.push(t);
-    };
-    const clc = byPreference('clc');
-    if (clc) pushMethod(clc);
-    const cash = byPreference('cash');
-    if (cash) pushMethod(cash);
-    for (const m of methods) pushMethod(m);
+    const tye = methods.find((m: any) => paymentMethodBlob(m).includes('tye'));
+    if (tye) {
+      const named = String(tye.name ?? tye.code ?? '').trim();
+      if (named && /tye/i.test(named)) pushNonCardPaymentType(ordered, named);
+      else pushNonCardPaymentType(ordered, tye.method ?? tye.code ?? tye.name);
+    }
+    if (envType) pushNonCardPaymentType(ordered, envType);
+    const clc = methods.find((m: any) => {
+      const blob = paymentMethodBlob(m);
+      return blob.includes('clc') || blob.split(/\s+/).includes('clc');
+    });
+    if (clc) pushNonCardPaymentType(ordered, clc.method ?? clc.code ?? clc.name);
+    // Never fall through to credit/debit cards — kiosk stays use TYE (then CLC).
   } catch {
     /* ignore */
   }
-  if (!ordered.includes('cash')) ordered.push('cash');
-  if (!ordered.includes('CLC')) ordered.push('CLC');
-  return [...new Set(ordered)];
+  if (envType) pushNonCardPaymentType(ordered, envType);
+  if (!ordered.some((t) => t.toLowerCase() === 'tye')) ordered.push('TYE');
+  if (!ordered.some((t) => t.toLowerCase() === 'clc')) ordered.push('CLC');
+  return ordered;
+}
+
+async function resolveKioskBookingPaymentMethod(
+  apiV13: string,
+  propertyID: string,
+  apiKey: string
+): Promise<string> {
+  const types = await resolvePaymentTypesToTry(apiV13, propertyID, apiKey);
+  return types[0] || 'TYE';
 }
 
 async function postPaymentWithType(
@@ -1347,6 +1365,18 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
     throw new Error('Cloudbeds not configured');
   }
 
+  let kioskBookingPaymentMethod = 'TYE';
+  try {
+    kioskBookingPaymentMethod = await resolveKioskBookingPaymentMethod(
+      apiV13,
+      CLOUDBEDS_PROPERTY_ID,
+      CLOUDBEDS_API_KEY
+    );
+    log('0_kiosk_payment_method', { paymentMethod: kioskBookingPaymentMethod });
+  } catch (e: any) {
+    log('0_kiosk_payment_method_error', undefined, undefined, e?.message);
+  }
+
   const now = new Date();
   const checkInDate = (bodyCheckIn && /^\d{4}-\d{2}-\d{2}$/.test(String(bodyCheckIn)))
     ? String(bodyCheckIn)
@@ -1494,7 +1524,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
           : buildGuestSyntheticEmail(guestFirstName, guestLastName)
       );
       p.append('guestPhone', phoneNumber || '000-000-0000');
-      p.append('paymentMethod', 'CLC');
+      p.append('paymentMethod', kioskBookingPaymentMethod);
       p.append('rooms[0][roomTypeID]', roomTypeID);
       p.append('rooms[0][quantity]', '1');
       if (roomRateID) p.append('rooms[0][roomRateID]', roomRateID);
@@ -2096,7 +2126,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       (email != null && String(email).trim() !== '' ? String(email).trim() : buildGuestSyntheticEmail(guestFirstName, guestLastName))
     );
     reservationParams.append('guestPhone', phoneNumber || '000-000-0000');
-    reservationParams.append('paymentMethod', 'CLC');
+    reservationParams.append('paymentMethod', kioskBookingPaymentMethod);
     if (allowOverbooking) {
       reservationParams.append('allowOverbooking', '1');
     }
@@ -2224,7 +2254,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       p.append('guestZip', '00000');
       p.append('guestEmail', guestEmail);
       p.append('guestPhone', phoneNumber || '000-000-0000');
-      p.append('paymentMethod', 'CLC');
+      p.append('paymentMethod', kioskBookingPaymentMethod);
       const useTypeID = (overrideTypeID ?? roomTypeIDStr) || '';
       // Only set roomTypeID if we actually have one — sending an empty string causes Cloudbeds to reject.
       if (useTypeID) {
@@ -2481,7 +2511,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       pNoRate.append('guestZip', '00000');
       pNoRate.append('guestEmail', guestEmail);
       pNoRate.append('guestPhone', phoneNumber || '000-000-0000');
-      pNoRate.append('paymentMethod', 'CLC');
+      pNoRate.append('paymentMethod', kioskBookingPaymentMethod);
       pNoRate.append('rooms[0][roomTypeID]', typeID);
       pNoRate.append('rooms[0][quantity]', '1');
       pNoRate.append('adults[0][roomTypeID]', typeID);
@@ -2519,7 +2549,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       pNuclear.append('guestZip', '00000');
       pNuclear.append('guestEmail', guestEmail);
       pNuclear.append('guestPhone', phoneNumber || '000-000-0000');
-      pNuclear.append('paymentMethod', 'CLC');
+      pNuclear.append('paymentMethod', kioskBookingPaymentMethod);
       pNuclear.append('rooms[0][quantity]', '1');
       pNuclear.append('adults[0][quantity]', '1');
       pNuclear.append('children[0][quantity]', '0');

@@ -572,7 +572,15 @@ async function handleSyncTyePlaceholdersPost(request: NextRequest) {
 
         let newStatus: PlaceholderStatus = placeholder.status;
         if (isCancelled) newStatus = 'cancelled';
-        else if (isExternallyModified && placeholder.status === 'available') newStatus = 'externally_modified';
+        else if (isExternallyModified && placeholder.status === 'available') {
+          // A real guest on the reservation means this block has been picked up — never
+          // offer it again, whether the pickup was from this app or from Cloudbeds.
+          const guestLooksPickedUp =
+            guestFirst.toLowerCase() !== 'tye' &&
+            guestFirst !== '' &&
+            !guestName.toLowerCase().includes('placeholder');
+          newStatus = guestLooksPickedUp ? 'assigned' : 'externally_modified';
+        }
 
         const updates: Record<string, string> = { lastSyncedAt: syncedAt, cloudbedsStatus: cbStatus };
         if (newStatus !== placeholder.status) updates.status = newStatus;

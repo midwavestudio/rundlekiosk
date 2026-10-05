@@ -4,7 +4,8 @@
  * Extracted to a separate module so that admin operations (create/cancel TYE
  * placeholders) can bust the cache immediately — ensuring the next kiosk
  * request reflects the new placeholder rather than waiting up to 10 minutes
- * for the TTL to expire and missing the placeholderReservationID.
+ * for the Cloudbeds inventory TTL. Placeholder pickup annotations are rematched
+ * on every /api/available-rooms request and are not stored in this cache.
  */
 
 interface RoomsCache {

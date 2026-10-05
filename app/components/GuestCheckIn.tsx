@@ -79,7 +79,8 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
       try {
         const kioskToday = kioskLocalDateYmd(new Date());
         const response = await fetch(
-          `/api/available-rooms?date=${encodeURIComponent(kioskToday)}`
+          `/api/available-rooms?date=${encodeURIComponent(kioskToday)}`,
+          { cache: 'no-store' }
         );
         const data = await response.json();
         
@@ -302,6 +303,19 @@ export default function GuestCheckIn({ onBack, onOpenFeedback }: GuestCheckInPro
                 (typeof cloudbedsResult.error === 'string' && cloudbedsResult.error) ||
                 (typeof cloudbedsResult.message === 'string' && cloudbedsResult.message) ||
                 `Cloudbeds check-in failed (HTTP ${cloudbedsResponse.status})`;
+
+              // 409/410: this block was already picked up or cancelled — retrying would
+              // overwrite another guest if the server guard ever failed. Do not retry.
+              if (cloudbedsResponse.status === 409 || cloudbedsResponse.status === 410) {
+                console.error('[CHECK-IN] Block no longer available:', errMsg);
+                postKioskEvent('kiosk:check-in', decodeCloudbedsUserMessage(errMsg), {
+                  ...submittedFields,
+                  cloudbedsFailure: true,
+                  attempts: cloudbedsAttempt,
+                  alreadyPickedUp: true,
+                });
+                break;
+              }
 
               // Retry on any failure — after a failed postReservation the server may reuse an
               // existing booking only when guest + stay + same room match (network retry).

@@ -178,7 +178,7 @@ export default function TyePlaceholdersTab() {
     try {
       const qs = new URLSearchParams();
       qs.set('date', availabilityDate);
-      const res = await fetch(`/api/available-rooms?${qs.toString()}`);
+      const res = await fetch(`/api/available-rooms?${qs.toString()}`, { cache: 'no-store' });
       const data = await res.json();
       if (data.rooms) {
         setAllRooms(data.rooms as AvailableRoom[]);

@@ -7,6 +7,13 @@ const nextConfig = {
   },
 };
 
+let defaultCache = [];
+try {
+  defaultCache = require('@ducanh2912/next-pwa/cache').defaultCache || [];
+} catch {
+  defaultCache = [];
+}
+
 const withPWA = require('@ducanh2912/next-pwa').default({
   dest: 'public',
   disable: process.env.NODE_ENV === 'development',
@@ -15,6 +22,13 @@ const withPWA = require('@ducanh2912/next-pwa').default({
   cacheOnFrontEndNav: true,
   // Avoid surprise full-page reloads when Wi‑Fi reconnects mid check-in/out.
   reloadOnOnline: false,
+  runtimeCaching: [
+    {
+      urlPattern: /\/api\/.*/i,
+      handler: 'NetworkOnly',
+    },
+    ...defaultCache,
+  ],
 });
 
 module.exports = withPWA(nextConfig);

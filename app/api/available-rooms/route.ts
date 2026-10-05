@@ -334,9 +334,17 @@ async function mergePlaceholderRooms(
       }));
 
     // For rooms already in the list, annotate them with the placeholder ID.
+    // Always drop a stale annotation when the block is no longer available.
     const annotated = existingRooms.map((room) => {
       const ph = pickPlaceholderForRoom(placeholders, room.roomID, checkInYmd);
-      return ph ? { ...room, placeholderReservationID: ph.reservationID } : room;
+      if (ph) return { ...room, placeholderReservationID: ph.reservationID };
+      const { placeholderReservationID: _stale, ...rest } = room as {
+        roomID: string;
+        roomName: string;
+        roomTypeName: string;
+        placeholderReservationID?: string;
+      };
+      return rest;
     });
 
     return [...annotated, ...toAdd];
@@ -370,16 +378,13 @@ export async function GET(request: NextRequest) {
       dateParam: dateParam || '(today)',
     });
 
-    // Return cached result for this date if available and fresh
+    // Cache Cloudbeds inventory only. Placeholder annotations are rematched on every
+    // request so a picked-up block disappears immediately instead of staying selectable
+    // for the 10-minute rooms-cache TTL.
     const cacheKey = `${today}|${tomorrow}`;
     const nowMs = Date.now();
     const hit = roomsCache.get(cacheKey);
-    if (hit && nowMs < hit.expiresAt) {
-      return NextResponse.json(
-        { success: true, rooms: hit.rooms, count: hit.rooms.length, cached: true },
-        { headers: { 'Cache-Control': 'private, max-age=600' } }
-      );
-    }
+    const noStore = { 'Cache-Control': 'no-store, no-cache, must-revalidate' };
 
     if (!CLOUDBEDS_API_KEY || !CLOUDBEDS_PROPERTY_ID) {
       console.warn('Cloudbeds API credentials not configured');
@@ -409,6 +414,34 @@ export async function GET(request: NextRequest) {
       };
     }
 
+    async function finishWithInventory(
+      inventory: Array<{ roomID: string; roomName: string; roomTypeName: string }>,
+      cached: boolean,
+      method: string
+    ) {
+      let rooms = await mergePlaceholderRooms(inventory, today, tomorrow);
+      rooms = rooms.filter((r) => !isExcludedFromKioskPicker(r));
+      rooms = dedupePickerRoomsByDisplayLabel(rooms);
+      rooms = sortRoomsForPicker(rooms);
+      return NextResponse.json({
+        success: true,
+        rooms,
+        count: rooms.length,
+        method,
+        cached,
+        checkIn: today,
+        checkOut: tomorrow,
+      }, { headers: noStore });
+    }
+
+    if (hit && nowMs < hit.expiresAt) {
+      return finishWithInventory(
+        hit.rooms as Array<{ roomID: string; roomName: string; roomTypeName: string }>,
+        true,
+        'getRooms_all'
+      );
+    }
+
     // Return full room inventory for the picker (all rooms), not just unassigned rooms.
     // This allows staff/guests to select a room even when Cloudbeds marks it unavailable;
     // downstream check-in logic already handles assignment edge cases gracefully.
@@ -432,29 +465,14 @@ export async function GET(request: NextRequest) {
     }
 
     if (allRooms.length > 0) {
-      let rooms = allRooms
+      const baseRooms = allRooms
         .filter((room: any) => room && room.roomBlocked !== true)
         .map(formatRoom)
         .filter((r: any) => r.roomID !== 'unknown' && !r.roomName.includes('(Remove BE)') && !r.roomTypeName.includes('(Remove BE)'))
         .filter((r: any) => !isExcludedFromKioskPicker(r))
         .filter((r, i, arr) => arr.findIndex((x) => x.roomID === r.roomID) === i);
-      rooms = await mergePlaceholderRooms(rooms, today, tomorrow);
-      rooms = rooms.filter((r) => !isExcludedFromKioskPicker(r));
-      // One row per display label — e.g. only Interior Single King for "100", not a duplicate Queen.
-      rooms = dedupePickerRoomsByDisplayLabel(rooms);
-      // Sort by room type (alphabetical) then room name/number (natural numeric order)
-      // so the picker always reflects the current Cloudbeds room structure regardless
-      // of what order getRooms pages were returned in.
-      rooms = sortRoomsForPicker(rooms);
-      roomsCache.set(cacheKey, { rooms, expiresAt: nowMs + ROOMS_CACHE_TTL_MS });
-      return NextResponse.json({
-        success: true,
-        rooms,
-        count: rooms.length,
-        method: 'getRooms_all',
-        checkIn: today,
-        checkOut: tomorrow,
-      });
+      roomsCache.set(cacheKey, { rooms: baseRooms, expiresAt: nowMs + ROOMS_CACHE_TTL_MS });
+      return finishWithInventory(baseRooms, false, 'getRooms_all');
     }
 
     // Fallback: Return all rooms if we can't determine availability

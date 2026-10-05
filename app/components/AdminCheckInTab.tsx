@@ -81,7 +81,9 @@ export default function AdminCheckInTab() {
 
     const fetchRooms = async () => {
       try {
-        const res = await fetch(`/api/available-rooms?date=${encodeURIComponent(form.checkInDate)}`);
+        const res = await fetch(`/api/available-rooms?date=${encodeURIComponent(form.checkInDate)}`, {
+          cache: 'no-store',
+        });
         const data = await res.json();
         if (cancelled) return;
         if (data.success) {
@@ -286,6 +288,9 @@ export default function AdminCheckInTab() {
           (typeof data.message === 'string' && data.message) ||
           `Check-in failed (HTTP ${res.status})`;
         lastErrorDetail = typeof data.details === 'string' ? data.details : '';
+        if (res.status === 409 || res.status === 410) {
+          break;
+        }
       } catch (err: any) {
         lastErrorMsg = err?.name === 'AbortError'
           ? 'Cloudbeds request timed out — please try again.'

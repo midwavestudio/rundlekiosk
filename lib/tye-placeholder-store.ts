@@ -11,6 +11,7 @@ import 'server-only';
  */
 
 import * as firebaseAdmin from 'firebase-admin';
+import { bustRoomsCache } from '@/lib/available-rooms-cache';
 
 export type PlaceholderStatus =
   | 'available'           // Placeholder is free — no real guest assigned yet
@@ -43,11 +44,36 @@ export interface TyePlaceholder {
   assignedAt?: string;
   /** Cloudbeds guest ID of the real guest */
   assignedGuestID?: string;
+  /** Normalized "firstname|lastname" of the guest who claimed this block (pickup lock). */
+  assignedGuestKey?: string;
+  /** Display name of the guest who claimed this block */
+  assignedGuestName?: string;
   /** Last time we checked Cloudbeds for external changes */
   lastSyncedAt?: string;
   /** Latest status value returned from Cloudbeds during sync */
   cloudbedsStatus?: string;
 }
+
+export const TYE_PLACEHOLDER_EMAIL = 'tye-placeholder@rundlesuites.internal';
+
+/** Stable lock key so the same guest can retry without releasing the block to someone else. */
+export function placeholderGuestKey(firstName: string, lastName: string): string {
+  return `${String(firstName).trim().toLowerCase()}|${String(lastName).trim().toLowerCase()}`;
+}
+
+/** True when Cloudbeds still has the dummy TYE Block guest — the only safe time to putGuest. */
+export function isTyePlaceholderDummyGuest(firstName: string, lastName: string, email?: string): boolean {
+  const e = String(email ?? '').trim().toLowerCase();
+  if (e === TYE_PLACEHOLDER_EMAIL) return true;
+  const f = String(firstName).trim().toLowerCase();
+  const l = String(lastName).trim().toLowerCase();
+  if (f === 'tye' && (l === 'block' || l.includes('placeholder'))) return true;
+  return false;
+}
+
+export type ClaimPlaceholderResult =
+  | { ok: true; alreadyHeldByThisGuest: boolean }
+  | { ok: false; status: PlaceholderStatus; assignedGuestName?: string };
 
 // ---------------------------------------------------------------------------
 // Firebase initialisation (mirrors lib/firebase.js but in TS)
@@ -124,6 +150,7 @@ const PLACEHOLDER_CACHE_TTL_MS = 5 * 60_000; // 5 minutes
 /** Invalidate all cached placeholder results (call after any write). */
 export function bustPlaceholderCache() {
   placeholderDateCache.clear();
+  bustRoomsCache();
 }
 
 /** Save a newly-created placeholder. Returns the document ID. */
@@ -305,13 +332,78 @@ export async function updatePlaceholder(
 /** Mark a placeholder as assigned to a real guest. */
 export async function assignPlaceholder(
   id: string,
-  guestID: string
+  guestID: string,
+  extra?: { guestKey?: string; guestName?: string }
 ): Promise<void> {
   await updatePlaceholder(id, {
     status: 'assigned',
     assignedAt: new Date().toISOString(),
     assignedGuestID: guestID,
+    ...(extra?.guestKey ? { assignedGuestKey: extra.guestKey } : {}),
+    ...(extra?.guestName ? { assignedGuestName: extra.guestName } : {}),
   });
+}
+
+/**
+ * Atomically claim an available block so a second kiosk check-in cannot pick it up.
+ * The same guest may retry (network / payment resume) without releasing the lock.
+ */
+export async function tryClaimPlaceholder(
+  id: string,
+  guestKey: string,
+  guestName: string
+): Promise<ClaimPlaceholderResult> {
+  const assignedAt = new Date().toISOString();
+  const claimFields = {
+    status: 'assigned' as const,
+    assignedAt,
+    assignedGuestKey: guestKey,
+    assignedGuestName: guestName,
+  };
+
+  const db = getDb();
+  if (db) {
+    const ref = db.collection(COLLECTION).doc(id);
+    const result = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) {
+        return { ok: false as const, status: 'cancelled' as PlaceholderStatus };
+      }
+      const data = snap.data() as Omit<TyePlaceholder, 'id'>;
+      if (data.status === 'cancelled') {
+        return { ok: false as const, status: data.status };
+      }
+      if (data.status === 'assigned' || data.status === 'externally_modified') {
+        const held = String(data.assignedGuestKey ?? '').trim();
+        if (held && held === guestKey) {
+          return { ok: true as const, alreadyHeldByThisGuest: true };
+        }
+        return {
+          ok: false as const,
+          status: data.status,
+          assignedGuestName: data.assignedGuestName,
+        };
+      }
+      tx.update(ref, claimFields);
+      return { ok: true as const, alreadyHeldByThisGuest: false };
+    });
+    if (result.ok) {
+      bustPlaceholderCache();
+    }
+    return result;
+  }
+
+  const existing = memoryStore.get(id);
+  if (!existing) return { ok: false, status: 'cancelled' };
+  if (existing.status === 'cancelled') return { ok: false, status: existing.status };
+  if (existing.status === 'assigned' || existing.status === 'externally_modified') {
+    const held = String(existing.assignedGuestKey ?? '').trim();
+    if (held && held === guestKey) return { ok: true, alreadyHeldByThisGuest: true };
+    return { ok: false, status: existing.status, assignedGuestName: existing.assignedGuestName };
+  }
+  memoryStore.set(id, { ...existing, ...claimFields });
+  bustPlaceholderCache();
+  return { ok: true, alreadyHeldByThisGuest: false };
 }
 
 /** Check whether a placeholder already exists for a given room + date combination. */

@@ -104,8 +104,7 @@ export async function POST(request: NextRequest) {
       guestFirst !== '' &&
       guestFirst.toLowerCase() !== 'tye'
     ) {
-      // Guest name was changed away from dummy — external assignment.
-      newStatus = 'externally_modified';
+      newStatus = 'assigned';
     }
 
     if (newStatus !== placeholder.status) {

@@ -5,8 +5,12 @@ import {
   getPlaceholderByReservationID,
   assignPlaceholder,
   updatePlaceholder,
+  tryClaimPlaceholder,
+  placeholderGuestKey,
+  isTyePlaceholderDummyGuest,
 } from '@/lib/tye-placeholder-store';
 import { buildGuestSyntheticEmail } from '@/lib/guest-email';
+import { saveEventLog } from '@/lib/event-log-store';
 
 // Allow up to 300 seconds for the full placeholder assignment + payment + check-in flow
 export const maxDuration = 300;
@@ -54,12 +58,68 @@ function reservationShowsGuestName(res: any, first: string, last: string): boole
   if (!res || typeof res !== 'object') return false;
   const f = first.trim().toLowerCase();
   const l = last.trim().toLowerCase();
-  const rf = String(res.guestFirstName ?? res.guest?.guestFirstName ?? res.guest?.firstName ?? '').trim().toLowerCase();
-  const rl = String(res.guestLastName ?? res.guest?.guestLastName ?? res.guest?.lastName ?? '').trim().toLowerCase();
-  if (rf === f && rl === l) return true;
+  const identity = extractReservationGuestIdentity(res);
+  if (identity.first.toLowerCase() === f && identity.last.toLowerCase() === l) return true;
   const combined = String(res.guestName ?? res.guest?.guestName ?? '').trim().toLowerCase();
   if (combined === `${f} ${l}` || combined === `${f}, ${l}`) return true;
   return false;
+}
+
+function extractReservationGuestIdentity(res: any): { first: string; last: string; email: string; status: string } {
+  const status = String(res?.status ?? res?.reservationStatus ?? '').toLowerCase();
+  let first = String(
+    res?.guestFirstName ?? res?.guest?.guestFirstName ?? res?.guest?.firstName ?? ''
+  ).trim();
+  let last = String(
+    res?.guestLastName ?? res?.guest?.guestLastName ?? res?.guest?.lastName ?? ''
+  ).trim();
+  let email = String(
+    res?.guestEmail ?? res?.guest?.guestEmail ?? res?.guest?.email ?? ''
+  ).trim();
+
+  const pullFromGuest = (g: any) => {
+    if (!g || typeof g !== 'object') return;
+    if (!first) first = String(g.guestFirstName ?? g.firstName ?? '').trim();
+    if (!last) last = String(g.guestLastName ?? g.lastName ?? '').trim();
+    if (!email) email = String(g.guestEmail ?? g.email ?? '').trim();
+  };
+
+  const gl = res?.guestList;
+  if (gl && typeof gl === 'object' && !Array.isArray(gl)) {
+    const vals = Object.values(gl) as any[];
+    const main = vals.find(
+      (e) => e?.isMainGuest === true || e?.isMainGuest === '1' || e?.primaryGuest === true || e?.isPrimaryGuest === true
+    );
+    pullFromGuest(main ?? vals[0]);
+  } else if (Array.isArray(gl)) {
+    pullFromGuest(gl[0]);
+  }
+  if (Array.isArray(res?.guests)) pullFromGuest(res.guests[0]);
+
+  if ((!first || !last) && typeof res?.guestName === 'string') {
+    const parts = String(res.guestName).trim().split(/\s+/);
+    if (!first && parts[0]) first = parts[0];
+    if (!last && parts.length > 1) last = parts.slice(1).join(' ');
+  }
+
+  return { first, last, email, status };
+}
+
+function alreadyPickedUpResponse(
+  debugLog: Array<{ step: string; request?: unknown; response?: unknown; error?: string }>,
+  existingGuestName?: string
+) {
+  const who = existingGuestName?.trim();
+  return NextResponse.json(
+    {
+      success: false,
+      error: who
+        ? `This blocked room has already been picked up (${who}). Please select a different room.`
+        : 'This blocked room has already been picked up. Please select a different room.',
+      debugTrail: debugLog,
+    },
+    { status: 409 }
+  );
 }
 
 /**
@@ -163,11 +223,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (placeholder.status !== 'available') {
+    if (placeholder.status === 'cancelled') {
       return NextResponse.json(
         {
           success: false,
-          error: `Placeholder is no longer available (current status: ${placeholder.status}). Please select a different room.`,
+          error: 'This room block is no longer available. Please select a different room.',
           debugTrail: debugLog,
         },
         { status: 409 }
@@ -183,6 +243,8 @@ export async function POST(request: NextRequest) {
       'Content-Type': 'application/json',
     };
     const reservationID = placeholderReservationID;
+    const currentGuestKey = placeholderGuestKey(guestFirst, guestLast);
+    const currentGuestName = `${guestFirst} ${guestLast}`.trim();
 
     // -----------------------------------------------------------------------
     // Step 2: Fetch current reservation to get guestID
@@ -230,9 +292,8 @@ export async function POST(request: NextRequest) {
       throw new Error('getReservation returned no reservation body — cannot assign guest');
     }
 
-    const cbResStatus = String(
-      reservation.status ?? reservation.reservationStatus ?? ''
-    ).toLowerCase();
+    const liveGuest = extractReservationGuestIdentity(reservation);
+    const cbResStatus = liveGuest.status;
     if (cbResStatus === 'cancelled' || cbResStatus === 'canceled') {
       await updatePlaceholder(placeholder.id, {
         status: 'cancelled',
@@ -248,6 +309,61 @@ export async function POST(request: NextRequest) {
         },
         { status: 410 }
       );
+    }
+
+    const dummyGuestStillOnReservation = isTyePlaceholderDummyGuest(
+      liveGuest.first,
+      liveGuest.last,
+      liveGuest.email
+    );
+    const liveGuestKey = placeholderGuestKey(liveGuest.first, liveGuest.last);
+    const cloudbedsAlreadyHasThisGuest =
+      !dummyGuestStillOnReservation && liveGuestKey === currentGuestKey;
+    const cloudbedsAlreadyHasOtherGuest =
+      !dummyGuestStillOnReservation && !cloudbedsAlreadyHasThisGuest;
+
+    // Cloudbeds is the source of truth: never overwrite a real guest on a block.
+    if (cloudbedsAlreadyHasOtherGuest) {
+      const existingName = `${liveGuest.first} ${liveGuest.last}`.trim();
+      log('2_block_already_picked_up', {
+        existingGuest: existingName,
+        attemptedGuest: currentGuestName,
+        reservationStatus: cbResStatus,
+      });
+      await updatePlaceholder(placeholder.id, {
+        status: 'assigned',
+        assignedAt: placeholder.assignedAt ?? new Date().toISOString(),
+        assignedGuestName: existingName,
+        assignedGuestKey: liveGuestKey,
+        cloudbedsStatus: cbResStatus || 'picked_up',
+        lastSyncedAt: new Date().toISOString(),
+      });
+      void saveEventLog({
+        level: 'warn',
+        source: 'api:assign-placeholder',
+        message: `Blocked reuse of placeholder ${reservationID} (room ${placeholder.roomName}): already assigned to ${existingName}, refused ${currentGuestName}.`,
+        detail: { reservationID, roomName: placeholder.roomName, existingName, attemptedGuest: currentGuestName },
+      }).catch(() => {});
+      return alreadyPickedUpResponse(debugLog, existingName);
+    }
+
+    if (dummyGuestStillOnReservation) {
+      const claim = await tryClaimPlaceholder(placeholder.id, currentGuestKey, currentGuestName);
+      if (!claim.ok) {
+        log('2_claim_rejected', { status: claim.status, assignedGuestName: claim.assignedGuestName });
+        return alreadyPickedUpResponse(debugLog, claim.assignedGuestName);
+      }
+      log('2_placeholder_claimed', { alreadyHeldByThisGuest: claim.alreadyHeldByThisGuest });
+    } else {
+      await updatePlaceholder(placeholder.id, {
+        status: 'assigned',
+        assignedAt: placeholder.assignedAt ?? new Date().toISOString(),
+        assignedGuestName: currentGuestName,
+        assignedGuestKey: currentGuestKey,
+        cloudbedsStatus: cbResStatus || 'picked_up',
+        lastSyncedAt: new Date().toISOString(),
+      });
+      log('2_placeholder_claimed', { skipPutGuest: true, alreadyThisGuest: true });
     }
 
     const fromApi = extractGuestIdFromReservation(reservation);
@@ -267,8 +383,18 @@ export async function POST(request: NextRequest) {
     // -----------------------------------------------------------------------
     // Step 3: putGuest / postGuest — must succeed and show on getReservation before any payment.
     // Previously we continued to settle the folio even when both paths failed silently.
+    // Skip putGuest when Cloudbeds already has this guest (retry after a partial success).
     // -----------------------------------------------------------------------
     let resolvedGuestID = '';
+    let guestApplied = false;
+    let verified = false;
+
+    if (cloudbedsAlreadyHasThisGuest) {
+      resolvedGuestID = guestID;
+      guestApplied = true;
+      verified = true;
+      log('3_skip_putGuest_already_this_guest', { guestID, guestFirst, guestLast });
+    } else {
 
     const tryPutGuestId = async (gid: string): Promise<boolean> => {
       if (!gid) return false;
@@ -360,7 +486,6 @@ export async function POST(request: NextRequest) {
 
     const guestIdsToTry = [...new Set([guestID, fromStore].filter((x) => String(x).trim() !== ''))] as string[];
 
-    let guestApplied = false;
     for (const gid of guestIdsToTry) {
       if (await tryPutGuestId(gid)) {
         resolvedGuestID = gid;
@@ -387,7 +512,6 @@ export async function POST(request: NextRequest) {
       return reservationShowsGuestName(res, guestFirst, guestLast);
     };
 
-    let verified = false;
     for (let attempt = 0; attempt < 8; attempt++) {
       if (await verifyReservationGuest()) {
         verified = true;
@@ -401,6 +525,7 @@ export async function POST(request: NextRequest) {
         'Could not save the guest on this reservation in Cloudbeds, so payment was not applied. Please try again or see the front desk. ' +
           (!guestApplied ? '(Guest profile update failed.)' : '(Reservation still shows the placeholder guest — try again in a moment.)')
       );
+    }
     }
 
     // -----------------------------------------------------------------------
@@ -653,7 +778,10 @@ export async function POST(request: NextRequest) {
     // -----------------------------------------------------------------------
     // Step 7: Mark placeholder as assigned in our store
     // -----------------------------------------------------------------------
-    await assignPlaceholder(placeholder.id, resolvedGuestID || 'unknown');
+    await assignPlaceholder(placeholder.id, resolvedGuestID || 'unknown', {
+      guestKey: currentGuestKey,
+      guestName: currentGuestName,
+    });
     log('7_placeholder_assigned', { placeholderID: placeholder.id, guestID: resolvedGuestID });
     // Best-effort: room-level check-in (skip when we deliberately deferred — would fail the same way)
     if (!deferredPhysicalCheckIn) {
