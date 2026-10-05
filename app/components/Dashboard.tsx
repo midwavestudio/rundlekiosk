@@ -376,7 +376,7 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
             )}
             {activeTab === 'deleted-arrivals' && (
               <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-                <DeletedArrivalsTab />
+                <DeletedArrivalsTab onRestored={() => setActiveTab('arrivals')} />
               </div>
             )}
             {activeTab === 'departures' && (

@@ -15,6 +15,7 @@ import {
   findAllByReservationID,
   saveDeletedArrival,
   getDeletedArrivals,
+  restoreDeletedArrival,
   type CheckinRecord,
 } from '@/lib/checkin-store';
 
@@ -100,12 +101,14 @@ export async function GET(request: NextRequest) {
 
 /**
  * POST /api/checkin-records
- *  - ?action=sync  → bulk upsert records from kiosk localStorage
- *  - (no action)   → create a single new check-in record
+ *  - ?action=sync     → bulk upsert records from kiosk localStorage
+ *  - ?action=restore  → move a deleted arrival back onto the live Arrivals list
+ *  - (no action)      → create a single new check-in record
  */
 export async function POST(request: NextRequest) {
   const action = new URL(request.url).searchParams.get('action');
   if (action === 'sync') return handleSync(request);
+  if (action === 'restore') return handleRestore(request);
 
   try {
     const body = await request.json();
@@ -443,6 +446,7 @@ function snapshotFromDeleteBody(body: Record<string, unknown>): Omit<CheckinReco
     checkOutTime: optionalTrim(body.checkOutTime),
     cloudbedsReservationID: optionalTrim(body.reservationID) ?? optionalTrim(body.cloudbedsReservationID),
     cloudbedsGuestID: optionalTrim(body.cloudbedsGuestID),
+    reservationStatus: optionalTrim(body.reservationStatus),
   };
 }
 
@@ -457,6 +461,7 @@ function fillMissingSnapshot(
   if (!rec.roomNumber && snap.roomNumber) out.roomNumber = snap.roomNumber;
   if (!rec.checkOutTime && snap.checkOutTime) out.checkOutTime = snap.checkOutTime;
   if (!rec.cloudbedsGuestID && snap.cloudbedsGuestID) out.cloudbedsGuestID = snap.cloudbedsGuestID;
+  if (!rec.reservationStatus && snap.reservationStatus) out.reservationStatus = snap.reservationStatus;
   return out;
 }
 
@@ -472,6 +477,34 @@ async function handleDeleted(request: NextRequest) {
     return NextResponse.json({ success: true, records });
   } catch (err: any) {
     console.error('[checkin-records GET deleted]', err);
+    return NextResponse.json(
+      { success: false, error: err?.message ?? 'Server error' },
+      { status: 500 }
+    );
+  }
+}
+
+async function handleRestore(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const id = String(body?.id ?? '').trim();
+    if (!id || id === 'undefined' || id === 'null') {
+      return NextResponse.json(
+        { success: false, error: 'Provide the deleted arrival id to restore' },
+        { status: 400 }
+      );
+    }
+    const record = await restoreDeletedArrival(id);
+    if (!record) {
+      return NextResponse.json(
+        { success: false, error: 'Deleted arrival not found' },
+        { status: 404 }
+      );
+    }
+    bustRecordsCache();
+    return NextResponse.json({ success: true, id: record.id, record });
+  } catch (err: any) {
+    console.error('[checkin-records POST restore]', err);
     return NextResponse.json(
       { success: false, error: err?.message ?? 'Server error' },
       { status: 500 }

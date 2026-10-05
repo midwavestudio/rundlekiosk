@@ -19,8 +19,11 @@ interface DeletedArrival {
   class?: string;
   roomNumber?: string;
   checkInTime?: string;
+  checkInDateYmd?: string;
   checkOutTime?: string;
   cloudbedsReservationID?: string;
+  cloudbedsGuestID?: string;
+  reservationStatus?: string;
   deletedAt: string;
 }
 
@@ -58,11 +61,107 @@ function guestName(r: DeletedArrival): string {
   return `${r.firstName ?? ''} ${r.lastName ?? ''}`.trim() || 'Unknown guest';
 }
 
-export default function DeletedArrivalsTab() {
+function isoToLocalYmd(iso: string): string | undefined {
+  if (!iso) return undefined;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return undefined;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function writeRestoredGuestLocally(record: {
+  id: string;
+  firstName?: string;
+  lastName?: string;
+  clcNumber?: string;
+  phoneNumber?: string;
+  class?: string;
+  roomNumber?: string;
+  checkInTime?: string;
+  checkInDateYmd?: string;
+  checkOutTime?: string;
+  cloudbedsReservationID?: string;
+  cloudbedsGuestID?: string;
+  reservationStatus?: string;
+}) {
+  const guest: {
+    firstName: string;
+    lastName: string;
+    clcNumber: string;
+    phoneNumber: string;
+    class: 'TYE' | 'MOW';
+    checkInTime: string;
+    checkInDateYmd?: string;
+    checkOutTime?: string;
+    cloudbedsReservationID?: string;
+    cloudbedsGuestID?: string;
+    reservationStatus?: string;
+    roomNumber: string;
+    _serverId: string;
+  } = {
+    firstName: record.firstName ?? '',
+    lastName: record.lastName ?? '',
+    clcNumber: record.clcNumber ?? '',
+    phoneNumber: record.phoneNumber ?? '',
+    class: record.class === 'MOW' ? 'MOW' : 'TYE',
+    checkInTime: record.checkInTime ?? '',
+    ...(record.checkInDateYmd && /^\d{4}-\d{2}-\d{2}$/.test(record.checkInDateYmd)
+      ? { checkInDateYmd: record.checkInDateYmd }
+      : {}),
+    ...(record.checkOutTime ? { checkOutTime: record.checkOutTime } : {}),
+    ...(record.cloudbedsReservationID
+      ? { cloudbedsReservationID: record.cloudbedsReservationID }
+      : {}),
+    ...(record.cloudbedsGuestID ? { cloudbedsGuestID: record.cloudbedsGuestID } : {}),
+    ...(record.reservationStatus ? { reservationStatus: record.reservationStatus } : {}),
+    roomNumber: record.roomNumber ?? '',
+    _serverId: record.id,
+  };
+
+  const storageKey = guest.checkOutTime ? 'checkOutHistory' : 'checkedInGuests';
+  try {
+    const raw = JSON.parse(localStorage.getItem(storageKey) || '[]');
+    const list = Array.isArray(raw) ? raw : [];
+    const next = list.filter((g: { cloudbedsReservationID?: string; firstName?: string; lastName?: string; checkInTime?: string }) => {
+      if (guest.cloudbedsReservationID && g.cloudbedsReservationID === guest.cloudbedsReservationID) {
+        return false;
+      }
+      return !(
+        g.firstName === guest.firstName &&
+        g.lastName === guest.lastName &&
+        g.checkInTime === guest.checkInTime
+      );
+    });
+    next.unshift(guest);
+    localStorage.setItem(storageKey, JSON.stringify(next));
+  } catch {
+    // Non-fatal: Arrivals will still pick the record up from the server.
+  }
+
+  const ymd = isoToLocalYmd(guest.checkInTime)
+    ?? (guest.checkInDateYmd && /^\d{4}-\d{2}-\d{2}$/.test(guest.checkInDateYmd)
+      ? guest.checkInDateYmd
+      : undefined);
+  try {
+    if (ymd) sessionStorage.setItem('arrivalsFocusDate', ymd);
+  } catch {
+    // Non-fatal: Arrivals will open on today if storage is unavailable.
+  }
+}
+
+interface DeletedArrivalsTabProps {
+  onRestored?: () => void;
+}
+
+export default function DeletedArrivalsTab({ onRestored }: DeletedArrivalsTabProps) {
   const [records, setRecords] = useState<DeletedArrival[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [restoringId, setRestoringId] = useState<string | null>(null);
+  const [success, setSuccess] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -103,6 +202,52 @@ export default function DeletedArrivalsTab() {
       return hay.includes(q);
     });
   }, [records, searchTerm]);
+
+  const handleRestore = async (row: DeletedArrival) => {
+    const name = guestName(row);
+    if (!confirm(`Restore ${name} to Arrivals?`)) return;
+    setRestoringId(row.id);
+    setError('');
+    setSuccess('');
+    try {
+      const res = await fetch('/api/checkin-records?action=restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: row.id }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        success?: boolean;
+        error?: string;
+        record?: {
+          id: string;
+          firstName?: string;
+          lastName?: string;
+          clcNumber?: string;
+          phoneNumber?: string;
+          class?: string;
+          roomNumber?: string;
+          checkInTime?: string;
+          checkInDateYmd?: string;
+          checkOutTime?: string;
+          cloudbedsReservationID?: string;
+          cloudbedsGuestID?: string;
+          reservationStatus?: string;
+        };
+      };
+      if (!res.ok || data.success === false || !data.record) {
+        throw new Error(data.error || 'Failed to restore arrival');
+      }
+      writeRestoredGuestLocally(data.record);
+      setRecords((prev) => prev.filter((r) => r.id !== row.id));
+      setSuccess(`${name} restored to Arrivals.`);
+      onRestored?.();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to restore arrival';
+      setError(message);
+    } finally {
+      setRestoringId(null);
+    }
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, width: '100%' }}>
@@ -174,6 +319,22 @@ export default function DeletedArrivalsTab() {
         </div>
       )}
 
+      {success && (
+        <div
+          style={{
+            marginBottom: '12px',
+            fontSize: '13px',
+            color: '#166534',
+            background: '#f0fdf4',
+            border: '1px solid #86efac',
+            borderRadius: '6px',
+            padding: '8px 12px',
+          }}
+        >
+          {success}
+        </div>
+      )}
+
       <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, width: '100%' }}>
         <div
           style={{
@@ -193,6 +354,7 @@ export default function DeletedArrivalsTab() {
           <div style={headerCell(1, 80)}>Room</div>
           <div style={headerCell(1.5, 140)}>Check-in</div>
           <div style={headerCell(1.5, 140)}>Deleted</div>
+          <div style={{ ...headerCell(0, 88), flex: '0 0 88px', minWidth: '88px' }}>Restore</div>
         </div>
 
         <div
@@ -286,6 +448,34 @@ export default function DeletedArrivalsTab() {
                     <span style={{ whiteSpace: 'nowrap' }}>{fmtDate(row.deletedAt)}</span>
                     <span style={{ color: '#9ca3af', margin: '0 4px' }}>·</span>
                     <span style={{ fontWeight: 600, color: '#111' }}>{fmtTime(row.deletedAt)}</span>
+                  </div>
+                  <div
+                    style={{
+                      flex: '0 0 88px',
+                      minWidth: '88px',
+                      padding: '0 8px',
+                      display: 'flex',
+                      justifyContent: 'flex-start',
+                    }}
+                  >
+                    <button
+                      type="button"
+                      disabled={restoringId === row.id}
+                      onClick={() => void handleRestore(row)}
+                      style={{
+                        padding: '6px 10px',
+                        background: restoringId === row.id ? '#e5e7eb' : ADMIN_ACCENT,
+                        color: restoringId === row.id ? '#6b7280' : 'white',
+                        border: 'none',
+                        borderRadius: '6px',
+                        cursor: restoringId === row.id ? 'wait' : 'pointer',
+                        fontWeight: 700,
+                        fontSize: '12px',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {restoringId === row.id ? 'Restoring…' : 'Restore'}
+                    </button>
                   </div>
                 </div>
               );

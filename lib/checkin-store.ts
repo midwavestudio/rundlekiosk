@@ -35,6 +35,11 @@ export interface CheckinRecord {
   checkOutTime?: string;
   cloudbedsReservationID?: string;
   cloudbedsGuestID?: string;
+  /**
+   * 'checked_in' when Cloudbeds flipped the reservation to checked in;
+   * 'confirmed' when a reservation exists but was never fully checked in.
+   */
+  reservationStatus?: string;
   /** 'kiosk' | 'admin' | 'bulk' — whichever flow created the record. */
   source?: string;
   /** ISO creation timestamp (same as checkInTime in most cases). */
@@ -759,6 +764,7 @@ export async function saveDeletedArrival(
     checkOutTime: record.checkOutTime,
     cloudbedsReservationID: record.cloudbedsReservationID,
     cloudbedsGuestID: record.cloudbedsGuestID,
+    reservationStatus: record.reservationStatus,
     source: record.source,
     createdAt,
     deletedAt,
@@ -789,6 +795,7 @@ export async function saveDeletedArrival(
     checkOutTime: payload.checkOutTime as string | undefined,
     cloudbedsReservationID: payload.cloudbedsReservationID as string | undefined,
     cloudbedsGuestID: payload.cloudbedsGuestID as string | undefined,
+    reservationStatus: payload.reservationStatus as string | undefined,
     source: payload.source as string | undefined,
     createdAt,
     deletedAt,
@@ -817,4 +824,78 @@ export async function getDeletedArrivals(limit = 500): Promise<DeletedCheckinRec
   return [...deletedMemStore]
     .sort((a, b) => (b.deletedAt ?? '').localeCompare(a.deletedAt ?? ''))
     .slice(0, cap);
+}
+
+export async function getDeletedArrivalById(id: string): Promise<DeletedCheckinRecord | null> {
+  if (!id) return null;
+  const db = getDb();
+  if (db) {
+    try {
+      const snap = await db.collection(DELETED_COLLECTION).doc(id).get();
+      if (snap.exists) return docToDeletedRecord(snap);
+    } catch (err) {
+      console.error('[checkin-store] getDeletedArrivalById Firestore failed — using in-memory store.', err);
+    }
+  }
+  return deletedMemStore.find((r) => r.id === id) ?? null;
+}
+
+export async function deleteDeletedArrival(id: string): Promise<void> {
+  if (!id) return;
+  const db = getDb();
+  if (db) {
+    try {
+      await db.collection(DELETED_COLLECTION).doc(id).delete();
+    } catch (err) {
+      console.error('[checkin-store] deleteDeletedArrival Firestore failed — removing from in-memory store.', err);
+    }
+  }
+  const idx = deletedMemStore.findIndex((r) => r.id === id);
+  if (idx >= 0) deletedMemStore.splice(idx, 1);
+}
+
+function deletedRecordToCheckinPayload(
+  record: DeletedCheckinRecord
+): Omit<CheckinRecord, 'id' | 'createdAt'> {
+  const checkInTime = record.checkInTime || record.createdAt || new Date().toISOString();
+  const checkInDateYmd =
+    record.checkInDateYmd && /^\d{4}-\d{2}-\d{2}$/.test(record.checkInDateYmd)
+      ? record.checkInDateYmd
+      : deriveCheckInDateYmd(checkInTime);
+  return {
+    firstName: record.firstName ?? '',
+    lastName: record.lastName ?? '',
+    clcNumber: record.clcNumber ?? '',
+    phoneNumber: record.phoneNumber ?? '',
+    class: record.class ?? '',
+    roomNumber: record.roomNumber ?? '',
+    checkInTime,
+    ...(checkInDateYmd ? { checkInDateYmd } : {}),
+    ...(record.checkOutTime ? { checkOutTime: record.checkOutTime } : {}),
+    ...(record.cloudbedsReservationID
+      ? { cloudbedsReservationID: record.cloudbedsReservationID }
+      : {}),
+    ...(record.cloudbedsGuestID ? { cloudbedsGuestID: record.cloudbedsGuestID } : {}),
+    ...(record.reservationStatus ? { reservationStatus: record.reservationStatus } : {}),
+    source: record.source || 'restored',
+  };
+}
+
+/**
+ * Move an archived deletion back onto the live check-in list (Arrivals).
+ * Returns the new live record, or null if the deleted archive row was not found.
+ */
+export async function restoreDeletedArrival(id: string): Promise<CheckinRecord | null> {
+  const archived = await getDeletedArrivalById(id);
+  if (!archived) return null;
+
+  const payload = deletedRecordToCheckinPayload(archived);
+  const checkinId = await saveCheckinRecord(payload);
+  await deleteDeletedArrival(id);
+
+  return {
+    id: checkinId,
+    createdAt: payload.checkInTime,
+    ...payload,
+  };
 }

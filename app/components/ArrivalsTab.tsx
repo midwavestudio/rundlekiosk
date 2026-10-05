@@ -292,7 +292,26 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
   const [correctRoomResult, setCorrectRoomResult] = useState<{ ok: boolean; message: string } | null>(null);
 
   /** Which calendar day's check-ins to list (local) - defaults to today. */
-  const [selectedDate, setSelectedDate] = useState<string>(() => localYmd(new Date()));
+  const [selectedDate, setSelectedDate] = useState<string>(() => {
+    try {
+      const focus = sessionStorage.getItem('arrivalsFocusDate');
+      if (focus && /^\d{4}-\d{2}-\d{2}$/.test(focus)) return focus;
+    } catch {
+      // Ignore storage errors; fall back to today.
+    }
+    return localYmd(new Date());
+  });
+
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      try {
+        sessionStorage.removeItem('arrivalsFocusDate');
+      } catch {
+        // Ignore storage errors.
+      }
+    }, 1000);
+    return () => window.clearTimeout(t);
+  }, []);
 
   const [exportFrom, setExportFrom] = useState(() => localYmd(new Date()));
   const [exportTo, setExportTo] = useState(() => localYmd(new Date()));
@@ -349,7 +368,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
           to: toYmd,
           limit: String(SERVER_RECORD_LIMIT),
         });
-        const res = await fetch(`/api/checkin-records?${params.toString()}`);
+        const res = await fetch(`/api/checkin-records?${params.toString()}`, { cache: 'no-store' });
         if (!res.ok || cancelled) return;
         const data = await res.json();
         if (!data.success || !Array.isArray(data.records) || cancelled) return;
@@ -789,6 +808,7 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
           roomNumber: row.rawData.roomNumber,
           checkOutTime: row.rawData.checkOutTime,
           cloudbedsGuestID: row.rawData.cloudbedsGuestID,
+          reservationStatus: row.rawData.reservationStatus,
         }),
       });
       const delData = (await serverRes.json().catch(() => ({}))) as {
