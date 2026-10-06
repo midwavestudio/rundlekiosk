@@ -27,3 +27,10 @@ export function localYmdFromDate(d: Date): string {
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
 }
+
+/** Clock time `HH:mm` in local timezone (matches `<input type="time">`). */
+export function localHmFromDate(d: Date): string {
+  const h = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  return `${h}:${min}`;
+}

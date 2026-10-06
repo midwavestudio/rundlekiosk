@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { buildGuestSyntheticEmail } from '@/lib/guest-email';
 import { formatCloudbedsRoomNameLabel } from '@/lib/room-display';
 import { isClcNumberLongEnough } from '@/lib/checkin-validation';
+import { datetimeLocalValueToIso, localHmFromDate } from '@/lib/admin-datetime';
 import { ADMIN_ACCENT, ADMIN_TEXT_PRIMARY, ADMIN_TEXT_MUTED } from '../lib/adminTheme';
 
 interface Room {
@@ -20,6 +21,7 @@ interface FormData {
   phoneNumber: string;
   roomID: string;
   checkInDate: string;
+  checkInTime: string;
   checkOutDate: string;
 }
 
@@ -59,6 +61,7 @@ export default function AdminCheckInTab() {
     phoneNumber: '',
     roomID: '',
     checkInDate: today,
+    checkInTime: localHmFromDate(new Date()),
     checkOutDate: addDaysYmd(today, 1),
   });
 
@@ -139,6 +142,7 @@ export default function AdminCheckInTab() {
       phoneNumber: '',
       roomID: '',
       checkInDate: newToday,
+      checkInTime: localHmFromDate(new Date()),
       checkOutDate: addDaysYmd(newToday, 1),
     });
     setStatus('idle');
@@ -156,7 +160,7 @@ export default function AdminCheckInTab() {
     const lastName = form.lastName.trim();
     const clcNumber = form.clcNumber.trim();
     const phoneNumber = form.phoneNumber.trim();
-    if (!firstName || !lastName || !clcNumber || !isClcNumberLongEnough(clcNumber) || !phoneNumber || !form.roomID) {
+    if (!firstName || !lastName || !clcNumber || !isClcNumberLongEnough(clcNumber) || !phoneNumber || !form.roomID || !form.checkInTime) {
       setStatus('error');
       setResultMsg(
         !clcNumber
@@ -165,6 +169,13 @@ export default function AdminCheckInTab() {
           ? 'CLC Number must be at least 6 digits.'
           : 'Please fill in all fields and select a room.'
       );
+      return;
+    }
+
+    const checkInTime = datetimeLocalValueToIso(`${form.checkInDate}T${form.checkInTime}`);
+    if (!checkInTime) {
+      setStatus('error');
+      setResultMsg('Please enter a valid check-in time.');
       return;
     }
 
@@ -178,7 +189,6 @@ export default function AdminCheckInTab() {
     const isUnassigned = form.roomID === UNASSIGNED_ROOM_ID;
     const selectedRoom = isUnassigned ? null : rooms.find((r) => r.roomID === form.roomID);
     const email = buildGuestSyntheticEmail(firstName, lastName);
-    const checkInTime = new Date().toISOString();
 
     // Step 1: Save the server-side check-in record FIRST so guest data is never lost,
     // even if Cloudbeds creation fails. Mirrors the kiosk pattern (see GuestCheckIn.tsx).
@@ -409,7 +419,7 @@ export default function AdminCheckInTab() {
           Admin Check-In
         </h2>
         <p style={{ margin: 0, color: ADMIN_TEXT_MUTED, fontSize: '13px' }}>
-          Create a new Cloudbeds reservation from the admin. Supports any date and unassigned rooms.
+          Create a new Cloudbeds reservation from the admin. Supports any date, a specific check-in time, and unassigned rooms.
         </p>
       </div>
 
@@ -475,7 +485,7 @@ export default function AdminCheckInTab() {
           </div>
         </div>
 
-        {/* Date row */}
+        {/* Date / time row */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
           <div style={fieldStyle}>
             <label style={labelStyle}>Check-In Date *</label>
@@ -487,6 +497,19 @@ export default function AdminCheckInTab() {
               required
             />
           </div>
+          <div style={fieldStyle}>
+            <label style={labelStyle}>Check-In Time *</label>
+            <input
+              style={inputStyle}
+              type="time"
+              value={form.checkInTime}
+              onChange={(e) => handleChange('checkInTime', e.target.value)}
+              required
+            />
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
           <div style={fieldStyle}>
             <label style={labelStyle}>Check-Out Date *</label>
             <input
@@ -561,7 +584,8 @@ export default function AdminCheckInTab() {
             !form.clcNumber.trim() ||
             !isClcNumberLongEnough(form.clcNumber) ||
             !form.phoneNumber.trim() ||
-            !form.roomID
+            !form.roomID ||
+            !form.checkInTime
           }
           style={{
             padding: '13px',
