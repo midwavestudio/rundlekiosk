@@ -37,6 +37,20 @@ export function getTyeSourceIdSet(): Set<string> {
   return cachedSourceIds;
 }
 
+/** Source ID sent on kiosk postReservation (first configured TYE source, else Cloudbeds TYE). */
+export function getDefaultTyeSourceId(): string {
+  const raw = process.env.CLOUDBEDS_TYE_SOURCE_IDS?.trim();
+  if (raw) {
+    const first = raw.split(',')[0]?.trim();
+    if (first) return first;
+  }
+  return 's-945658';
+}
+
+export function sourceNameLooksTye(name: unknown): boolean {
+  return String(name ?? '').trim().toLowerCase() === 'tye';
+}
+
 function planIdMatches(id: unknown, tyeIds: Set<string>): boolean {
   if (id == null || id === '') return false;
   const s = String(id).trim();
@@ -86,6 +100,8 @@ export function reservationHasTyeRatePlan(reservation: any): boolean {
 
   const src = reservation.sourceID ?? reservation.source_id ?? reservation.sourceId;
   if (src != null && tyeSources.has(String(src).trim())) return true;
+  const srcName = reservation.sourceName ?? reservation.source_name ?? reservation.source;
+  if (sourceNameLooksTye(srcName) || String(srcName ?? '').toLowerCase().includes('tye')) return true;
 
   if (guestEmailLooksKioskSynthetic(reservation as Record<string, unknown>)) return true;
 

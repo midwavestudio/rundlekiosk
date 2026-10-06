@@ -7,7 +7,7 @@ import { buildGuestSyntheticEmail } from '@/lib/guest-email';
 import { validateClcNumberRequired } from '@/lib/checkin-validation';
 import { unwrapReservationFromGetReservation } from '@/lib/cloudbeds-rate-preserve';
 import { resolveDuplicateRoomMatches } from '@/lib/room-picker-dedupe';
-import { getTyeRatePlanIdSet, reservationHasTyeRatePlan } from '@/lib/cloudbeds-tye';
+import { getDefaultTyeSourceId, getTyeRatePlanIdSet, reservationHasTyeRatePlan } from '@/lib/cloudbeds-tye';
 import { saveEventLog } from '@/lib/event-log-store';
 
 function getLocalDateStr(d: Date): string {
@@ -207,10 +207,97 @@ function paymentMethodBlob(m: any): string {
   return `${m?.name ?? ''} ${m?.code ?? ''} ${m?.method ?? ''}`.toLowerCase();
 }
 
+/**
+ * Built-in Cloudbeds types. Custom methods created in the UI often have method="custom"
+ * and name="TYE" — sending "custom" is ignored and the reservation is stored as credit card.
+ */
+const GENERIC_PAYMENT_METHOD_RE = /^(custom|credit|debit|cash|ebanking|pay_pal|paypal|card)$/i;
+
+function paymentMethodApiValue(m: any): string {
+  return String(m?.method ?? m?.code ?? m?.name ?? '').trim();
+}
+
+/** Value Cloudbeds actually accepts for the TYE custom method on postReservation / postPayment. */
+function tyePaymentMethodApiValue(m: any): string {
+  const candidates = [m?.method, m?.code, m?.name]
+    .map((v) => String(v ?? '').trim())
+    .filter(Boolean);
+  const exact = candidates.find((v) => v.toLowerCase() === 'tye');
+  if (exact) return exact;
+  const usable = candidates.find((v) => /tye/i.test(v) && !GENERIC_PAYMENT_METHOD_RE.test(v));
+  if (usable) return usable;
+  return 'TYE';
+}
+
+function extractPaymentMethodRows(parsed: any): any[] {
+  const raw = parsed?.data ?? parsed?.paymentMethods ?? parsed;
+  if (Array.isArray(raw?.methods)) return raw.methods.filter(Boolean);
+  if (Array.isArray(raw)) {
+    const rows: any[] = [];
+    for (const item of raw) {
+      if (Array.isArray(item?.methods)) rows.push(...item.methods.filter(Boolean));
+      else if (item && (item.method != null || item.name != null || item.code != null)) rows.push(item);
+    }
+    return rows;
+  }
+  return [];
+}
+
+function isTyePaymentMethod(m: any): boolean {
+  return paymentMethodBlob(m).includes('tye');
+}
+
 function pushNonCardPaymentType(ordered: string[], raw: unknown) {
   const t = String(raw ?? '').trim();
   if (!t || ordered.includes(t) || CARD_PAYMENT_RE.test(t)) return;
   ordered.push(t);
+}
+
+async function fetchPaymentMethodRows(
+  apiV13: string,
+  propertyID: string,
+  apiKey: string
+): Promise<any[]> {
+  const url = `${apiV13}/getPaymentMethods?propertyID=${encodeURIComponent(propertyID)}`;
+  const resp = await fetch(url, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+  });
+  const parsed = await resp.json();
+  return extractPaymentMethodRows(parsed);
+}
+
+/**
+ * Cloudbeds only accepts paymentMethod values that exist on the property. Sending "TYE"
+ * when no TYE method exists is ignored and the reservation is created as credit card.
+ * Create/enable the custom TYE method so admin and kiosk bookings land on TYE.
+ */
+async function ensureTyePaymentMethodExists(
+  apiV13: string,
+  propertyID: string,
+  apiKey: string,
+  methods: any[]
+): Promise<any[]> {
+  if (methods.some(isTyePaymentMethod)) return methods;
+  const params = new URLSearchParams();
+  params.append('propertyID', propertyID);
+  params.append('method', 'TYE');
+  params.append('methodName', 'TYE');
+  const resp = await fetch(`${apiV13}/postCustomPaymentMethod`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString(),
+  });
+  const parsed = await resp.json().catch(() => ({}));
+  try {
+    const refreshed = await fetchPaymentMethodRows(apiV13, propertyID, apiKey);
+    if (refreshed.some(isTyePaymentMethod)) return refreshed;
+    if (refreshed.length && resp.ok && parsed?.success !== false) return refreshed;
+  } catch {
+    /* ignore */
+  }
+  if (!resp.ok || parsed?.success === false) return methods;
+  return [...methods, { method: 'TYE', code: 'TYE', name: 'TYE' }];
 }
 
 async function resolvePaymentTypesToTry(
@@ -221,43 +308,65 @@ async function resolvePaymentTypesToTry(
   const envType = process.env.CLOUDBEDS_POST_PAYMENT_TYPE?.trim();
   const ordered: string[] = [];
   try {
-    const url = `${apiV13}/getPaymentMethods?propertyID=${encodeURIComponent(propertyID)}`;
-    const resp = await fetch(url, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    });
-    const parsed = await resp.json();
-    const paymentMethodsRaw = parsed?.data ?? parsed?.paymentMethods ?? parsed;
-    const methods = Array.isArray(paymentMethodsRaw?.methods) ? paymentMethodsRaw.methods : [];
-    const tye = methods.find((m: any) => paymentMethodBlob(m).includes('tye'));
-    if (tye) {
-      const named = String(tye.name ?? tye.code ?? '').trim();
-      if (named && /tye/i.test(named)) pushNonCardPaymentType(ordered, named);
-      else pushNonCardPaymentType(ordered, tye.method ?? tye.code ?? tye.name);
-    }
+    let methods = await fetchPaymentMethodRows(apiV13, propertyID, apiKey);
+    methods = await ensureTyePaymentMethodExists(apiV13, propertyID, apiKey, methods);
+    const tye = methods.find(isTyePaymentMethod);
+    if (tye) pushNonCardPaymentType(ordered, tyePaymentMethodApiValue(tye));
     if (envType) pushNonCardPaymentType(ordered, envType);
     const clc = methods.find((m: any) => {
       const blob = paymentMethodBlob(m);
       return blob.includes('clc') || blob.split(/\s+/).includes('clc');
     });
-    if (clc) pushNonCardPaymentType(ordered, clc.method ?? clc.code ?? clc.name);
-    // Never fall through to credit/debit cards — kiosk stays use TYE (then CLC).
+    if (clc) pushNonCardPaymentType(ordered, paymentMethodApiValue(clc));
+    // Folio settle may fall back to CLC; reservation create always uses TYE.
   } catch {
     /* ignore */
   }
   if (envType) pushNonCardPaymentType(ordered, envType);
-  if (!ordered.some((t) => t.toLowerCase() === 'tye')) ordered.push('TYE');
+  if (!ordered.some((t) => t.toLowerCase() === 'tye')) ordered.unshift('TYE');
   if (!ordered.some((t) => t.toLowerCase() === 'clc')) ordered.push('CLC');
   return ordered;
 }
 
+/** Guest check-in reservations use only the TYE payment method — never credit card or CLC. */
 async function resolveKioskBookingPaymentMethod(
   apiV13: string,
   propertyID: string,
   apiKey: string
 ): Promise<string> {
-  const types = await resolvePaymentTypesToTry(apiV13, propertyID, apiKey);
-  return types[0] || 'TYE';
+  try {
+    let methods = await fetchPaymentMethodRows(apiV13, propertyID, apiKey);
+    methods = await ensureTyePaymentMethodExists(apiV13, propertyID, apiKey, methods);
+    const tye = methods.find(isTyePaymentMethod);
+    if (tye) return tyePaymentMethodApiValue(tye);
+  } catch {
+    /* still send TYE — Cloudbeds ignores unknown methods and stores credit card */
+  }
+  return 'TYE';
+}
+
+async function resolveTyeSourceId(
+  apiV13: string,
+  propertyID: string,
+  apiKey: string
+): Promise<string> {
+  const fallback = getDefaultTyeSourceId();
+  try {
+    const url = `${apiV13}/getSources?propertyIDs=${encodeURIComponent(propertyID)}`;
+    const resp = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    });
+    const parsed = await resp.json();
+    const rows = Array.isArray(parsed?.data) ? parsed.data : Array.isArray(parsed) ? parsed : [];
+    const exact = rows.find((s: any) => String(s?.sourceName ?? '').trim().toLowerCase() === 'tye');
+    const named = exact ?? rows.find((s: any) => String(s?.sourceName ?? '').toLowerCase().includes('tye'));
+    const sourceID = String(named?.sourceID ?? named?.source_id ?? '').trim();
+    if (sourceID) return sourceID;
+  } catch {
+    /* keep configured TYE source */
+  }
+  return fallback;
 }
 
 async function postPaymentWithType(
@@ -334,7 +443,7 @@ export async function settleReservationFolio(
   // safety guard against accidentally paying/modifying an OTA (Expedia, Booking.com) reservation
   // that happens to share a guest name. In production that guard caused a mass outage on
   // 2026-09-16: every one of *our own* freshly-created kiosk reservations was already guaranteed
-  // to be ours (we just created it in this same call with sourceID=s-945658, or it was matched via
+  // to be ours (we just created it in this same call with the TYE source, or it was matched via
   // fetchGuestReservationsForStayWindow which already filters to TYE-only rows before ever reaching
   // here — see lib/cloudbeds-tye.ts reservationHasTyeRatePlan usage there). Re-verifying ownership
   // via a fresh getReservation call is redundant in every current call site, and any transient
@@ -1366,13 +1475,22 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
   }
 
   let kioskBookingPaymentMethod = 'TYE';
+  let kioskBookingSourceId = getDefaultTyeSourceId();
   try {
     kioskBookingPaymentMethod = await resolveKioskBookingPaymentMethod(
       apiV13,
       CLOUDBEDS_PROPERTY_ID,
       CLOUDBEDS_API_KEY
     );
-    log('0_kiosk_payment_method', { paymentMethod: kioskBookingPaymentMethod });
+    kioskBookingSourceId = await resolveTyeSourceId(
+      apiV13,
+      CLOUDBEDS_PROPERTY_ID,
+      CLOUDBEDS_API_KEY
+    );
+    log('0_kiosk_payment_method', {
+      paymentMethod: kioskBookingPaymentMethod,
+      sourceID: kioskBookingSourceId,
+    });
   } catch (e: any) {
     log('0_kiosk_payment_method_error', undefined, undefined, e?.message);
   }
@@ -1532,7 +1650,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       p.append('adults[0][quantity]', '1');
       p.append('children[0][roomTypeID]', roomTypeID);
       p.append('children[0][quantity]', '0');
-      p.append('sourceID', 's-945658');
+      p.append('sourceID', kioskBookingSourceId);
       if (useOverbooking || forceOverbooking) p.append('allowOverbooking', '1');
       return p;
     };
@@ -2153,7 +2271,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
         reservationParams.append('children[0][roomID]', rid);
       }
     }
-    reservationParams.append('sourceID', 's-945658');
+    reservationParams.append('sourceID', kioskBookingSourceId);
     return reservationParams;
   };
 
@@ -2306,7 +2424,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
         p.append('adults[0][quantity]', '1');
         p.append('children[0][quantity]', '0');
       }
-      p.append('sourceID', 's-945658');
+      p.append('sourceID', kioskBookingSourceId);
       p.append('allowOverbooking', '1');
       return p;
     };
@@ -2518,7 +2636,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       pNoRate.append('adults[0][quantity]', '1');
       pNoRate.append('children[0][roomTypeID]', typeID);
       pNoRate.append('children[0][quantity]', '0');
-      pNoRate.append('sourceID', 's-945658');
+      pNoRate.append('sourceID', kioskBookingSourceId);
       pNoRate.append('allowOverbooking', '1');
       const rNoRate = await tryPostReservation(pNoRate, `3_last_resort_typeB_${typeID}`);
       if (rNoRate.ok) {
@@ -2553,7 +2671,7 @@ export async function performCloudbedsCheckIn(params: PerformCheckInParams): Pro
       pNuclear.append('rooms[0][quantity]', '1');
       pNuclear.append('adults[0][quantity]', '1');
       pNuclear.append('children[0][quantity]', '0');
-      pNuclear.append('sourceID', 's-945658');
+      pNuclear.append('sourceID', kioskBookingSourceId);
       pNuclear.append('allowOverbooking', '1');
       const rNuclear = await tryPostReservation(pNuclear, '3_last_resort_nuclear');
       if (rNuclear.ok) {
