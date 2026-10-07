@@ -66,8 +66,8 @@ export default function TutorialTab() {
           color: ADMIN_TEXT_MUTED,
           maxWidth: '62ch',
         }}>
-          How to work through arrivals each day: check guests out first, then check them
-          into CLC, and confirm they landed in Cloudbeds.
+          How to work through arrivals each day: process checkouts, check guests into
+          CLC, then confirm Cloudbeds on its own.
         </p>
       </header>
 
@@ -127,19 +127,21 @@ export default function TutorialTab() {
             If you reverse that, CLC may already show a room as occupied.
           </p>
           <ol style={listStyle}>
-            <li>Process <strong>checkouts first</strong>, if there are any.</li>
-            <li>Then process <strong>check-ins</strong>.</li>
+            <li>Process <strong>checkouts</strong>, if there are any.</li>
+            <li>Then process <strong>CLC check-ins</strong>.</li>
             <li>Go through <strong>today&apos;s arrivals</strong> at least once during the day.</li>
+            <li>Confirm <strong>Cloudbeds</strong> on a separate pass.</li>
           </ol>
-          <Callout tone="tip" title="You do not need to redo yesterday">
-            Previous days should already be checked in. Focus on today unless someone was missed.
-          </Callout>
         </Section>
 
-        <Section id="checkouts" step={2} title="Check guests out first">
+        <Section id="checkouts" step={2} title="Check guests out">
           <p>
             Open Departures and check out anyone who is leaving. This opens rooms in CLC so
             new arrivals can be checked in.
+          </p>
+          <p>
+            Some guests forget to check out at the kiosk. If you have confirmed they have
+            actually left, you can check them out in CLC yourself.
           </p>
           <p>
             If a guest stayed overnight and is still in-house, leave them. Only check out
@@ -150,16 +152,8 @@ export default function TutorialTab() {
         <Section id="check-ins" step={3} title="Run through today&apos;s arrivals">
           <p>
             At least once a day, open the <strong>Arrivals</strong> tab and walk the list
-            of today&apos;s guests. For each person:
-          </p>
-          <ol style={listStyle}>
-            <li>Check them into <strong>CLC</strong> using their CLC number.</li>
-            <li>Confirm they were also added to <strong>Cloudbeds</strong>.</li>
-          </ol>
-          <p>
-            Cloudbeds is usually automatic from the kiosk, but it does fail sometimes.
-            If a guest is on Arrivals and Cloudbeds does not show a reservation, fix it
-            before you move on.
+            of today&apos;s guests. Check each person into <strong>CLC</strong> using their
+            CLC number.
           </p>
         </Section>
 
@@ -179,13 +173,13 @@ export default function TutorialTab() {
             margin: '14px 0',
           }}>
             <NumberCard
-              badge="6 digits or fewer"
+              badge="Six digits"
               title="Add the prefix"
               body={(
                 <>
-                  Any number under 7 digits must be added to{' '}
+                  A six-digit number needs to be added to{' '}
                   <code style={codeStyle}>{CLC_PREFIX}</code>. Type the prefix first,
-                  then the short number after it.
+                  then the six-digit number after it.
                 </>
               )}
               example={`Prefix + 123456\n${CLC_PREFIX}123456`}
@@ -199,14 +193,26 @@ export default function TutorialTab() {
           </div>
 
           <Callout tone="remember" title="Quick rule">
-            Under 7 digits → add to {CLC_PREFIX}. Seven digits or more → Copy button.
+            Six digits → add to {CLC_PREFIX}. Seven digits or more → Copy button.
+          </Callout>
+
+          <Callout tone="tip" title="When the prefix does not work">
+            Once in a while a guest&apos;s CLC number is six digits in total. Adding the
+            prefix will not work for those. If a six-digit number fails with the prefix,
+            the number is either wrong, or it is already complete and should be entered
+            without the prefix.
           </Callout>
         </Section>
 
-        <Section id="cloudbeds" step={5} title="Confirm Cloudbeds after CLC">
+        <Section id="cloudbeds" step={5} title="Confirm Cloudbeds separately">
           <p>
-            After CLC is updated, check that the same guest also has a Cloudbeds reservation.
-            Kiosk check-ins usually create this automatically.
+            After CLC is done, go through Cloudbeds as its own step. Do not try to update
+            CLC and Cloudbeds at the same time for each guest — it is easier to finish one
+            system, then the other.
+          </p>
+          <p>
+            Kiosk check-ins usually create the Cloudbeds reservation automatically, but it
+            does fail sometimes. Check that each guest also has a Cloudbeds reservation.
           </p>
           <p>
             If Cloudbeds is missing, look at the Arrivals row for that guest. Use the
@@ -282,9 +288,9 @@ export default function TutorialTab() {
 
 function QuickStartCard() {
   const items = [
-    'Checkouts first, then check-ins.',
+    'Process checkouts, then CLC check-ins.',
     'Walk today\'s Arrivals at least once.',
-    'Update CLC, then confirm Cloudbeds.',
+    'Confirm Cloudbeds on a separate pass.',
     'Bill General and PTI guests every 5 days.',
   ];
   return (
