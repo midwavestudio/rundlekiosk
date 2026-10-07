@@ -59,7 +59,7 @@ interface FeedbackEntry {
   readAt?: string;
 }
 
-type TabId = 'dashboard' | 'arrivals' | 'deleted-arrivals' | 'departures' | 'admin-checkin' | 'tye-placeholders' | 'feedback' | 'event-log' | 'tutorial';
+type TabId = 'dashboard' | 'arrivals' | 'deleted-arrivals' | 'departures' | 'admin-checkin' | 'tye-placeholders' | 'feedback' | 'event-log' | 'guide';
 
 const TAB_CONFIG: { id: TabId; label: string }[] = [
   { id: 'dashboard',        label: 'Dashboard'  },
@@ -70,7 +70,7 @@ const TAB_CONFIG: { id: TabId; label: string }[] = [
   { id: 'tye-placeholders', label: 'Blocks'     },
   { id: 'feedback',         label: 'Messages'   },
   { id: 'event-log',        label: 'Error Log'  },
-  { id: 'tutorial',         label: 'Tutorial'   },
+  { id: 'guide',            label: 'Guide'      },
 ];
 
 export default function Dashboard({ user, onLogout }: DashboardProps) {
@@ -390,7 +390,7 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
             {activeTab === 'tye-placeholders' && <TyePlaceholdersTab />}
             {activeTab === 'feedback'         && <FeedbackTab onUnreadCountChange={setFeedbackUnreadCount} />}
             {activeTab === 'event-log'        && <EventLogTab />}
-            {activeTab === 'tutorial'         && <TutorialTab />}
+            {activeTab === 'guide'            && <TutorialTab />}
           </div>
         </div>
       </div>

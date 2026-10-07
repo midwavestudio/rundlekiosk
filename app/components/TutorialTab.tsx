@@ -57,7 +57,7 @@ export default function TutorialTab() {
           letterSpacing: '-0.02em',
           color: ADMIN_TEXT_PRIMARY,
         }}>
-          CLC and Cloudbeds tutorial
+          CLC and Cloudbeds guide
         </h2>
         <p style={{
           margin: '10px 0 0',
@@ -72,7 +72,7 @@ export default function TutorialTab() {
       </header>
 
       <nav
-        aria-label="Tutorial sections"
+        aria-label="Guide sections"
         style={{
           position: 'sticky',
           top: 0,
