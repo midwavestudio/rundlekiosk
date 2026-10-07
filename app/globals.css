@@ -162,6 +162,23 @@ button:disabled {
   box-shadow: none;
 }
 
+.admin-tutorial-body p {
+  margin: 0 0 12px;
+}
+
+.admin-tutorial-body p:last-of-type {
+  margin-bottom: 16px;
+}
+
+.admin-tutorial-body strong {
+  color: #f5f5f5;
+  font-weight: 600;
+}
+
+.admin-tutorial-body li {
+  color: rgba(255, 255, 255, 0.82);
+}
+
 .error {
   background: #fee;
   color: #c33;
