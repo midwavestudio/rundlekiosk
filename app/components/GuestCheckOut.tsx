@@ -51,6 +51,19 @@ function guestTitle(g: CloudbedsGuest): string {
   return (g.displayName ?? '').trim() || 'Guest';
 }
 
+/** Match one stay in localStorage. Blank reservation IDs must not select every unlinked guest. */
+function isSelectedLocalStay(stored: any, guest: CloudbedsGuest): boolean {
+  const reservationID = String(guest.cloudbedsReservationID ?? '').trim();
+  const storedReservationID = String(stored?.cloudbedsReservationID ?? '').trim();
+  if (reservationID && storedReservationID) return storedReservationID === reservationID;
+
+  const storedName = `${stored?.firstName ?? ''} ${stored?.lastName ?? ''}`.trim().toLowerCase();
+  const selectedName = guestTitle(guest).trim().toLowerCase();
+  if (!storedName || storedName !== selectedName) return false;
+  const storedDay = String(stored?.checkInDateYmd ?? stored?.checkInTime ?? '').slice(0, 10);
+  return Boolean(guest.checkInDate) && storedDay === guest.checkInDate;
+}
+
 /** StoredGuest fields when the guest never existed in kiosk `checkedInGuests` (Cloudbeds-only). */
 function namesForKioskHistory(g: CloudbedsGuest): { firstName: string; lastName: string } {
   const fn = String(g.firstName ?? '').trim();
@@ -236,12 +249,12 @@ export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutP
     try {
       const raw = localStorage.getItem('checkedInGuests');
       const stored: any[] = JSON.parse(raw || '[]');
-      const idx = stored.findIndex(
-        (g: any) => String(g.cloudbedsReservationID) === selectedGuest.cloudbedsReservationID
-      );
+      const matched = stored.filter((g: any) => isSelectedLocalStay(g, selectedGuest));
       const checkOutHistory = JSON.parse(localStorage.getItem('checkOutHistory') || '[]');
-      if (idx >= 0) {
-        checkOutHistory.push({ ...stored[idx], checkOutTime: checkoutIso });
+      if (matched.length > 0) {
+        for (const stay of matched) {
+          checkOutHistory.push({ ...stay, checkOutTime: checkoutIso });
+        }
       } else {
         const { firstName, lastName } = namesForKioskHistory(selectedGuest);
         // Use the actual check-in date from Cloudbeds so the record can be
@@ -263,9 +276,7 @@ export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutP
         });
       }
       localStorage.setItem('checkOutHistory', JSON.stringify(checkOutHistory));
-      const updated = stored.filter(
-        (g: any) => String(g.cloudbedsReservationID) !== selectedGuest.cloudbedsReservationID
-      );
+      const updated = stored.filter((g: any) => !isSelectedLocalStay(g, selectedGuest));
       localStorage.setItem('checkedInGuests', JSON.stringify(updated));
     } catch {
       // localStorage is not critical; ignore
@@ -468,7 +479,7 @@ export default function GuestCheckOut({ onBack, onOpenFeedback }: GuestCheckOutP
 
         {guests.length > 0 && (
           <div className="guest-list">
-            <p className="guest-list-title">Select your stay:</p>
+            <p className="guest-list-title">{guests.length === 1 ? 'Your stay' : 'Select your stay:'}</p>
             {guests[0]?.source === 'local' && (
               <p className="no-results-help" style={{ marginBottom: '8px' }}>
                 Your reservation wasn&apos;t found in the live system — showing your last check-in on record.

@@ -16,6 +16,7 @@ import {
 } from '../lib/adminTheme';
 import { ClcNumberDisplay } from './ClcNumberDisplay';
 import { validateClcNumberRequired } from '@/lib/checkin-validation';
+import { collapseStays } from '@/lib/guest-stays';
 
 interface ArrivalsTabProps {
   onCheckIn: (reservation: any) => void;
@@ -263,6 +264,71 @@ function mergeGuestLists(
   return Array.from(map.values());
 }
 
+function mapCheckedInGuest(r: any): CheckedInGuest {
+  return {
+    firstName: String(r.firstName ?? ''),
+    lastName: String(r.lastName ?? ''),
+    clcNumber: String(r.clcNumber ?? ''),
+    phoneNumber: String(r.phoneNumber ?? ''),
+    class: (r.class ?? 'TYE') as 'TYE' | 'MOW',
+    checkInTime: String(r.checkInTime ?? ''),
+    ...(r.checkInDateYmd && /^\d{4}-\d{2}-\d{2}$/.test(String(r.checkInDateYmd))
+      ? { checkInDateYmd: String(r.checkInDateYmd) }
+      : {}),
+    checkOutTime: r.checkOutTime ? String(r.checkOutTime) : undefined,
+    cloudbedsReservationID: r.cloudbedsReservationID ? String(r.cloudbedsReservationID) : undefined,
+    cloudbedsGuestID: r.cloudbedsGuestID ? String(r.cloudbedsGuestID) : undefined,
+    reservationStatus: r.reservationStatus ? String(r.reservationStatus) : undefined,
+    roomNumber: String(r.roomNumber ?? ''),
+    ...(r.id != null && String(r.id).trim() !== '' ? { _serverId: String(r.id) } : {}),
+  };
+}
+
+function guestToArrivalRow(g: CheckedInGuest, roomNameById: Record<string, string>): Row {
+  return {
+    id: g._serverId
+      ? `server:${g._serverId}`
+      : `local:${g.cloudbedsReservationID || `${g.firstName}|${g.lastName}|${g.checkInTime}`}`,
+    markKey: rowMarkKey(g),
+    guestName: `${g.firstName} ${g.lastName}`.trim(),
+    firstName: g.firstName,
+    lastName: g.lastName,
+    clcNumber: g.clcNumber || '-',
+    phoneNumber: g.phoneNumber || '-',
+    class: g.class || '-',
+    roomNumber: resolveRoomNumberLabel(g.roomNumber, roomNameById),
+    checkInDate: fmtDate(g.checkInTime),
+    checkInTime: fmtTime(g.checkInTime),
+    checkInIso: g.checkInTime,
+    checkOutIso: g.checkOutTime,
+    fromHistory: !!g.checkOutTime,
+    cloudbedsReservationID: g.cloudbedsReservationID,
+    cloudbedsGuestID: g.cloudbedsGuestID,
+    reservationStatus: g.reservationStatus,
+    rawData: g,
+  };
+}
+
+function rowMatchesQuery(r: Row, q: string): boolean {
+  return (
+    r.guestName.toLowerCase().includes(q) ||
+    r.clcNumber.toLowerCase().includes(q) ||
+    r.phoneNumber.includes(q) ||
+    r.roomNumber.toLowerCase().includes(q) ||
+    (r.rawData.roomNumber || '').toLowerCase().includes(q)
+  );
+}
+
+function guestMatchesQuery(g: CheckedInGuest, q: string): boolean {
+  const name = `${g.firstName} ${g.lastName}`.trim().toLowerCase();
+  return (
+    name.includes(q) ||
+    (g.clcNumber || '').toLowerCase().includes(q) ||
+    (g.phoneNumber || '').includes(q) ||
+    (g.roomNumber || '').toLowerCase().includes(q)
+  );
+}
+
 export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
   /**
    * Set of dedup keys for records deleted in this session.
@@ -275,6 +341,13 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
   const [checkOutHistory, setCheckOutHistory] = useState<CheckedInGuest[]>([]);
   const [roomNameById, setRoomNameById] = useState<Record<string, string>>({});
   const [searchTerm, setSearchTerm] = useState('');
+  /**
+   * Full stay history for the current search (checked-out stays included).
+   * Null while the lookup is in flight. Independent of the selected date so a
+   * stay's check-out time cannot jump or disappear when the day changes.
+   */
+  const [searchStays, setSearchStays] = useState<CheckedInGuest[] | null>(null);
+  const [searchStaysError, setSearchStaysError] = useState(false);
   const [selectedRow, setSelectedRow] = useState<Row | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState<EditGuestForm | null>(null);
@@ -312,6 +385,45 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
     }, 1000);
     return () => window.clearTimeout(t);
   }, []);
+
+  useEffect(() => {
+    const q = searchTerm.trim();
+    if (q.length < 2) {
+      setSearchStays(null);
+      setSearchStaysError(false);
+      return;
+    }
+
+    const ctrl = new AbortController();
+    setSearchStays(null);
+    setSearchStaysError(false);
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const res = await fetch(
+            `/api/checkin-records?action=stays&name=${encodeURIComponent(q)}`,
+            { signal: ctrl.signal, cache: 'no-store' },
+          );
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data?.success !== true || !Array.isArray(data.records)) {
+            throw new Error(data?.error || 'Stay search failed');
+          }
+          if (ctrl.signal.aborted) return;
+          setSearchStays((data.records as any[]).map(mapCheckedInGuest));
+          setSearchStaysError(false);
+        } catch (err: any) {
+          if (err?.name === 'AbortError' || ctrl.signal.aborted) return;
+          setSearchStaysError(true);
+          setSearchStays(null);
+        }
+      })();
+    }, 350);
+
+    return () => {
+      ctrl.abort();
+      window.clearTimeout(timer);
+    };
+  }, [searchTerm]);
 
   const [exportFrom, setExportFrom] = useState(() => localYmd(new Date()));
   const [exportTo, setExportTo] = useState(() => localYmd(new Date()));
@@ -520,19 +632,37 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
     [rows, selectedDate]
   );
 
+  /**
+   * Name search is the server stay list only. The day-window lists
+   * (checkedInGuests / checkOutHistory) change with the selected date and were
+   * adding the Sep 24 checkout on the 24th/25th, then removing it after the 26th.
+   */
+  const searchStayRows = useMemo(() => {
+    if (!searchStays) return [];
+    const q = searchTerm.trim().toLowerCase();
+    let local: CheckedInGuest[] = [];
+    try {
+      const active = JSON.parse(localStorage.getItem('checkedInGuests') || '[]') as CheckedInGuest[];
+      const history = JSON.parse(localStorage.getItem('checkOutHistory') || '[]') as CheckedInGuest[];
+      local = [...active, ...history];
+    } catch {
+      local = [];
+    }
+    const localMatches = local.filter((g) => guestMatchesQuery(g, q));
+    return collapseStays([...searchStays, ...localMatches]).map((g) => guestToArrivalRow(g, roomNameById));
+  }, [searchStays, searchTerm, roomNameById]);
+
   const filteredRows = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
     if (!q) return rowsForSelectedDate;
-    // When a search term is active, search across all loaded dates so guests can be found
-    // regardless of which day is selected in the date picker.
-    return rows.filter(r =>
-      r.guestName.toLowerCase().includes(q) ||
-      r.clcNumber.toLowerCase().includes(q) ||
-      r.phoneNumber.includes(q) ||
-      r.roomNumber.toLowerCase().includes(q) ||
-      (r.rawData.roomNumber || '').toLowerCase().includes(q)
-    );
-  }, [rows, rowsForSelectedDate, searchTerm]);
+    // Two or more characters: every matching stay, with that stay's own check-out.
+    // The selected date does not move or hide those check-out times.
+    if (q.length >= 2 && searchStays && !searchStaysError) {
+      return searchStayRows.filter((r) => rowMatchesQuery(r, q));
+    }
+    if (q.length >= 2 && !searchStaysError) return [];
+    return rows.filter((r) => rowMatchesQuery(r, q));
+  }, [rows, rowsForSelectedDate, searchTerm, searchStays, searchStaysError, searchStayRows]);
 
   const sortedFilteredRows = useMemo(() => {
     const copy = [...filteredRows];
@@ -1379,6 +1509,12 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
         </div>
       </div>
 
+      {searchTerm.trim().length >= 2 && (
+        <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '-6px', marginBottom: '10px' }}>
+          Showing every stay that matches this search. Each stay keeps its own check-out time when you change the date.
+        </div>
+      )}
+
       {/* â”€â”€ Export Panel â”€â”€ */}
       {showExportPanel && (
         <div style={{ marginBottom: '14px', padding: '14px 16px', background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: '10px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
@@ -1453,9 +1589,11 @@ export default function ArrivalsTab({ onCheckIn, onDelete }: ArrivalsTabProps) {
               <div style={{ textAlign: 'center', padding: '60px 20px', color: '#9ca3af' }}>
                 <div style={{ fontSize: '40px', marginBottom: '8px' }}>ðŸ“­</div>
                 <div style={{ fontSize: '14px' }}>
-                  {searchTerm
-                    ? 'No guests match your search'
-                    : 'No check-ins for this date'}
+                  {searchTerm.trim().length >= 2 && !searchStays && !searchStaysError
+                    ? 'Searching stays…'
+                    : searchTerm
+                      ? 'No guests match your search'
+                      : 'No check-ins for this date'}
                 </div>
               </div>
             ) : (

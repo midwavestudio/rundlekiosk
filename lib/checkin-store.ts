@@ -386,6 +386,58 @@ function dedupByName(records: CheckinRecord[]): CheckinRecord[] {
 }
 
 /**
+ * How far back Arrivals name search looks. Must use the same date-range read as
+ * the day list and the export. A plain `orderBy(checkInTime)` scan skips
+ * checkout records that are stored under `checkInDateYmd` only — those are the
+ * rows whose checkout vanished once the selected day moved more than one day
+ * away from check-in.
+ */
+const STAY_LOOKUP_DAYS = 550;
+
+function matchesStayQuery(record: CheckinRecord, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (q.length < 2) return false;
+  const full = `${record.firstName} ${record.lastName}`.trim().toLowerCase();
+  const clc = (record.clcNumber || '').trim().toLowerCase();
+  const room = (record.roomNumber || '').trim().toLowerCase();
+  const phone = record.phoneNumber || '';
+  if (full.includes(q) || clc.includes(q) || room.includes(q) || phone.includes(q)) return true;
+  const tokens = q.split(/\s+/).filter((t) => t.length >= 2);
+  return tokens.length > 1 && tokens.every((t) => full.includes(t));
+}
+
+function ymdShift(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * Every stay matching a name, CLC, phone, or room — checked out or still in house.
+ * Used by Arrivals search so a stay's check-out time is not dropped just because
+ * the selected calendar day is outside the live date window.
+ */
+export async function findRecordsByQuery(query: string): Promise<CheckinRecord[]> {
+  const q = query.trim();
+  if (q.length < 2) return [];
+
+  try {
+    const records = await getCheckinRecords({
+      from: ymdShift(-STAY_LOOKUP_DAYS),
+      to: ymdShift(2),
+      limit: 50000,
+    });
+    return records.filter((r) => matchesStayQuery(r, q));
+  } catch (err) {
+    console.error('[checkin-store] findRecordsByQuery failed — using in-memory.', err);
+    return memStore.filter((r) => matchesStayQuery(r, q));
+  }
+}
+
+/**
  * Find an existing record by firstName + lastName + checkInTime.
  * Used for dedup when cloudbedsReservationID is not yet known.
  */

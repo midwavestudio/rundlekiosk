@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateClcNumberRequired } from '@/lib/checkin-validation';
+import { keepLatestStayPerPerson } from '@/lib/guest-stays';
 import {
   saveCheckinRecord,
   updateCheckinRecord,
@@ -8,6 +9,7 @@ import {
   findByGuestName,
   findByGuestKey,
   findActiveByName,
+  findRecordsByQuery,
   upsertCheckinRecord,
   deleteCheckinRecord,
   deleteByReservationID,
@@ -41,7 +43,8 @@ function bustRecordsCache() {
  * GET /api/checkin-records
  *  - ?from=YYYY-MM-DD&to=YYYY-MM-DD&limit=N  → list records
  *  - ?action=backup                           → download all records as JSON file
- *  - ?action=search&name=John+Smith           → search checked-in guests
+ *  - ?action=search&name=John+Smith           → latest checked-in stay per guest
+ *  - ?action=stays&name=John+Smith            → every matching stay, including check-out times
  *  - ?action=deleted                          → arrivals removed from the Arrivals tab
  */
 export async function GET(request: NextRequest) {
@@ -50,6 +53,7 @@ export async function GET(request: NextRequest) {
 
   if (action === 'backup') return handleBackup();
   if (action === 'search') return handleSearch(request);
+  if (action === 'stays') return handleStayLookup(request);
   if (action === 'deleted') return handleDeleted(request);
 
   try {
@@ -611,10 +615,12 @@ function parseStayStartMs(r: any): number {
 }
 
 function guestDedupeKey(r: any): string {
+  // Key by name, not Cloudbeds guestID. A new reservation often gets a new guestID,
+  // which was letting every past stay show up as its own check-out choice.
+  const gn = normalize(String(r.guestName ?? '').trim());
+  if (gn) return `name:${gn.split(/\s+/).filter(Boolean).sort().join(' ')}`;
   const gid = String(r.guestID ?? r.guestList?.[0]?.guestID ?? r.guestList?.[0]?.guestId ?? '').trim();
   if (gid) return `gid:${gid}`;
-  const gn = normalize(String(r.guestName ?? '').trim());
-  if (gn) return `name:${gn}`;
   return `res:${String(r.reservationID ?? '')}`;
 }
 
@@ -701,7 +707,7 @@ async function handleSearch(request: NextRequest) {
         checkInDate: r.checkInDateYmd ?? r.checkInTime?.slice(0, 10) ?? '',
         checkOutDate: '', localRecordID: r.id, source: 'local' as const,
       }));
-      return NextResponse.json({ success: true, guests: localGuests, mockMode: true });
+      return NextResponse.json({ success: true, guests: keepLatestStayPerPerson(localGuests), mockMode: true });
     } catch { return NextResponse.json({ success: true, guests: [], mockMode: true }); }
   }
 
@@ -746,5 +752,32 @@ async function handleSearch(request: NextRequest) {
       checkOutDate: '', localRecordID: r.id, source: 'local' as const,
     }));
 
-  return NextResponse.json({ success: true, guests: [...cloudbedsGuests, ...localGuests] });
+  // A guest with more than one open stay must only be offered the latest one.
+  // Older stays stay on their own reservations and are not selectable here.
+  const guests = keepLatestStayPerPerson([...cloudbedsGuests, ...localGuests]);
+  return NextResponse.json({ success: true, guests });
+}
+
+/**
+ * GET /api/checkin-records?action=stays&name=
+ * Every matching stay in recent history, including ones that already checked out.
+ * Arrivals uses this so a stay's check-out time does not disappear when the
+ * selected date moves outside the ±1 day live window.
+ */
+async function handleStayLookup(request: NextRequest) {
+  const name = new URL(request.url).searchParams.get('name')?.trim() ?? '';
+  if (name.length < 2) return NextResponse.json({ success: true, records: [] });
+  try {
+    const records = await findRecordsByQuery(name);
+    return NextResponse.json(
+      { success: true, records },
+      { headers: { 'Cache-Control': 'no-store' } },
+    );
+  } catch (err: any) {
+    console.error('[checkin-records GET stays]', err);
+    return NextResponse.json(
+      { success: false, error: err?.message ?? 'Server error' },
+      { status: 500 },
+    );
+  }
 }
