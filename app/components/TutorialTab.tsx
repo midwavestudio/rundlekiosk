@@ -21,6 +21,7 @@ const SECTIONS = [
   { id: 'checkouts', label: 'Checkouts' },
   { id: 'check-ins', label: 'Check-ins' },
   { id: 'clc-numbers', label: 'CLC numbers' },
+  { id: 'manual-billing', label: 'Manual billing' },
   { id: 'cloudbeds', label: 'Cloudbeds' },
   { id: 'wrong-clc', label: 'Wrong CLC #' },
   { id: 'occupied', label: 'Occupied room' },
@@ -130,7 +131,7 @@ export default function TutorialTab() {
             <li>Process <strong>checkouts</strong>, if there are any.</li>
             <li>Then process <strong>CLC check-ins</strong>.</li>
             <li>Go through <strong>today&apos;s arrivals</strong> at least once during the day.</li>
-            <li>Confirm <strong>Cloudbeds</strong> on a separate pass.</li>
+            <li>Confirm <strong>Cloudbeds</strong> on a separate pass. Verify every reservation was checked in correctly.</li>
           </ol>
         </Section>
 
@@ -204,24 +205,36 @@ export default function TutorialTab() {
           </Callout>
         </Section>
 
-        <Section id="cloudbeds" step={5} title="Confirm Cloudbeds separately">
+        <Section id="manual-billing" step={5} title="If a CLC number does not work">
+          <p>
+            If a CLC number does not work and the guest has already checked out, copy
+            the guest info and add it to the manual billing list.
+          </p>
+          <p>
+            That stay still needs to be billed. Do not leave it off the list because
+            the CLC number failed.
+          </p>
+        </Section>
+
+        <Section id="cloudbeds" step={6} title="Confirm Cloudbeds separately">
           <p>
             After CLC is done, go through Cloudbeds as its own step. Do not try to update
             CLC and Cloudbeds at the same time for each guest — it is easier to finish one
             system, then the other.
           </p>
           <p>
-            Kiosk check-ins usually create the Cloudbeds reservation automatically, but it
-            does fail sometimes. Check that each guest also has a Cloudbeds reservation.
+            Verify that every reservation has been checked into Cloudbeds correctly.
+            Kiosk check-ins usually create the reservation automatically, but it fails
+            sometimes, so walk the full list and confirm each guest.
           </p>
           <p>
-            If Cloudbeds is missing, look at the Arrivals row for that guest. Use the
+            If Cloudbeds is missing or wrong, look at the Arrivals row for that guest. Use the
             create / re-sync control there, or retry failed Cloudbeds check-ins from the
             Dashboard if several guests failed at once.
           </p>
         </Section>
 
-        <Section id="wrong-clc" step={6} title="Guests often type the wrong CLC number">
+        <Section id="wrong-clc" step={7} title="Guests often type the wrong CLC number">
           <p>
             If someone did not check in, they may have entered the wrong CLC number at
             the kiosk. This happens often.
@@ -237,7 +250,7 @@ export default function TutorialTab() {
           </Callout>
         </Section>
 
-        <Section id="occupied" step={7} title="If CLC says doubles are not allowed">
+        <Section id="occupied" step={8} title="If CLC says doubles are not allowed">
           <p>
             When you check a guest into CLC and see{' '}
             <strong>&quot;Doubles are not allowed by contract&quot;</strong>, the room is
@@ -250,7 +263,7 @@ export default function TutorialTab() {
           </p>
         </Section>
 
-        <Section id="partial-billing" step={8} title="Bill General and PTI guests every 5 days">
+        <Section id="partial-billing" step={9} title="Bill General and PTI guests every 5 days">
           <p>
             <strong>General</strong> and <strong>PTI</strong> CLC guests must be partially
             billed every 5 days. This keeps the check-in score up.
@@ -261,7 +274,7 @@ export default function TutorialTab() {
           </p>
         </Section>
 
-        <Section id="marks" step={9} title="Track your progress on Arrivals">
+        <Section id="marks" step={10} title="Track your progress on Arrivals">
           <p>
             Use the marks on Arrivals to keep track of who you have already handled.
             They are only visual helpers — they do not check anyone in or out.
@@ -290,7 +303,8 @@ function QuickStartCard() {
   const items = [
     'Process checkouts, then CLC check-ins.',
     'Walk today\'s Arrivals at least once.',
-    'Confirm Cloudbeds on a separate pass.',
+    'If a CLC number fails and the guest already checked out, copy their info onto the manual billing list.',
+    'Verify every reservation was checked into Cloudbeds correctly.',
     'Bill General and PTI guests every 5 days.',
   ];
   return (
